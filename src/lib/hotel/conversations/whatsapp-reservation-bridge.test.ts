@@ -3,7 +3,11 @@ import { describe, expect, it } from "vitest";
 import { buildEntryLogRecord } from "@/lib/hotel/application/entry-log";
 import type { ReservationRecord } from "@/lib/hotel/domain/contracts";
 import type { DemoReservationRecord, SheetsAvailabilityResult } from "@/lib/hotel/integrations/types";
-import { createStaticClientDirectory } from "@/lib/hotel/clients";
+import {
+  createStaticClientDirectory,
+  type ClientUpsertFromConfirmedReservationInput,
+  type ClientUpsertFromConfirmedReservationResult,
+} from "@/lib/hotel/clients";
 import type { SheetAdapter, SheetsWriteResult } from "@/lib/hotel/sheets/types";
 import { handleInboundWhatsApp } from "./service";
 import {
@@ -125,11 +129,14 @@ function makeAvailability(available = true): SheetsAvailabilityResult {
 function makeBridgeDeps(options: {
   availabilitySequence?: boolean[];
   writeFails?: boolean;
+  clientUpsertResult?: ClientUpsertFromConfirmedReservationResult;
+  clientUpsertFails?: boolean;
 } = {}) {
   const counters = {
     checks: 0,
     writes: 0,
     reservations: [] as ReservationRecord[],
+    clientUpserts: [] as ClientUpsertFromConfirmedReservationInput[],
   };
   const sequence = options.availabilitySequence ?? [true, true];
   const adapter: SheetAdapter = {
@@ -220,6 +227,23 @@ function makeBridgeDeps(options: {
       async upsertReservationRecord(reservation: ReservationRecord) {
         counters.reservations.push(structuredClone(reservation));
       },
+      async upsertClientFromConfirmedReservation(input: ClientUpsertFromConfirmedReservationInput) {
+        counters.clientUpserts.push(structuredClone(input));
+        if (options.clientUpsertFails) {
+          throw new Error("mock client upsert failed");
+        }
+        return (
+          options.clientUpsertResult ?? {
+            kind: "created_pending_name",
+            clientStatus: "known",
+            clientName: "Contacto WhatsApp ****9991",
+            rowNumber: 100,
+            sheetName: "CLIENTES_QA",
+            warning: "client_name_pending_review",
+            source: "google_sheets_client_directory",
+          }
+        );
+      },
     },
   };
 }
@@ -253,9 +277,10 @@ describe("WhatsApp reservation bridge", () => {
     expect(counters.checks).toBe(1);
     expect(counters.writes).toBe(0);
     expect(counters.reservations).toHaveLength(0);
+    expect(counters.clientUpserts).toHaveLength(0);
   });
 
-  it("writes a confirmed proposal through the adapter and projects it into entry log", async () => {
+  it("writes a confirmed proposal, projects it into entry log and upserts CLIENTES", async () => {
     const store = new MemoryConversationStore();
     const { counters, deps } = makeBridgeDeps();
 
@@ -283,10 +308,21 @@ describe("WhatsApp reservation bridge", () => {
     expect(counters.checks).toBe(2);
     expect(counters.writes).toBe(1);
     expect(counters.reservations).toHaveLength(1);
+    expect(counters.clientUpserts).toHaveLength(1);
+    expect(counters.clientUpserts[0]).toMatchObject({
+      phoneE164: "+34600009991",
+      phoneNormalized: "34600009991",
+      petName: "Kira QA",
+      checkIn: "2026-12-29",
+      checkOut: "2026-12-31",
+      source: "whatsapp_reservation",
+    });
     expect(confirmed.conversation.pendingReservationProposal?.status).toBe("confirmed");
     expect(confirmed.conversation.reservationId).toBe(counters.reservations[0].reservationId);
+    expect(confirmed.conversation.clientStatus).toBe("known");
     expect(confirmed.botReply?.body).toContain("queda anotada");
     expect(confirmed.conversation.events.some((event) => event.eventType === "reservation_confirmed_from_whatsapp")).toBe(true);
+    expect(confirmed.conversation.events.some((event) => event.eventType === "client_directory_created_pending_name")).toBe(true);
 
     const reservation = counters.reservations[0];
     expect(reservation).toMatchObject({
@@ -345,6 +381,7 @@ describe("WhatsApp reservation bridge", () => {
     expect(counters.checks).toBe(2);
     expect(counters.writes).toBe(1);
     expect(counters.reservations).toHaveLength(1);
+    expect(counters.clientUpserts).toHaveLength(1);
     expect(confirmed.conversation.pendingReservationProposal?.status).toBe("confirmed");
     expect(confirmed.botReply?.body).toContain("queda anotada");
   });
@@ -528,8 +565,43 @@ describe("WhatsApp reservation bridge", () => {
     expect(result.botReply?.body).toContain("no la marco como confirmada");
     expect(counters.writes).toBe(1);
     expect(counters.reservations).toHaveLength(0);
+    expect(counters.clientUpserts).toHaveLength(0);
     const serialized = JSON.stringify(result.conversation);
     expect(serialized).not.toContain("mock sheet write failed");
+  });
+
+  it("keeps the reservation confirmed if CLIENTES upsert fails after sheet write", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps({ clientUpsertFails: true });
+
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "Quiero reservar para Kira QA del 29 al 31 de diciembre de 2026",
+        messageSid: "SM_BRIDGE_CLIENT_UPSERT_FAIL_1",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "si",
+        messageSid: "SM_BRIDGE_CLIENT_UPSERT_FAIL_2",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(counters.writes).toBe(1);
+    expect(counters.reservations).toHaveLength(1);
+    expect(counters.clientUpserts).toHaveLength(1);
+    expect(result.conversation.pendingReservationProposal?.status).toBe("confirmed");
+    expect(result.botReply?.body).toContain("queda anotada");
+    expect(result.conversation.events.some((event) => event.eventType === "client_directory_upsert_failed")).toBe(true);
+    expect(JSON.stringify(result.conversation.events)).not.toContain("mock client upsert failed");
   });
 
   it("does not persist raw reservation ids or sheet internals in conversation events", async () => {
@@ -677,5 +749,54 @@ describe("WhatsApp reservation bridge", () => {
     expect(repeated.conversation.pendingReservationProposal?.status).toBe("confirmed");
     expect(counters.writes).toBe(1);
     expect(counters.reservations).toHaveLength(1);
+    expect(counters.clientUpserts).toHaveLength(1);
+  });
+
+  it("marks existing clients without duplicating CLIENTES rows", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps({
+      clientUpsertResult: {
+        kind: "existing",
+        clientStatus: "known",
+        clientName: "Cliente QA Existente",
+        rowNumber: 12,
+        sheetName: "CLIENTES_QA",
+        matchCount: 1,
+        source: "google_sheets_client_directory",
+      },
+    });
+    const directory = createStaticClientDirectory([
+      {
+        nombre: "Cliente QA Existente",
+        telefonoNormalizado: "34600009991",
+        rowNumber: 12,
+        sheetName: "CLIENTES_QA",
+      },
+    ]);
+
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "Quiero reservar para Kira QA del 29 al 31 de diciembre de 2026",
+        messageSid: "SM_BRIDGE_EXISTING_CLIENT_1",
+      },
+      store,
+      directory,
+      deps,
+    );
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "si",
+        messageSid: "SM_BRIDGE_EXISTING_CLIENT_2",
+      },
+      store,
+      directory,
+      deps,
+    );
+
+    expect(counters.clientUpserts).toHaveLength(1);
+    expect(result.conversation.clientName).toBe("Cliente QA Existente");
+    expect(result.conversation.events.some((event) => event.eventType === "client_directory_existing_from_reservation")).toBe(true);
   });
 });

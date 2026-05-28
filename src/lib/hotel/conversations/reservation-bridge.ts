@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { upsertReservation } from "@/lib/hotel/application/demo-store";
 import {
+  upsertClientFromConfirmedReservation,
+  type ClientUpsertFromConfirmedReservationInput,
+  type ClientUpsertFromConfirmedReservationResult,
+} from "@/lib/hotel/clients";
+import {
   mapLegacyAvailabilityToDomain,
   toLegacyReservationRecord,
 } from "@/lib/hotel/application/integration-bridge";
@@ -37,6 +42,9 @@ export interface WhatsAppReservationBridgeDeps {
   now?: () => Date;
   buildSheetAdapter?: () => Promise<SheetAdapter>;
   upsertReservationRecord?: (reservation: ReservationRecord) => Promise<void>;
+  upsertClientFromConfirmedReservation?: (
+    input: ClientUpsertFromConfirmedReservationInput,
+  ) => Promise<ClientUpsertFromConfirmedReservationResult>;
 }
 
 export interface ReservationProposalOutcome {
@@ -52,6 +60,7 @@ export interface ReservationConfirmationOutcome {
   reply: string;
   proposal?: PendingReservationProposal;
   reservation?: ReservationRecord;
+  clientDirectoryUpsert?: ClientUpsertFromConfirmedReservationResult;
   handoff?: boolean;
   eventPayload?: Record<string, unknown>;
 }
@@ -248,6 +257,15 @@ function proposalIsLive(
     proposal?.status === "proposed" &&
     new Date(proposal.expiresAt).getTime() > now.getTime()
   );
+}
+
+function buildFailedClientUpsertResult(error: unknown): ClientUpsertFromConfirmedReservationResult {
+  return {
+    kind: "failed",
+    clientStatus: "unknown",
+    warning: safeErrorCode(error),
+    source: "google_sheets_client_directory",
+  };
 }
 
 function proposalHasRequiredData(
@@ -563,6 +581,29 @@ export async function confirmPendingReservationProposal(input: {
     });
 
     await (input.deps?.upsertReservationRecord ?? upsertReservation)(reservation);
+    let clientDirectoryUpsert: ClientUpsertFromConfirmedReservationResult | undefined;
+    try {
+      clientDirectoryUpsert = await (
+        input.deps?.upsertClientFromConfirmedReservation ??
+        upsertClientFromConfirmedReservation
+      )({
+        phoneE164: input.conversation.phoneE164,
+        phoneNormalized: input.conversation.phoneNormalized,
+        clientName:
+          input.conversation.clientName ??
+          input.conversation.displayName ??
+          input.conversation.customerName,
+        email: input.conversation.clientEmail,
+        reservationId: reservation.reservationId,
+        petName: proposal.petName,
+        checkIn: proposal.checkIn,
+        checkOut: proposal.checkOut,
+        source: "whatsapp_reservation",
+        now,
+      });
+    } catch (error) {
+      clientDirectoryUpsert = buildFailedClientUpsertResult(error);
+    }
 
     const confirmedProposal: PendingReservationProposal = {
       ...proposal,
@@ -574,11 +615,22 @@ export async function confirmPendingReservationProposal(input: {
       kind: "confirmed",
       proposal: confirmedProposal,
       reservation,
+      clientDirectoryUpsert,
       reply: buildConfirmationReply(confirmedProposal),
       eventPayload: {
         proposalId: proposal.proposalId,
         reservationIdSummary: summarizeSensitiveId(reservation.reservationId),
         cellsWritten: reservation.sheetRegistration?.cells.length ?? 0,
+        clientDirectoryUpsert: clientDirectoryUpsert
+          ? {
+              kind: clientDirectoryUpsert.kind,
+              clientStatus: clientDirectoryUpsert.clientStatus,
+              rowNumber: clientDirectoryUpsert.rowNumber,
+              sheetName: clientDirectoryUpsert.sheetName,
+              matchCount: clientDirectoryUpsert.matchCount,
+              warning: clientDirectoryUpsert.warning,
+            }
+          : undefined,
       },
     };
   } catch (error) {

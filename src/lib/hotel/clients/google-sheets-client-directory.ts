@@ -8,12 +8,12 @@ const GOOGLE_SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"] as
 const DEFAULT_CLIENTS_SHEET_NAME = "CLIENTES";
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
 
-function quoteSheetRange(sheetName: string, range: string): string {
+export function quoteSheetRange(sheetName: string, range: string): string {
   const escaped = sheetName.replace(/'/g, "''");
   return `'${escaped}'!${range}`;
 }
 
-function getClientsSheetName() {
+export function getClientsSheetName() {
   return process.env.HOTEL_CLIENTS_SHEET_NAME?.trim() || DEFAULT_CLIENTS_SHEET_NAME;
 }
 
@@ -22,7 +22,7 @@ function getCacheTtlMs() {
   return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_CACHE_TTL_MS;
 }
 
-async function createSheetsClient(): Promise<{ client: sheets_v4.Sheets; spreadsheetId: string }> {
+export async function createSheetsClient(): Promise<{ client: sheets_v4.Sheets; spreadsheetId: string }> {
   const context = getSheetsAdapterContextFromEnv("real");
   if (!context.spreadsheetId) {
     throw new Error("Falta HOTEL_GOOGLE_SHEETS_SPREADSHEET_ID para leer CLIENTES.");
@@ -113,6 +113,10 @@ export class GoogleSheetsClientDirectory implements ClientDirectory {
     return result;
   }
 
+  invalidateCache(): void {
+    this.cached = undefined;
+  }
+
   private async readClients(): Promise<ClientDirectoryReadResult> {
     try {
       const { client, spreadsheetId } = await createSheetsClient();
@@ -153,6 +157,53 @@ let singleton: GoogleSheetsClientDirectory | undefined;
 export function getClientDirectory(): ClientDirectory {
   singleton ??= new GoogleSheetsClientDirectory();
   return singleton;
+}
+
+export function invalidateClientDirectoryCache(): void {
+  singleton?.invalidateCache();
+}
+
+export async function appendClientDirectoryRow(
+  row: string[],
+  sheetName = getClientsSheetName(),
+): Promise<{ sheetName: string; rowNumber?: number }> {
+  const { client, spreadsheetId } = await createSheetsClient();
+  const response = await client.spreadsheets.values.append({
+    spreadsheetId,
+    range: quoteSheetRange(sheetName, "A:M"),
+    valueInputOption: "USER_ENTERED",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: {
+      values: [row],
+    },
+  });
+
+  invalidateClientDirectoryCache();
+
+  const updatedRange = response.data.updates?.updatedRange;
+  const rowNumberMatch = updatedRange?.match(/![A-Z]+(\d+):/i);
+  return {
+    sheetName,
+    rowNumber: rowNumberMatch ? Number.parseInt(rowNumberMatch[1], 10) : undefined,
+  };
+}
+
+export async function clearClientDirectoryRow(
+  rowNumber: number,
+  sheetName = getClientsSheetName(),
+): Promise<{ sheetName: string; rowNumber: number }> {
+  if (!Number.isInteger(rowNumber) || rowNumber < 2) {
+    throw new Error("CLIENTES cleanup requires a valid data row number.");
+  }
+
+  const { client, spreadsheetId } = await createSheetsClient();
+  await client.spreadsheets.values.clear({
+    spreadsheetId,
+    range: quoteSheetRange(sheetName, `A${rowNumber}:M${rowNumber}`),
+  });
+  invalidateClientDirectoryCache();
+
+  return { sheetName, rowNumber };
 }
 
 export function resetClientDirectoryForTests(): void {

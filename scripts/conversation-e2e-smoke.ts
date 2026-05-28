@@ -1,4 +1,5 @@
 import { createStaticClientDirectory } from "@/lib/hotel/clients";
+import type { ClientUpsertFromConfirmedReservationInput } from "@/lib/hotel/clients";
 import { buildEntryLogRecord } from "@/lib/hotel/application/entry-log";
 import {
   buildTwilioMessageResponse,
@@ -161,6 +162,7 @@ function makeBridgeDeps() {
     checks: 0,
     writes: 0,
     reservations: [] as ReservationRecord[],
+    clientUpserts: [] as ClientUpsertFromConfirmedReservationInput[],
   };
   const adapter: SheetAdapter = {
     async readMonth() {
@@ -235,6 +237,18 @@ function makeBridgeDeps() {
       },
       async upsertReservationRecord(reservation: ReservationRecord) {
         counters.reservations.push(structuredClone(reservation));
+      },
+      async upsertClientFromConfirmedReservation(input: ClientUpsertFromConfirmedReservationInput) {
+        counters.clientUpserts.push(structuredClone(input));
+        return {
+          kind: "created_pending_name" as const,
+          clientStatus: "known" as const,
+          clientName: "Contacto WhatsApp ****9993",
+          rowNumber: 9003,
+          sheetName: "CLIENTES_QA",
+          warning: "client_name_pending_review",
+          source: "google_sheets_client_directory" as const,
+        };
       },
     },
   };
@@ -366,6 +380,7 @@ async function runDirectSmoke() {
       confirmed.conversation.pendingReservationProposal?.status === "confirmed" &&
       Boolean(confirmed.conversation.reservationId) &&
       counters.writes === 1 &&
+      counters.clientUpserts.length === 1 &&
       entryLog?.source === "chatbot"
         ? "OK"
         : "FAIL",
@@ -374,6 +389,7 @@ async function runDirectSmoke() {
     twiml: isTwiml(confirmed.twiml) ? "valid" : "invalid",
     events: confirmed.conversation.events.map((event) => event.eventType).join(","),
     entryLogAffected: entryLog ? "yes" : "no",
+    clientUpsertAffected: counters.clientUpserts.length > 0 ? "yes" : "no",
     reply: summarizeReply(confirmed.botReply?.body),
   });
 

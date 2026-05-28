@@ -5,6 +5,7 @@ import {
   getClientDirectory,
   type ClientDirectory,
   type ClientIdentityResult,
+  type ClientUpsertFromConfirmedReservationResult,
 } from "@/lib/hotel/clients";
 import { buildConversationReplyPlan, classifyConversationIntent } from "./nlu";
 import {
@@ -192,6 +193,71 @@ function sanitizeClientIdentityPayload(identity: ClientIdentityResult): Record<s
     warnings: identity.warnings ?? [],
     rowNumber: identity.client?.rowNumber,
     sheetName: identity.client?.sheetName,
+  };
+}
+
+function sanitizeClientUpsertPayload(
+  result: ClientUpsertFromConfirmedReservationResult,
+): Record<string, unknown> {
+  return {
+    kind: result.kind,
+    clientStatus: result.clientStatus,
+    source: result.source,
+    rowNumber: result.rowNumber,
+    sheetName: result.sheetName,
+    matchCount: result.matchCount,
+    warning: result.warning,
+  };
+}
+
+function clientUpsertEventType(result: ClientUpsertFromConfirmedReservationResult): string {
+  if (result.kind === "created") {
+    return "client_directory_created_from_reservation";
+  }
+  if (result.kind === "created_pending_name") {
+    return "client_directory_created_pending_name";
+  }
+  if (result.kind === "existing") {
+    return "client_directory_existing_from_reservation";
+  }
+  if (result.kind === "skipped_ambiguous") {
+    return "client_directory_upsert_skipped_ambiguous";
+  }
+  if (result.kind === "skipped_blocked") {
+    return "client_directory_upsert_skipped_blocked";
+  }
+  if (result.kind === "skipped_invalid_phone") {
+    return "client_directory_upsert_skipped_invalid_phone";
+  }
+  return "client_directory_upsert_failed";
+}
+
+function applyClientReservationUpsert(
+  record: ConversationRecord,
+  result?: ClientUpsertFromConfirmedReservationResult,
+): ConversationRecord {
+  if (!result || !["created", "created_pending_name", "existing"].includes(result.kind)) {
+    return record;
+  }
+
+  const warnings = Array.from(
+    new Set([
+      ...(record.clientWarnings ?? []),
+      result.kind === "created_pending_name" ? "client_name_pending_review" : undefined,
+    ].filter((warning): warning is string => Boolean(warning))),
+  );
+
+  return {
+    ...record,
+    customerName: result.clientName ?? record.customerName,
+    clientStatus: "known",
+    clientConfidence: "strong",
+    clientName: result.clientName ?? record.clientName,
+    clientWarnings: warnings,
+    clientSource: result.source,
+    clientSheetName: result.sheetName ?? record.clientSheetName,
+    clientSheetRow: result.rowNumber ?? record.clientSheetRow,
+    tags: Array.from(new Set([...(record.tags ?? []), "cliente_habitual"])),
   };
 }
 
@@ -612,7 +678,9 @@ export async function handleInboundWhatsApp(
         Boolean(confirmation.handoff),
       updatedAt: nowIso(),
     };
-    await store.replaceConversation(updatedRecord);
+    await store.replaceConversation(
+      applyClientReservationUpsert(updatedRecord, confirmation.clientDirectoryUpsert),
+    );
 
     if (confirmation.kind === "confirmed" && confirmation.reservation) {
       await store.addEvent(
@@ -620,6 +688,16 @@ export async function handleInboundWhatsApp(
           reservationIdSummary: summarizeReservationId(confirmation.reservation.reservationId),
           proposalId: confirmation.proposal?.proposalId,
         }),
+      );
+    }
+
+    if (confirmation.clientDirectoryUpsert) {
+      await store.addEvent(
+        createEvent(
+          freshWithClient.id,
+          clientUpsertEventType(confirmation.clientDirectoryUpsert),
+          sanitizeClientUpsertPayload(confirmation.clientDirectoryUpsert),
+        ),
       );
     }
 
