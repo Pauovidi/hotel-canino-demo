@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildEntryLogRecord } from "./entry-log";
+import { buildEntryLogRecord, listEntryLogRecords } from "./entry-log";
 import {
   cleanManagedEntryLogRecords,
   hideEntryLogRecord,
@@ -69,8 +69,50 @@ describe("entry log", () => {
 
     expect(entry.source).toBe("manual/revisión");
     expect(entry.action).toBe("revisión manual");
-    expect(entry.clientStatus).toBe("bloqueado/revisión");
+    expect(entry.clientStatus).toBe("revisión manual");
     expect(entry.gestetStatus).toBe("pendiente Gestet");
+  });
+
+  it("distinguishes sheet processing from CLIENTES upsert status", () => {
+    const sheetRegistration = {
+      sheetName: "DICIEMBRE 2026",
+      reservationId: "res_test_001",
+      rowHint: 7,
+      cells: ["B7"],
+      writtenAt: "2026-05-20T10:05:00.000Z",
+    };
+
+    expect(
+      buildEntryLogRecord(
+        reservation({
+          clientKind: "new",
+          sheetRegistration,
+          clientDirectoryUpsertKind: "created",
+          clientDirectoryUpsertStatus: "created",
+        }),
+      ).clientStatus,
+    ).toBe("nuevo cliente añadido");
+
+    expect(
+      buildEntryLogRecord(
+        reservation({
+          clientKind: "new",
+          sheetRegistration,
+          clientDirectoryUpsertKind: "failed",
+          clientDirectoryUpsertStatus: "failed",
+          clientDirectoryWarning: "client_directory_upsert_failed",
+        }),
+      ).clientStatus,
+    ).toBe("alta CLIENTES pendiente");
+
+    expect(
+      buildEntryLogRecord(
+        reservation({
+          clientKind: "new",
+          sheetRegistration,
+        }),
+      ).clientStatus,
+    ).toBe("nuevo contacto");
   });
 
   it("tracks managed/hidden state without mutating reservation records", async () => {
@@ -108,8 +150,10 @@ describe("entry log", () => {
   it("keeps entry-log operations isolated from the conversation store even if paths are misconfigured", async () => {
     const previousEntryLogPath = process.env.HOTEL_ENTRY_LOG_STATE_PATH;
     const previousConversationsPath = process.env.HOTEL_CONVERSATIONS_STORE_PATH;
+    const previousDomainPath = process.env.HOTEL_DOMAIN_STORE_PATH;
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "entry-log-conversation-isolation-"));
     const conversationsPath = path.join(tempDir, "hotel-conversations.json");
+    const domainPath = path.join(tempDir, "hotel-canino-domain.json");
     const conversationSnapshot = {
       conversations: [
         {
@@ -150,12 +194,31 @@ describe("entry log", () => {
     try {
       process.env.HOTEL_ENTRY_LOG_STATE_PATH = conversationsPath;
       process.env.HOTEL_CONVERSATIONS_STORE_PATH = conversationsPath;
+      process.env.HOTEL_DOMAIN_STORE_PATH = domainPath;
       await writeFile(conversationsPath, JSON.stringify(conversationSnapshot, null, 2), "utf8");
+      await writeFile(
+        domainPath,
+        JSON.stringify(
+          {
+            reservations: [reservation()],
+            reminders: [],
+            monthSnapshots: [],
+            logs: [],
+            updatedAt: "2026-06-01T08:00:00.000Z",
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
 
+      const records = await listEntryLogRecords({ status: "all" });
+      expect(records).toHaveLength(1);
       await hideEntryLogRecord("res_test_001", "removed");
       await markEntryLogManaged("res_test_002", "gestet");
       await cleanManagedEntryLogRecords();
       await reopenEntryLogRecord("res_test_001");
+      await listEntryLogRecords({ status: "all" });
 
       const persistedConversationSnapshot = JSON.parse(await readFile(conversationsPath, "utf8"));
       expect(persistedConversationSnapshot).toEqual(conversationSnapshot);
@@ -172,6 +235,52 @@ describe("entry log", () => {
         delete process.env.HOTEL_CONVERSATIONS_STORE_PATH;
       } else {
         process.env.HOTEL_CONVERSATIONS_STORE_PATH = previousConversationsPath;
+      }
+      if (previousDomainPath === undefined) {
+        delete process.env.HOTEL_DOMAIN_STORE_PATH;
+      } else {
+        process.env.HOTEL_DOMAIN_STORE_PATH = previousDomainPath;
+      }
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not overwrite the domain reservation store when entry-log state path collides", async () => {
+    const previousEntryLogPath = process.env.HOTEL_ENTRY_LOG_STATE_PATH;
+    const previousDomainPath = process.env.HOTEL_DOMAIN_STORE_PATH;
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "entry-log-domain-isolation-"));
+    const domainPath = path.join(tempDir, "hotel-canino-domain.json");
+    const domainSnapshot = {
+      reservations: [reservation({ reservationId: "res_domain_guard" })],
+      reminders: [],
+      monthSnapshots: [],
+      logs: [],
+      updatedAt: "2026-06-01T08:00:00.000Z",
+    };
+
+    try {
+      process.env.HOTEL_ENTRY_LOG_STATE_PATH = domainPath;
+      process.env.HOTEL_DOMAIN_STORE_PATH = domainPath;
+      await writeFile(domainPath, JSON.stringify(domainSnapshot, null, 2), "utf8");
+
+      await markEntryLogManaged("res_domain_guard", "gestet");
+      await hideEntryLogRecord("res_domain_guard", "removed");
+      await reopenEntryLogRecord("res_domain_guard");
+
+      const persistedDomainSnapshot = JSON.parse(await readFile(domainPath, "utf8"));
+      expect(persistedDomainSnapshot).toEqual(domainSnapshot);
+      const state = await loadEntryLogState();
+      expect(state.records.res_domain_guard.status).toBe("pending");
+    } finally {
+      if (previousEntryLogPath === undefined) {
+        delete process.env.HOTEL_ENTRY_LOG_STATE_PATH;
+      } else {
+        process.env.HOTEL_ENTRY_LOG_STATE_PATH = previousEntryLogPath;
+      }
+      if (previousDomainPath === undefined) {
+        delete process.env.HOTEL_DOMAIN_STORE_PATH;
+      } else {
+        process.env.HOTEL_DOMAIN_STORE_PATH = previousDomainPath;
       }
       await rm(tempDir, { recursive: true, force: true });
     }

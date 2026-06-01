@@ -10,7 +10,13 @@ export interface EntryLogRecord {
   source: "chatbot" | "formulario" | "recepción email" | "manual/revisión";
   action: "confirmada" | "modificada" | "rechazada" | "cancelada" | "revisión manual";
   clientName: string;
-  clientStatus: "cliente habitual" | "nuevo contacto" | "ambiguo" | "bloqueado/revisión";
+  clientStatus:
+    | "cliente habitual"
+    | "nuevo contacto"
+    | "nuevo cliente añadido"
+    | "cliente existente actualizado"
+    | "alta CLIENTES pendiente"
+    | "revisión manual";
   phoneNormalized: string;
   phoneDisplay: string;
   email: string;
@@ -112,10 +118,32 @@ function mapAction(record: ReservationRecord): EntryLogRecord["action"] {
 
 function mapClientStatus(record: ReservationRecord): EntryLogRecord["clientStatus"] {
   if (record.reviewState === "necesita_revision" || record.manualFollowupRequired) {
-    return "bloqueado/revisión";
+    return "revisión manual";
   }
 
-  if (record.source === "email" || record.sheetRegistration) {
+  if (record.clientDirectoryUpsertKind === "existing") {
+    return "cliente existente actualizado";
+  }
+
+  if (
+    record.clientDirectoryUpsertKind === "created" ||
+    record.clientDirectoryUpsertKind === "created_pending_name"
+  ) {
+    return "nuevo cliente añadido";
+  }
+
+  if (
+    record.clientDirectoryUpsertKind === "failed" ||
+    record.clientDirectoryUpsertKind?.startsWith("skipped_")
+  ) {
+    return "alta CLIENTES pendiente";
+  }
+
+  if (record.clientKind === "new") {
+    return "nuevo contacto";
+  }
+
+  if (record.source === "email" || record.clientKind === "habitual") {
     return "cliente habitual";
   }
 

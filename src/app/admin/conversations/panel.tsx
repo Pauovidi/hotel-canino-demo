@@ -63,6 +63,13 @@ function formatEventType(value: string) {
     client_directory_ambiguous: "Match ambiguo de cliente",
     client_directory_blocked: "Cliente bloqueado en directorio",
     client_directory_match: "Cliente habitual detectado",
+    client_directory_created_from_reservation: "CLIENTES creado tras reserva",
+    client_directory_created_pending_name: "CLIENTES creado con nombre pendiente",
+    client_directory_existing_from_reservation: "CLIENTES existente actualizado",
+    client_directory_upsert_failed: "Alta CLIENTES pendiente",
+    client_directory_upsert_skipped_ambiguous: "Alta CLIENTES pendiente por ambigüedad",
+    client_directory_upsert_skipped_blocked: "Alta CLIENTES bloqueada",
+    client_directory_upsert_skipped_invalid_phone: "Alta CLIENTES pendiente por teléfono",
     manual_reply_failed: "Respuesta manual fallida",
     manual_reply_sent: "Respuesta manual enviada",
     marked_read: "Marcada como leída",
@@ -124,6 +131,22 @@ function matchTypeLabel(conversation: ConversationRecord) {
   }
 
   return "ninguno";
+}
+
+function clientDirectoryUpsertLabel(conversation: ConversationRecord) {
+  const labels: Record<string, string> = {
+    created: "CLIENTES creado",
+    created_pending_name: "CLIENTES creado · nombre pendiente",
+    existing: "CLIENTES existente",
+    failed: "alta CLIENTES pendiente",
+    skipped_ambiguous: "alta CLIENTES pendiente · revisión",
+    skipped_blocked: "alta CLIENTES bloqueada",
+    skipped_invalid_phone: "alta CLIENTES pendiente · teléfono",
+  };
+
+  return conversation.clientDirectoryUpsertKind
+    ? labels[conversation.clientDirectoryUpsertKind] ?? conversation.clientDirectoryUpsertKind
+    : undefined;
 }
 
 function reservationStatusLabel(conversation: ConversationRecord) {
@@ -722,6 +745,12 @@ export function ConversationsPanel({
                   <span>Match directorio: {matchTypeLabel(selected)}</span>
                   <span>Confianza: {selected.clientConfidence ?? "none"}</span>
                   <span>Cliente: {selected.clientStatus ?? "unknown"}</span>
+                  {selected.clientDirectoryUpsertKind ? (
+                    <span>
+                      {clientDirectoryUpsertLabel(selected)}
+                      {selected.clientDirectoryUpsertWarning ? ` · ${selected.clientDirectoryUpsertWarning}` : ""}
+                    </span>
+                  ) : null}
                   <span>Estado reserva: {reservationStatusLabel(selected)}</span>
                   <span>Disponibilidad: {availabilityLabel(selected)}</span>
                   {selected.reservationFlow?.email ? <span>Email recogido: {selected.reservationFlow.email}</span> : null}

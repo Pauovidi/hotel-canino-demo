@@ -97,6 +97,76 @@ describe("client upsert from confirmed reservation", () => {
     expect(appended[0][11]).toBe("whatsapp_reservation");
   });
 
+  it("does not block a confirmed new client because of a weak name-only match", async () => {
+    const appended: string[][] = [];
+    const result = await upsertClientFromConfirmedReservation(
+      {
+        ...BASE_INPUT,
+        phoneE164: "+34600008882",
+        phoneNormalized: "34600008882",
+        clientName: "SMP QA Responsable",
+      },
+      {
+        directory: createStaticClientDirectory([
+          {
+            nombre: "SMP QA Responsable",
+            telefonoNormalizado: "34611112222",
+            email: "otra-persona@example.test",
+            rowNumber: 12,
+            sheetName: "CLIENTES_QA",
+          },
+        ]),
+        appendClientRow: async (row) => {
+          appended.push(row);
+          return { sheetName: "CLIENTES_QA", rowNumber: 13 };
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      kind: "created",
+      clientStatus: "known",
+      rowNumber: 13,
+    });
+    expect(appended).toHaveLength(1);
+    expect(appended[0][3]).toBe("SMP QA Responsable");
+    expect(appended[0][7]).toBe("34600008882");
+  });
+
+  it("does not duplicate CLIENTES when email already identifies an existing client", async () => {
+    const appended: string[][] = [];
+    const result = await upsertClientFromConfirmedReservation(
+      {
+        ...BASE_INPUT,
+        phoneE164: "+34600008883",
+        phoneNormalized: "34600008883",
+        email: "cliente-existente@example.test",
+      },
+      {
+        directory: createStaticClientDirectory([
+          {
+            nombre: "Cliente QA Email",
+            telefonoNormalizado: "34622223333",
+            email: "cliente-existente@example.test",
+            rowNumber: 7,
+            sheetName: "CLIENTES_QA",
+          },
+        ]),
+        appendClientRow: async (row) => {
+          appended.push(row);
+          return { sheetName: "CLIENTES_QA", rowNumber: 11 };
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      kind: "existing",
+      clientStatus: "known",
+      rowNumber: 7,
+    });
+    expect(appended).toHaveLength(0);
+  });
+
   it("skips ambiguous and blocked contacts", async () => {
     const ambiguous = await upsertClientFromConfirmedReservation(BASE_INPUT, {
       directory: createStaticClientDirectory([

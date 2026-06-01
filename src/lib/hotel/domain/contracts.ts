@@ -207,6 +207,19 @@ export interface ReservationRecord {
   priceNeedsReview?: boolean;
   conversationId?: string;
   clientKind?: "habitual" | "new" | "unknown";
+  clientDirectoryUpsertKind?:
+    | "created"
+    | "created_pending_name"
+    | "existing"
+    | "skipped_ambiguous"
+    | "skipped_blocked"
+    | "skipped_invalid_phone"
+    | "failed";
+  clientDirectoryUpsertStatus?: "created" | "existing" | "pending" | "skipped" | "failed";
+  clientDirectoryClientName?: string;
+  clientDirectorySheetName?: string;
+  clientDirectorySheetRow?: number;
+  clientDirectoryWarning?: string;
   notes?: string;
   bathRequested?: boolean;
   specialNotes?: string;

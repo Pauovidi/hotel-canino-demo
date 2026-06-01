@@ -246,29 +246,49 @@ function applyClientReservationUpsert(
   record: ConversationRecord,
   result?: ClientUpsertFromConfirmedReservationResult,
 ): ConversationRecord {
-  if (!result || !["created", "created_pending_name", "existing"].includes(result.kind)) {
+  if (!result) {
     return record;
   }
 
+  const isDirectoryMatch = ["created", "created_pending_name", "existing"].includes(result.kind);
+  const upsertStatus =
+    result.kind === "existing"
+      ? "existing"
+      : result.kind === "created" || result.kind === "created_pending_name"
+        ? "created"
+        : result.kind === "failed"
+          ? "failed"
+          : "skipped";
   const warnings = Array.from(
     new Set([
       ...(record.clientWarnings ?? []),
       result.kind === "created_pending_name" ? "client_name_pending_review" : undefined,
+      result.kind === "failed" ? "client_directory_upsert_failed" : undefined,
+      result.kind.startsWith("skipped_") ? result.warning ?? result.kind : undefined,
     ].filter((warning): warning is string => Boolean(warning))),
   );
 
   return {
     ...record,
-    customerName: result.clientName ?? record.customerName,
-    clientStatus: "known",
-    clientConfidence: "strong",
-    clientMatchType: "phone",
-    clientName: result.clientName ?? record.clientName,
+    customerName: isDirectoryMatch ? result.clientName ?? record.customerName : record.customerName,
+    clientStatus: isDirectoryMatch ? "known" : record.clientStatus,
+    clientConfidence: isDirectoryMatch ? "strong" : record.clientConfidence,
+    clientMatchType: isDirectoryMatch ? "phone" : record.clientMatchType,
+    clientName: isDirectoryMatch ? result.clientName ?? record.clientName : record.clientName,
     clientWarnings: warnings,
-    clientSource: result.source,
-    clientSheetName: result.sheetName ?? record.clientSheetName,
-    clientSheetRow: result.rowNumber ?? record.clientSheetRow,
-    tags: Array.from(new Set([...(record.tags ?? []), "cliente_habitual"])),
+    clientSource: isDirectoryMatch ? result.source : record.clientSource,
+    clientSheetName: isDirectoryMatch ? result.sheetName ?? record.clientSheetName : record.clientSheetName,
+    clientSheetRow: isDirectoryMatch ? result.rowNumber ?? record.clientSheetRow : record.clientSheetRow,
+    clientDirectoryUpsertKind: result.kind,
+    clientDirectoryUpsertStatus: upsertStatus,
+    clientDirectoryUpsertWarning: result.warning,
+    tags: Array.from(
+      new Set([
+        ...(record.tags ?? []),
+        isDirectoryMatch ? "cliente_habitual" : undefined,
+        !isDirectoryMatch ? "revision_manual" : undefined,
+      ].filter((tag): tag is string => Boolean(tag))),
+    ),
   };
 }
 

@@ -138,6 +138,16 @@ export interface Conversation {
   clientSource?: "google_sheets_client_directory";
   clientSheetName?: string;
   clientSheetRow?: number;
+  clientDirectoryUpsertKind?:
+    | "created"
+    | "created_pending_name"
+    | "existing"
+    | "skipped_ambiguous"
+    | "skipped_blocked"
+    | "skipped_invalid_phone"
+    | "failed";
+  clientDirectoryUpsertStatus?: "created" | "existing" | "pending" | "skipped" | "failed";
+  clientDirectoryUpsertWarning?: string;
   pendingReservationProposal?: PendingReservationProposal;
   pendingReservationContext?: PendingReservationContext;
   reservationFlow?: ConversationReservationFlow;

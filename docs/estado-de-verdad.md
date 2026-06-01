@@ -495,3 +495,13 @@ Resultado:
 - Panel de conversaciones muestra badges de cliente habitual/nuevo/revisión manual sin exponer NIF.
 - Importación real pendiente de ejecutar desde CSV/TSV local validado; PDF solo sirve como fuente/preflight, no como artefacto versionado.
 - Plan B PDF validado con PyMuPDF: dry-run real detecta 3392 filas válidas y genera CSV local ignorado, pero no se ha escrito en Google Sheets porque falta `HOTEL_GOOGLE_SHEETS_SPREADSHEET_ID` en el entorno de scripts.
+
+## Hotfix CLIENTES / Registro / Conversaciones
+
+- Rama: `codex/smp-client-upsert-entrylog-conversation-hardening-v0`.
+- El alta de `CLIENTES` tras una reserva confirmada por WhatsApp se decide por coincidencia fuerte de teléfono/email; las coincidencias solo por nombre no bloquean crear un nuevo cliente.
+- La reserva sigue confirmada si Sheets ya escribió y después falla el alta de `CLIENTES`; el estado queda visible como `alta CLIENTES pendiente`.
+- `ReservationRecord` conserva el resultado del upsert a `CLIENTES` para que Registro de entrada y Panel no infieran mal el estado.
+- Registro de entrada ya no marca `cliente habitual` solo porque la reserva tenga escritura en la hoja mensual.
+- Las acciones del Registro de entrada están cubiertas por tests de aislamiento contra el store de conversaciones y el store de dominio.
+- Documento operativo: `docs/CLIENTES_UPSERT_ENTRYLOG_HARDENING_V0.md`.

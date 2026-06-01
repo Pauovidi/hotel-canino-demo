@@ -229,7 +229,15 @@ function makeBridgeDeps(options: {
         if (options.recordUpsertFails) {
           throw new Error("mock reservation record upsert failed");
         }
-        counters.reservations.push(structuredClone(reservation));
+        const nextReservation = structuredClone(reservation);
+        const existingIndex = counters.reservations.findIndex(
+          (item) => item.reservationId === nextReservation.reservationId,
+        );
+        if (existingIndex >= 0) {
+          counters.reservations[existingIndex] = nextReservation;
+        } else {
+          counters.reservations.push(nextReservation);
+        }
       },
       async upsertClientFromConfirmedReservation(input: ClientUpsertFromConfirmedReservationInput) {
         counters.clientUpserts.push(structuredClone(input));
@@ -1816,6 +1824,9 @@ describe("WhatsApp reservation bridge", () => {
       petName: "Kira QA",
       checkInDate: "2026-12-29",
       checkOutDate: "2026-12-31",
+      clientDirectoryUpsertKind: "created_pending_name",
+      clientDirectoryUpsertStatus: "created",
+      clientDirectoryWarning: "client_name_pending_review",
     });
     expect(reservation.sheetRegistration?.cells).toEqual(["B7"]);
 
@@ -1826,6 +1837,7 @@ describe("WhatsApp reservation bridge", () => {
       petName: "Kira QA",
       reservationId: reservation.reservationId,
       gestetStatus: "procesado Gestet",
+      clientStatus: "nuevo cliente añadido",
     });
   });
 
@@ -2102,6 +2114,10 @@ describe("WhatsApp reservation bridge", () => {
     expect(counters.writes).toBe(1);
     expect(counters.reservations).toHaveLength(1);
     expect(counters.clientUpserts).toHaveLength(1);
+    expect(counters.reservations[0]).toMatchObject({
+      clientDirectoryUpsertKind: "failed",
+      clientDirectoryUpsertStatus: "failed",
+    });
     expect(result.conversation.pendingReservationProposal?.status).toBe("confirmed");
     expect(result.botReply?.body).toContain("queda anotada");
     expect(result.conversation.events.some((event) => event.eventType === "client_directory_upsert_failed")).toBe(true);

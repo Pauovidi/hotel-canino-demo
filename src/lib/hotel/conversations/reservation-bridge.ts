@@ -381,6 +381,43 @@ function buildFailedClientUpsertResult(error: unknown): ClientUpsertFromConfirme
   };
 }
 
+function clientDirectoryUpsertStatus(
+  result: ClientUpsertFromConfirmedReservationResult,
+): NonNullable<ReservationRecord["clientDirectoryUpsertStatus"]> {
+  if (result.kind === "existing") {
+    return "existing";
+  }
+  if (result.kind === "created" || result.kind === "created_pending_name") {
+    return "created";
+  }
+  if (result.kind === "failed") {
+    return "failed";
+  }
+  return "skipped";
+}
+
+function withClientDirectoryUpsert(
+  reservation: ReservationRecord,
+  result?: ClientUpsertFromConfirmedReservationResult,
+  updatedAt = new Date().toISOString(),
+): ReservationRecord {
+  if (!result) {
+    return reservation;
+  }
+
+  return {
+    ...reservation,
+    ownerName: result.clientName ?? reservation.ownerName,
+    clientDirectoryUpsertKind: result.kind,
+    clientDirectoryUpsertStatus: clientDirectoryUpsertStatus(result),
+    clientDirectoryClientName: result.clientName,
+    clientDirectorySheetName: result.sheetName,
+    clientDirectorySheetRow: result.rowNumber,
+    clientDirectoryWarning: result.warning,
+    updatedAt,
+  };
+}
+
 function proposalHasRequiredData(
   proposal: PendingReservationProposal,
   conversation: ConversationRecord,
@@ -459,7 +496,12 @@ function toReservationRecord(input: {
     wantsVisit: input.proposal.wantsVisit,
     priceSource: input.proposal.priceSource,
     priceNeedsReview: input.proposal.priceNeedsReview,
-    clientKind: input.proposal.ownerEmail ? "new" : undefined,
+    clientKind:
+      input.conversation.clientStatus === "known"
+        ? "habitual"
+        : input.proposal.ownerEmail || input.proposal.ownerName
+          ? "new"
+          : "unknown",
     reviewFlags: [],
     availability: mapLegacyAvailabilityToDomain(input.availability, false),
     pricing: input.proposal.pricing,
@@ -827,6 +869,33 @@ export async function confirmPendingReservationProposal(input: {
       clientDirectoryUpsert = buildFailedClientUpsertResult(error);
     }
   }
+  const reservationWithClientDirectory = withClientDirectoryUpsert(
+    reservation,
+    clientDirectoryUpsert,
+    nowIso,
+  );
+  let clientDirectoryRecordWarning: Record<string, unknown> | undefined;
+  if (!recordWarning && clientDirectoryUpsert) {
+    try {
+      await (input.deps?.upsertReservationRecord ?? upsertReservation)(
+        reservationWithClientDirectory,
+      );
+    } catch (error) {
+      clientDirectoryRecordWarning = {
+        reason: "reservation_record_client_directory_update_failed",
+        errorCode: safeErrorCode(error),
+      };
+      logReservationDiagnostic("warn", "reservation_record_client_directory_update_failed", {
+        hasProposal: true,
+        proposalStatus: proposal.status,
+        availabilityRevalidated: true,
+        sheetWriteAttempted: true,
+        sheetWriteSuccess: true,
+        reservationRecordCreated: true,
+        errorCode: safeErrorCode(error),
+      });
+    }
+  }
 
   const confirmedProposal: PendingReservationProposal = {
     ...proposal,
@@ -837,7 +906,7 @@ export async function confirmPendingReservationProposal(input: {
   return {
     kind: "confirmed",
     proposal: confirmedProposal,
-    reservation,
+    reservation: reservationWithClientDirectory,
     clientDirectoryUpsert,
     handoff: Boolean(recordWarning),
     reply: buildConfirmationReply(confirmedProposal),
@@ -849,7 +918,7 @@ export async function confirmPendingReservationProposal(input: {
       sheetWriteAttempted: true,
       sheetWriteSuccess: true,
       reservationRecordCreated: !recordWarning,
-      postWriteWarning: recordWarning,
+      postWriteWarning: recordWarning ?? clientDirectoryRecordWarning,
       clientDirectoryUpsert: clientDirectoryUpsert
         ? {
             kind: clientDirectoryUpsert.kind,

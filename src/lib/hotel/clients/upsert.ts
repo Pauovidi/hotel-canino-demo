@@ -129,11 +129,14 @@ export async function upsertClientFromConfirmedReservation(
   }
 
   const directory = deps.directory ?? getClientDirectory();
-  const identity = await new ClientDirectoryService(directory).resolveClientIdentity({
-    phone: input.phoneE164,
-    email: input.email,
-    name: input.clientName,
-  });
+  const directoryService = new ClientDirectoryService(directory);
+  const phoneIdentity = await directoryService.findClientByPhone(input.phoneE164);
+  const emailIdentity =
+    phoneIdentity.status === "unknown" && input.email
+      ? await directoryService.findClientByEmail(input.email)
+      : undefined;
+  const identity =
+    phoneIdentity.status !== "unknown" ? phoneIdentity : emailIdentity ?? phoneIdentity;
 
   if (identity.status === "known") {
     return {
