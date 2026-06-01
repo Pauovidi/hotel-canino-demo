@@ -44,7 +44,7 @@ const ENTRY_MARKER_PATTERN =
 const EXIT_MARKER_PATTERN =
   /\b(?:salida|sale(?:n)?|sal(?:dria|imos|go)?|saldria|recojo|recogeria|recogida)\b/;
 const FALSE_PET_PREFIX_PATTERN =
-  /^(?:entrada|salida|entra|entramos|entran|entraria|salimos|sale|salen|saldria|dejo|dejamos|llevaria|recojo|recogeria|llegada|recogida|del|desde|hasta|a las?|por la manana|por la tarde)\b/;
+  /^(?:(?:pues\s+)?(?:el\s+)?\d{1,2}(?:\s+de\s+[a-z]+|[/-]\d{1,2}|\s+a\s+las?)|(?:pues\s+)?(?:entrada|salida|entra|entramos|entran|entraria|salimos|sale|salen|saldria|dejo|dejamos|llevaria|recojo|recogeria|llegada|recogida|del|desde|hasta|a las?|por la manana|por la tarde)\b)/;
 const PET_DETAIL_STOP_PATTERN =
   /\b(?:entrada|salida|entra|entramos|entran|entraria|salimos|sale|salen|saldria|dejo|dejamos|llevaria|recojo|recogeria|llegada|recogida|del|desde|hasta|quiero|a\s+las?|por\s+la\s+manana|por\s+la\s+tarde)\b.*$/iu;
 
@@ -253,6 +253,20 @@ function findTimeInText(value: string): string | undefined {
   return parseTime(compactTime);
 }
 
+function extractLabeledTimeMentions(value: string): string[] {
+  const mentions: string[] = [];
+  const matcher =
+    /\b(?:a\s+las?|a\s+la|sobre\s+las?|sobre|hacia\s+las?|hacia|por\s+la|las?)\s+(manana|tarde|\d{1,2}(?:(?::|\.)\d{2})?h?(?:\s*(?:am|pm|a\s*m|p\s*m))?(?:\s+de\s+la\s+(?:manana|tarde|noche))?)\b/g;
+  let match: RegExpExecArray | null;
+  while ((match = matcher.exec(value)) !== null) {
+    const parsed = parseTime(match[1]);
+    if (parsed) {
+      mentions.push(parsed);
+    }
+  }
+  return mentions;
+}
+
 function defaultTimeForSlot(slot: HotelSlot): string {
   return slot === "morning" ? DEFAULT_MORNING_TIME : DEFAULT_AFTERNOON_TIME;
 }
@@ -293,6 +307,10 @@ function buildTimeOutOfRangeReply(times: string[]): string {
   const unique = Array.from(new Set(times));
   const understood = unique.length === 1 ? unique[0] : unique.join(" y ");
   return `He entendido ${understood}, pero puede quedar fuera del horario habitual. ¿Quieres que lo dejemos en primera hora de la mañana o primera hora de la tarde?`;
+}
+
+function buildMissingMonthReply(): string {
+  return "Entiendo los días, pero necesito el mes para revisar disponibilidad. ¿De qué mes sería?";
 }
 
 function extractLooseTimeMentions(message: string): string[] {
@@ -426,6 +444,100 @@ function parseDateTimeSegment(
   };
 }
 
+function buildDateRange(
+  input: {
+    startDay: number;
+    startMonth: number;
+    startYear?: string;
+    endDay: number;
+    endMonth?: number;
+    endYear?: string;
+  },
+  now: Date,
+): { checkInDate?: string; checkOutDate?: string } {
+  const endMonth = input.endMonth ?? input.startMonth;
+  const startYear = normalizeYear(input.startYear ?? input.endYear, now, input.startMonth, input.startDay);
+  let endYear = input.endYear ? normalizeYear(input.endYear, now, endMonth, input.endDay) : startYear;
+  if (Date.UTC(endYear, endMonth - 1, input.endDay) < Date.UTC(startYear, input.startMonth - 1, input.startDay)) {
+    endYear += 1;
+  }
+
+  return {
+    checkInDate: isoDate(startYear, input.startMonth, input.startDay),
+    checkOutDate: isoDate(endYear, endMonth, input.endDay),
+  };
+}
+
+function applyOrderedDateTimePairs(
+  result: Partial<ConversationReservationFlow>,
+  normalized: string,
+  now: Date,
+): { missingMonth?: boolean } {
+  const numericTime =
+    "(\\d{1,2}(?:(?::|\\.)\\d{2})?h?(?:\\s*(?:am|pm|a\\s*m|p\\s*m))?(?:\\s+de\\s+la\\s+(?:manana|tarde|noche))?|manana|tarde)";
+  const timePrefix = "(?:a\\s+las?|a\\s+la|sobre\\s+las?|sobre|hacia\\s+las?|hacia|las?)\\s+";
+
+  const numericPair = normalized.match(
+    new RegExp(
+      `\\b(\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?)\\s+(?:${timePrefix})?${numericTime}\\s+y\\s+(\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?)\\s+(?:${timePrefix})?${numericTime}\\b`,
+    ),
+  );
+  if (numericPair) {
+    result.checkInDate ??= parseNumericDate(numericPair[1], now);
+    result.checkInTime ??= parseTime(numericPair[2]);
+    result.checkOutDate ??= parseNumericDate(numericPair[3], now);
+    result.checkOutTime ??= parseTime(numericPair[4]);
+    return {};
+  }
+
+  const naturalPair = normalized.match(
+    new RegExp(
+      `\\b(?:pues\\s+)?(?:el\\s+)?(\\d{1,2})(?:\\s+de\\s+([a-z]+))?(?:\\s+de\\s+(\\d{2,4}))?\\s+${timePrefix}${numericTime}\\s+y\\s+(?:el\\s+)?(\\d{1,2})(?:\\s+de\\s+([a-z]+))?(?:\\s+de\\s+(\\d{2,4}))?\\s+${timePrefix}${numericTime}\\b`,
+    ),
+  );
+  if (naturalPair) {
+    const startMonth = MONTHS[naturalPair[2] ?? ""];
+    const endMonth = MONTHS[naturalPair[6] ?? ""];
+    const month = startMonth ?? endMonth;
+    if (!month) {
+      return { missingMonth: true };
+    }
+
+    const range = buildDateRange(
+      {
+        startDay: Number.parseInt(naturalPair[1], 10),
+        startMonth: startMonth ?? month,
+        startYear: naturalPair[3] ?? naturalPair[7],
+        endDay: Number.parseInt(naturalPair[5], 10),
+        endMonth: endMonth ?? month,
+        endYear: naturalPair[7] ?? naturalPair[3],
+      },
+      now,
+    );
+    result.checkInDate ??= range.checkInDate;
+    result.checkInTime ??= parseTime(naturalPair[4]);
+    result.checkOutDate ??= range.checkOutDate;
+    result.checkOutTime ??= parseTime(naturalPair[8]);
+    return {};
+  }
+
+  return {};
+}
+
+function needsMonthForDateTimeInput(message: string): boolean {
+  const normalized = normalizeDateTimeText(message);
+  if (Object.keys(MONTHS).some((month) => normalized.includes(month)) || /\d{1,2}[/-]\d{1,2}/.test(normalized)) {
+    return false;
+  }
+
+  const numericTime =
+    "\\d{1,2}(?:(?::|\\.)\\d{2})?h?(?:\\s*(?:am|pm|a\\s*m|p\\s*m))?(?:\\s+de\\s+la\\s+(?:manana|tarde|noche))?";
+  const timePrefix = "(?:a\\s+las?|a\\s+la|sobre\\s+las?|sobre|hacia\\s+las?|hacia|las?)\\s+";
+  return new RegExp(
+    `\\b(?:pues\\s+)?(?:el\\s+)?\\d{1,2}\\s+${timePrefix}${numericTime}\\s+y\\s+(?:el\\s+)?\\d{1,2}\\s+${timePrefix}${numericTime}\\b`,
+  ).test(normalized);
+}
+
 function applyExplicitEntryExitDateTimes(
   result: Partial<ConversationReservationFlow>,
   normalized: string,
@@ -458,6 +570,7 @@ function parseDatesAndTimes(message: string, now: Date): Partial<ConversationRes
   const normalized = normalizeDateTimeText(message);
   const result: Partial<ConversationReservationFlow> = {};
   applyExplicitEntryExitDateTimes(result, normalized, now);
+  applyOrderedDateTimePairs(result, normalized, now);
   const slashRange = normalized.match(
     /entra\w*\D+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\D+?(?:a\s+las?\s+|por\s+la\s+)?(\d{1,2}(?::\d{2})?|manana|tarde).*?sal\w*\D+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\D+?(?:a\s+las?\s+|por\s+la\s+)?(\d{1,2}(?::\d{2})?|manana|tarde)/,
   );
@@ -501,6 +614,14 @@ function parseDatesAndTimes(message: string, now: Date): Partial<ConversationRes
     }
   }
 
+  if (result.checkInDate && result.checkOutDate && (!result.checkInTime || !result.checkOutTime)) {
+    const labeledTimes = extractLabeledTimeMentions(normalized);
+    if (labeledTimes.length >= 2) {
+      result.checkInTime ??= labeledTimes[0];
+      result.checkOutTime ??= labeledTimes[1];
+    }
+  }
+
   const entryTime =
     normalized.match(/\bentrad[ao]?\s+(?:a\s+las?\s+|por\s+la\s+)(\d{1,2}(?:(?::|\.)\d{2})?h?|manana|tarde)\b/)?.[1] ??
     normalized.match(/\bentra(?:ria|ria)?\s+(?:a\s+las?\s+|por\s+la\s+)(\d{1,2}(?:(?::|\.)\d{2})?h?|manana|tarde)\b/)?.[1];
@@ -525,6 +646,7 @@ function extractOwnerName(message: string): string | undefined {
   const match = withoutEmail.match(/\b(?:me llamo|soy|nombre\s*:?)\s+([\p{L}' -]{3,80})/iu);
   const candidate = compact(match?.[1] ?? withoutEmail)
     .replace(/\b(mi|email|correo|es)\b/gi, "")
+    .replace(/[.,;:]+$/g, "")
     .trim();
   return candidate.split(/\s+/).length >= 2 ? candidate : undefined;
 }
@@ -821,8 +943,14 @@ function nextCollectionReply(flow: ConversationReservationFlow): string {
     return PET_NAMES_PROMPT;
   }
   if (flow.status === "collecting_dates") {
+    if (flow.checkInDate && flow.checkInTime && (!flow.checkOutDate || !flow.checkOutTime)) {
+      return "Tengo la entrada. ¿Qué día y a qué hora sería la salida?";
+    }
+    if (flow.checkOutDate && flow.checkOutTime && (!flow.checkInDate || !flow.checkInTime)) {
+      return "Tengo la salida. ¿Qué día y a qué hora sería la entrada?";
+    }
     if (flow.checkInDate && flow.checkOutDate && (!flow.checkInTime || !flow.checkOutTime)) {
-      return "Necesito concretar las horas para revisar disponibilidad. ¿Prefieres mañana o tarde?";
+      return "Ya tengo las fechas. Me falta la hora de entrada y la hora de salida. ¿Me las indicas?";
     }
     if ((!flow.checkInDate || !flow.checkOutDate) && (flow.checkInTime || flow.checkOutTime)) {
       return "Gracias. ¿Qué fecha de entrada y qué fecha de salida serían?";
@@ -1166,6 +1294,15 @@ export async function advanceReservationFlow(input: {
   }
 
   if (flow.status === "collecting_dates") {
+    if (needsMonthForDateTimeInput(input.message)) {
+      return {
+        conversation: syncConversationFromFlow(input.conversation, flow),
+        reply: buildMissingMonthReply(),
+        eventType: "reservation_flow_waiting_date_month",
+        eventPayload: { status: flow.status },
+      };
+    }
+
     const awaitingTime = resolveAwaitingTimeInput(flow, input.message);
     if (awaitingTime?.reply) {
       const nextFlow = { ...flow, ...awaitingTime.patch, updatedAt: nowIso(now) };
