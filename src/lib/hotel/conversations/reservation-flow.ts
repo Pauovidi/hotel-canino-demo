@@ -32,6 +32,15 @@ const MONTHS: Record<string, number> = {
   diciembre: 12,
 };
 
+const ENTRY_MARKER_PATTERN =
+  /\b(?:entrada|entra(?:ria|mos|n)?|entraria|dejo|dejamos|llevaria|llegada)\b/;
+const EXIT_MARKER_PATTERN =
+  /\b(?:salida|sale(?:n)?|sal(?:dria|imos|go)?|saldria|recojo|recogeria|recogida)\b/;
+const FALSE_PET_PREFIX_PATTERN =
+  /^(?:entrada|salida|entra|entramos|entran|entraria|salimos|sale|salen|saldria|dejo|dejamos|llevaria|recojo|recogeria|llegada|recogida|del|desde|hasta|a las?|por la manana|por la tarde)\b/;
+const PET_DETAIL_STOP_PATTERN =
+  /\b(?:entrada|salida|entra|entramos|entran|entraria|salimos|sale|salen|saldria|dejo|dejamos|llevaria|recojo|recogeria|llegada|recogida|del|desde|hasta|a\s+las?|por\s+la\s+manana|por\s+la\s+tarde)\b.*$/iu;
+
 export interface ReservationFlowOutcome {
   conversation: ConversationRecord;
   reply: string;
@@ -49,6 +58,16 @@ function normalizeText(value: string): string {
     .replace(/\p{Diacritic}/gu, "")
     .toLowerCase()
     .replace(/[¿?¡!,.;()[\]{}"'`´]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeDateTimeText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+    .replace(/[¿?¡!,;()[\]{}"'`´]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -111,8 +130,8 @@ function normalizeYear(rawYear: string | undefined, now: Date, month: number, da
   return candidate >= today ? year : year + 1;
 }
 
-function parseSlashDate(value: string, now: Date): string | undefined {
-  const match = value.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
+function parseNumericDate(value: string, now: Date): string | undefined {
+  const match = value.match(/\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b/);
   if (!match) {
     return undefined;
   }
@@ -142,13 +161,13 @@ function parseTime(raw: string | undefined): string | undefined {
     return "tarde";
   }
 
-  const match = normalized.match(/\b(\d{1,2})(?::(\d{2}))?\b/);
+  const match = normalized.match(/\b(\d{1,2})(?:(?::|\.)\s*(\d{2})|h(?:\s*(\d{2}))?)?\b/);
   if (!match) {
     return undefined;
   }
 
   const hour = Number.parseInt(match[1], 10);
-  const minute = match[2] ? Number.parseInt(match[2], 10) : 0;
+  const minute = match[2] || match[3] ? Number.parseInt(match[2] ?? match[3], 10) : 0;
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
     return undefined;
   }
@@ -173,17 +192,104 @@ function slotFromTime(time: string | undefined): HotelSlot | undefined {
   return hour < 14 ? "morning" : "afternoon";
 }
 
+function findDateInText(
+  value: string,
+  now: Date,
+  fallbackMonth?: number,
+): { date?: string; month?: number; endIndex?: number } {
+  const numeric = value.match(/\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b/);
+  if (numeric?.index !== undefined) {
+    const day = Number.parseInt(numeric[1], 10);
+    const month = Number.parseInt(numeric[2], 10);
+    const year = normalizeYear(numeric[3], now, month, day);
+    return {
+      date: isoDate(year, month, day),
+      month,
+      endIndex: numeric.index + numeric[0].length,
+    };
+  }
+
+  const natural = value.match(/\b(?:el\s+)?(\d{1,2})(?:\s+de\s+([a-z]+))?(?:\s+de\s+(\d{2,4}))?\b/);
+  if (!natural || natural.index === undefined) {
+    return {};
+  }
+
+  const month = MONTHS[natural[2] ?? ""] ?? fallbackMonth;
+  if (!month) {
+    return {};
+  }
+
+  const day = Number.parseInt(natural[1], 10);
+  const year = normalizeYear(natural[3], now, month, day);
+  return {
+    date: isoDate(year, month, day),
+    month,
+    endIndex: natural.index + natural[0].length,
+  };
+}
+
+function findTimeInText(value: string): string | undefined {
+  const labeled = value.match(
+    /\b(?:a\s+las?|a\s+la|sobre\s+las?|hacia\s+las?|por\s+la\s+)(manana|tarde|\d{1,2}(?:(?::|\.)\d{2})?h?)\b/,
+  );
+  const compactTime = labeled?.[1] ?? value.match(/\b(manana|tarde|\d{1,2}(?:(?::|\.)\d{2})?h?)\b/)?.[1];
+  return parseTime(compactTime);
+}
+
+function parseDateTimeSegment(
+  segment: string,
+  now: Date,
+  fallbackMonth?: number,
+): { date?: string; time?: string; month?: number } {
+  const dateMatch = findDateInText(segment, now, fallbackMonth);
+  const timeSource = dateMatch.endIndex !== undefined ? segment.slice(dateMatch.endIndex) : segment;
+  return {
+    date: dateMatch.date,
+    time: findTimeInText(timeSource),
+    month: dateMatch.month,
+  };
+}
+
+function applyExplicitEntryExitDateTimes(
+  result: Partial<ConversationReservationFlow>,
+  normalized: string,
+  now: Date,
+) {
+  const entryMarker = normalized.match(ENTRY_MARKER_PATTERN);
+  const exitMarker = normalized.match(EXIT_MARKER_PATTERN);
+  if (entryMarker?.index === undefined || exitMarker?.index === undefined) {
+    return;
+  }
+
+  const entryBeforeExit = entryMarker.index < exitMarker.index;
+  const firstMarker = entryBeforeExit ? entryMarker : exitMarker;
+  const secondMarker = entryBeforeExit ? exitMarker : entryMarker;
+  const firstSegment = normalized.slice(firstMarker.index, secondMarker.index);
+  const secondSegment = normalized.slice(secondMarker.index);
+  const first = parseDateTimeSegment(firstSegment, now);
+  const second = parseDateTimeSegment(secondSegment, now, first.month);
+
+  const entry = entryBeforeExit ? first : second;
+  const exit = entryBeforeExit ? second : first;
+
+  result.checkInDate ??= entry.date;
+  result.checkInTime ??= entry.time;
+  result.checkOutDate ??= exit.date;
+  result.checkOutTime ??= exit.time;
+}
+
 function parseDatesAndTimes(message: string, now: Date): Partial<ConversationReservationFlow> {
-  const normalized = normalizeText(message);
+  const normalized = normalizeDateTimeText(message);
   const result: Partial<ConversationReservationFlow> = {};
+  applyExplicitEntryExitDateTimes(result, normalized, now);
   const slashRange = normalized.match(
     /entra\w*\D+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\D+?(?:a\s+las?\s+|por\s+la\s+)?(\d{1,2}(?::\d{2})?|manana|tarde).*?sal\w*\D+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\D+?(?:a\s+las?\s+|por\s+la\s+)?(\d{1,2}(?::\d{2})?|manana|tarde)/,
   );
 
-  if (slashRange) {
-    result.checkInDate = parseSlashDate(slashRange[1], now);
+  if (slashRange && !result.checkInDate) {
+    result.checkInDate = parseNumericDate(slashRange[1], now);
     result.checkInTime = parseTime(slashRange[2]);
-    result.checkOutDate = parseSlashDate(slashRange[3], now);
+    result.checkOutDate = parseNumericDate(slashRange[3], now);
     result.checkOutTime = parseTime(slashRange[4]);
   }
 
@@ -220,11 +326,11 @@ function parseDatesAndTimes(message: string, now: Date): Partial<ConversationRes
   }
 
   const entryTime =
-    normalized.match(/\bentrad[ao]?\s+(?:a\s+las?\s+|por\s+la\s+)(\d{1,2}(?::\d{2})?|manana|tarde)\b/)?.[1] ??
-    normalized.match(/\bentra(?:ria|ria)?\s+(?:a\s+las?\s+|por\s+la\s+)(\d{1,2}(?::\d{2})?|manana|tarde)\b/)?.[1];
+    normalized.match(/\bentrad[ao]?\s+(?:a\s+las?\s+|por\s+la\s+)(\d{1,2}(?:(?::|\.)\d{2})?h?|manana|tarde)\b/)?.[1] ??
+    normalized.match(/\bentra(?:ria|ria)?\s+(?:a\s+las?\s+|por\s+la\s+)(\d{1,2}(?:(?::|\.)\d{2})?h?|manana|tarde)\b/)?.[1];
   const exitTime =
-    normalized.match(/\bsalid[ao]?\s+(?:a\s+las?\s+|por\s+la\s+)(\d{1,2}(?::\d{2})?|manana|tarde)\b/)?.[1] ??
-    normalized.match(/\bsaldria\s+(?:a\s+las?\s+|por\s+la\s+)(\d{1,2}(?::\d{2})?|manana|tarde)\b/)?.[1];
+    normalized.match(/\bsalid[ao]?\s+(?:a\s+las?\s+|por\s+la\s+)(\d{1,2}(?:(?::|\.)\d{2})?h?|manana|tarde)\b/)?.[1] ??
+    normalized.match(/\bsaldria\s+(?:a\s+las?\s+|por\s+la\s+)(\d{1,2}(?:(?::|\.)\d{2})?h?|manana|tarde)\b/)?.[1];
 
   result.checkInTime ??= parseTime(entryTime);
   result.checkOutTime ??= parseTime(exitTime);
@@ -251,14 +357,19 @@ function extractPetName(message: string): string | undefined {
   const match =
     message.match(/\b(?:mascota|perro|perra)\s+(?:se llama|es)\s+([\p{L}'-]+(?:\s+[\p{L}'-]+){0,2})\b/iu) ??
     message.match(/\bnombre\s+de\s+(?:mi\s+)?(?:mascota|perro|perra)\s+(?:es|:)\s+([\p{L}'-]+(?:\s+[\p{L}'-]+){0,2})\b/iu) ??
+    message.match(/\bse\s+llama\s+([\p{L}'-]+(?:\s+[\p{L}'-]+){0,2})\b/iu) ??
     message.match(/\b(?:para|reservar para)\s+([\p{L}'-]+(?:\s+[\p{L}'-]+){0,2})\b/iu) ??
     message.match(/^([\p{L}'-]{2,24}(?:\s+[\p{L}'-]{2,24}){0,1})(?:,|\s+y|\s+\d|\s*$)/iu);
   if (!match?.[1]) {
     return undefined;
   }
 
-  const candidate = compact(match[1].replace(/\b(del|desde|y)\b.*$/iu, ""));
-  return candidate ? candidate : undefined;
+  const candidate = compact(match[1].replace(PET_DETAIL_STOP_PATTERN, ""));
+  if (!candidate || FALSE_PET_PREFIX_PATTERN.test(normalizeText(candidate))) {
+    return undefined;
+  }
+
+  return candidate;
 }
 
 function extractPetCount(message: string): number | undefined {
