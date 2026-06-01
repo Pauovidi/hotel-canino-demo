@@ -278,9 +278,85 @@ describe("conversation service", () => {
     const serialized = JSON.stringify(result.conversation);
 
     expect(result.conversation.clientStatus).toBe("known");
+    expect(result.conversation.clientConfidence).toBe("strong");
+    expect(result.conversation.clientMatchType).toBe("phone");
     expect(result.conversation.clientName).toBe("Cliente Habitual");
     expect(result.conversation.events.some((event) => event.eventType === "client_directory_match")).toBe(true);
     expect(serialized.toLowerCase()).not.toContain("nif");
+  });
+
+  it("keeps WhatsApp display-name-only matches out of recurring-client status", async () => {
+    const store = new MemoryConversationStore();
+    const directory = createStaticClientDirectory([
+      {
+        nombre: "Pau Ovidi",
+        telefonoMovil: "+34 600 000 001",
+        rowNumber: 12,
+        sheetName: "CLIENTES",
+      },
+    ]);
+
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34699999999",
+        body: "Buenos días",
+        displayName: "Pau Ovidi",
+      },
+      store,
+      directory,
+    );
+
+    expect(result.conversation.displayName).toBe("Pau Ovidi");
+    expect(result.conversation.clientStatus).toBe("ambiguous");
+    expect(result.conversation.clientConfidence).toBe("medium");
+    expect(result.conversation.clientMatchType).toBe("name");
+    expect(result.conversation.clientName).toBeUndefined();
+    expect(result.conversation.tags).not.toContain("cliente_habitual");
+    expect(result.conversation.events.some((event) => event.eventType === "client_directory_match")).toBe(false);
+    expect(result.conversation.events.some((event) => event.eventType === "client_directory_ambiguous")).toBe(true);
+  });
+
+  it("downgrades stale known client state when the next inbound has no strong directory match", async () => {
+    const store = new MemoryConversationStore();
+    const created = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34699999999",
+        body: "Hola",
+        displayName: "Pau Ovidi",
+      },
+      store,
+      createStaticClientDirectory([]),
+    );
+    await store.replaceConversation({
+      ...created.conversation,
+      clientStatus: "known",
+      clientConfidence: "strong",
+      clientMatchType: "phone",
+      clientName: "Cliente stale",
+      clientSource: "google_sheets_client_directory",
+      clientSheetName: "CLIENTES",
+      clientSheetRow: 99,
+      tags: ["cliente_habitual"],
+    });
+
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34699999999",
+        body: "Buenos días",
+        displayName: "Pau Ovidi",
+      },
+      store,
+      createStaticClientDirectory([]),
+    );
+
+    expect(result.conversation.clientStatus).toBe("unknown");
+    expect(result.conversation.clientConfidence).toBe("none");
+    expect(result.conversation.clientMatchType).toBe("none");
+    expect(result.conversation.clientName).toBeUndefined();
+    expect(result.conversation.clientSource).toBeUndefined();
+    expect(result.conversation.clientSheetName).toBeUndefined();
+    expect(result.conversation.clientSheetRow).toBeUndefined();
+    expect(result.conversation.tags).not.toContain("cliente_habitual");
   });
 
   it("routes blocked directory clients to human review and skips automatic confirmation copy", async () => {

@@ -174,4 +174,58 @@ describe("conversation panel operational UI", () => {
     expect(html).toContain("Sin mensajes visibles todavía.");
     expect(html).not.toContain(">reiniciar<");
   });
+
+  it("does not show recurring-client badges for WhatsApp display names without strong directory match", () => {
+    const conversation = {
+      ...buildConversationSeed("2026-05-06T08:00:00.000Z").conversations[0],
+      displayName: "Pau Ovidi",
+      customerName: undefined,
+      clientName: undefined,
+      clientStatus: "unknown",
+      clientConfidence: "none",
+      clientMatchType: "none",
+      clientSource: undefined,
+      clientSheetName: undefined,
+      clientSheetRow: undefined,
+      tags: [],
+    } satisfies ConversationRecord;
+
+    const html = renderToStaticMarkup(
+      <ConversationsPanel initialDashboard={dashboardWith(conversation)} twilioProviderMode="sandbox" />,
+    );
+
+    expect(html).toContain("Pau Ovidi");
+    expect(html).toContain("Nuevo contacto");
+    expect(html).toContain("Nombre visible: WhatsApp");
+    expect(html).toContain("Match directorio: ninguno");
+    expect(html).not.toContain("Cliente habitual");
+    expect(html).not.toContain("Directorio");
+  });
+
+  it("shows possible coincidence instead of recurring-client badges for name-only matches", () => {
+    const conversation = {
+      ...buildConversationSeed("2026-05-06T08:00:00.000Z").conversations[0],
+      displayName: "Pau Ovidi",
+      customerName: undefined,
+      clientName: undefined,
+      clientStatus: "ambiguous",
+      clientConfidence: "medium",
+      clientMatchType: "name",
+      clientSource: "google_sheets_client_directory",
+      clientSheetName: undefined,
+      clientSheetRow: undefined,
+      tags: ["cliente_ambiguo"],
+    } satisfies ConversationRecord;
+
+    const html = renderToStaticMarkup(
+      <ConversationsPanel initialDashboard={dashboardWith(conversation)} twilioProviderMode="sandbox" />,
+    );
+
+    expect(html).toContain("Pau Ovidi");
+    expect(html).toContain("Posible coincidencia");
+    expect(html).toContain("Match directorio: nombre");
+    expect(html).toContain("Coincidencia por nombre, revisar antes de tratar como cliente habitual.");
+    expect(html).not.toContain("Cliente habitual");
+    expect(html).not.toContain("Directorio");
+  });
 });

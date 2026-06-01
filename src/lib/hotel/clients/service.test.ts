@@ -29,28 +29,52 @@ describe("client directory", () => {
     await expect(service.findClientByPhone("whatsapp:+34682621177")).resolves.toMatchObject({
       status: "known",
       confidence: "strong",
+      matchType: "phone",
       client: { nombre: "Cliente Habitual" },
     });
     await expect(service.findClientByEmail("CLIENTE@example.com")).resolves.toMatchObject({
       status: "known",
       confidence: "strong",
+      matchType: "email",
       client: { nombre: "Cliente Habitual" },
     });
   });
 
-  it("treats name-only matches as medium or weak suggestions", async () => {
+  it("treats name-only matches as manual-review suggestions, never known clients", async () => {
     const service = new ClientDirectoryService(
       createStaticClientDirectory([{ nombre: "Ana Lopez Ruiz" }]),
     );
 
     await expect(service.findClientByNameWeak("Ana López Ruiz")).resolves.toMatchObject({
-      status: "known",
+      status: "ambiguous",
       confidence: "medium",
+      matchType: "name",
     });
     await expect(service.findClientByNameWeak("Ana Lopez")).resolves.toMatchObject({
-      status: "known",
+      status: "ambiguous",
       confidence: "weak",
+      matchType: "name",
     });
+  });
+
+  it("does not promote a Pau Ovidi display name to recurring client without phone or email match", async () => {
+    const service = new ClientDirectoryService(
+      createStaticClientDirectory([
+        { nombre: "Pau Ovidi", telefonoMovil: "+34 600 000 001", rowNumber: 12, sheetName: "CLIENTES" },
+        { nombre: "Paula Ovidi", telefonoMovil: "+34 600 000 002", rowNumber: 13, sheetName: "CLIENTES" },
+      ]),
+    );
+
+    const result = await service.resolveClientIdentity({
+      phone: "whatsapp:+34699999999",
+      name: "Pau Ovidi",
+    });
+
+    expect(result.status).toBe("ambiguous");
+    expect(result.confidence).toBe("medium");
+    expect(result.matchType).toBe("name");
+    expect(result.client).toBeUndefined();
+    expect(result.warnings).toContain("coincidencia por nombre; revisar antes de tratar como cliente habitual");
   });
 
   it("marks duplicate phone matches as ambiguous", async () => {
@@ -64,6 +88,7 @@ describe("client directory", () => {
     await expect(service.findClientByPhone("34682621177")).resolves.toMatchObject({
       status: "ambiguous",
       confidence: "strong",
+      matchType: "phone",
     });
   });
 

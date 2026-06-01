@@ -188,6 +188,7 @@ function sanitizeClientIdentityPayload(identity: ClientIdentityResult): Record<s
   return {
     status: identity.status,
     confidence: identity.confidence,
+    matchType: identity.matchType,
     source: identity.source,
     matchCount: identity.matches?.length ?? (identity.client ? 1 : 0),
     warnings: identity.warnings ?? [],
@@ -252,6 +253,7 @@ function applyClientReservationUpsert(
     customerName: result.clientName ?? record.customerName,
     clientStatus: "known",
     clientConfidence: "strong",
+    clientMatchType: "phone",
     clientName: result.clientName ?? record.clientName,
     clientWarnings: warnings,
     clientSource: result.source,
@@ -323,29 +325,38 @@ function applyClientIdentity(
   record: ConversationRecord,
   identity: ClientIdentityResult,
 ): ConversationRecord {
-  const strongIdentity = identity.confidence === "strong";
+  const strongIdentity =
+    identity.status === "known" &&
+    identity.confidence === "strong" &&
+    (identity.matchType === "phone" || identity.matchType === "email");
   const client = identity.client;
   const warnings = Array.from(new Set(identity.warnings ?? []));
+  const preservedTags = (record.tags ?? []).filter(
+    (tag) => !["cliente_habitual", "revision_manual", "cliente_ambiguo"].includes(tag),
+  );
 
   return {
     ...record,
     customerName: strongIdentity && client?.nombre ? client.nombre : record.customerName,
     clientStatus: identity.status,
     clientConfidence: identity.confidence,
+    clientMatchType: identity.matchType,
     clientName: strongIdentity && client?.nombre ? client.nombre : undefined,
     clientEmail: strongIdentity ? client?.email : undefined,
     clientWarnings: warnings,
-    clientSource: identity.source,
-    clientSheetName: client?.sheetName,
-    clientSheetRow: client?.rowNumber,
+    clientSource: strongIdentity || identity.status === "blocked" || identity.status === "ambiguous"
+      ? identity.source
+      : undefined,
+    clientSheetName: strongIdentity || identity.status === "blocked" ? client?.sheetName : undefined,
+    clientSheetRow: strongIdentity || identity.status === "blocked" ? client?.rowNumber : undefined,
     requiresManualReview:
       record.requiresManualReview ||
       identity.status === "blocked" ||
       identity.status === "ambiguous",
     tags: Array.from(
       new Set([
-        ...(record.tags ?? []),
-        identity.status === "known" ? "cliente_habitual" : undefined,
+        ...preservedTags,
+        strongIdentity ? "cliente_habitual" : undefined,
         identity.status === "blocked" ? "revision_manual" : undefined,
         identity.status === "ambiguous" ? "cliente_ambiguo" : undefined,
       ].filter((tag): tag is string => Boolean(tag))),

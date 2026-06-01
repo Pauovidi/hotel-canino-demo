@@ -138,6 +138,13 @@ function normalizeRecord(value: unknown): ConversationRecord | undefined {
       record.clientConfidence === "none"
         ? record.clientConfidence
         : undefined,
+    clientMatchType:
+      record.clientMatchType === "phone" ||
+      record.clientMatchType === "email" ||
+      record.clientMatchType === "name" ||
+      record.clientMatchType === "none"
+        ? record.clientMatchType
+        : undefined,
     clientName: typeof record.clientName === "string" ? record.clientName : undefined,
     clientEmail: typeof record.clientEmail === "string" ? record.clientEmail : undefined,
     clientWarnings: Array.isArray(record.clientWarnings)

@@ -12,6 +12,7 @@ export type MessageSenderType = "user" | "bot" | "human" | "system";
 export type MessageTransport = "whatsapp";
 export type ConversationClientStatus = "known" | "unknown" | "ambiguous" | "blocked";
 export type ConversationClientConfidence = "strong" | "medium" | "weak" | "none";
+export type ConversationClientMatchType = "phone" | "email" | "name" | "none";
 
 export interface PendingReservationProposal {
   proposalId: string;
@@ -64,6 +65,7 @@ export interface Conversation {
   reservationId?: string;
   clientStatus?: ConversationClientStatus;
   clientConfidence?: ConversationClientConfidence;
+  clientMatchType?: ConversationClientMatchType;
   clientName?: string;
   clientEmail?: string;
   clientWarnings?: string[];

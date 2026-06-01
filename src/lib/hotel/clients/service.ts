@@ -33,6 +33,7 @@ function isBlocked(record: ClientRecord): boolean {
 function withBlockedStatus(
   records: ClientRecord[],
   confidence: ClientIdentityResult["confidence"],
+  matchType: ClientIdentityResult["matchType"],
   readWarnings: string[] = [],
 ): ClientIdentityResult {
   const matches = uniqueRecords(records);
@@ -51,6 +52,7 @@ function withBlockedStatus(
     return {
       status: "blocked",
       confidence,
+      matchType,
       client: matches[0],
       matches,
       warnings: Array.from(new Set(warnings)),
@@ -62,6 +64,7 @@ function withBlockedStatus(
     return {
       status: "ambiguous",
       confidence,
+      matchType,
       matches,
       warnings: Array.from(new Set(["match ambiguo", ...warnings])),
       source: CLIENT_DIRECTORY_SOURCE,
@@ -71,6 +74,7 @@ function withBlockedStatus(
   return {
     status: "known",
     confidence,
+    matchType,
     client: matches[0],
     matches,
     warnings: Array.from(new Set(warnings)),
@@ -101,7 +105,7 @@ export class ClientDirectoryService {
     });
 
     return matches.length > 0
-      ? withBlockedStatus(matches, "strong", read.warnings)
+      ? withBlockedStatus(matches, "strong", "phone", read.warnings)
       : this.unknown(read.warnings);
   }
 
@@ -117,7 +121,7 @@ export class ClientDirectoryService {
     );
 
     return matches.length > 0
-      ? withBlockedStatus(matches, "strong", read.warnings)
+      ? withBlockedStatus(matches, "strong", "email", read.warnings)
       : this.unknown(read.warnings);
   }
 
@@ -132,7 +136,7 @@ export class ClientDirectoryService {
       (record) => normalizeName(record.nombre) === normalized,
     );
     if (exact.length > 0) {
-      return withBlockedStatus(exact, "medium", read.warnings);
+      return this.nameOnlySuggestion(exact, "medium", read.warnings);
     }
 
     const approximate = read.records.filter((record) => {
@@ -144,7 +148,7 @@ export class ClientDirectoryService {
     });
 
     return approximate.length > 0
-      ? withBlockedStatus(approximate, "weak", read.warnings)
+      ? this.nameOnlySuggestion(approximate, "weak", read.warnings)
       : this.unknown(read.warnings);
   }
 
@@ -175,8 +179,30 @@ export class ClientDirectoryService {
     return {
       status: "unknown",
       confidence: "none",
+      matchType: "none",
       warnings,
       source: CLIENT_DIRECTORY_SOURCE,
+    };
+  }
+
+  private nameOnlySuggestion(
+    records: ClientRecord[],
+    confidence: Exclude<ClientIdentityResult["confidence"], "strong" | "none">,
+    readWarnings: string[] = [],
+  ): ClientIdentityResult {
+    const result = withBlockedStatus(records, confidence, "name", readWarnings);
+    if (result.status === "blocked") {
+      return {
+        ...result,
+        warnings: Array.from(new Set(["coincidencia por nombre; revisar manualmente", ...(result.warnings ?? [])])),
+      };
+    }
+
+    return {
+      ...result,
+      status: "ambiguous",
+      client: undefined,
+      warnings: Array.from(new Set(["coincidencia por nombre; revisar antes de tratar como cliente habitual", ...(result.warnings ?? [])])),
     };
   }
 }

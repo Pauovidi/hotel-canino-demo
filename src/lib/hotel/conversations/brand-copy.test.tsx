@@ -151,6 +151,7 @@ describe("conversations panel visible demo copy", () => {
       ...conversations[0],
       clientStatus: "known",
       clientConfidence: "strong",
+      clientMatchType: "phone",
       clientName: "Cliente Habitual",
       clientEmail: "cliente@example.com",
       clientSource: "google_sheets_client_directory",

@@ -19,6 +19,7 @@ export const CLIENTS_SHEET_HEADERS = [
 export type ClientDirectorySource = typeof CLIENT_DIRECTORY_SOURCE;
 export type ClientMatchStatus = "known" | "unknown" | "ambiguous" | "blocked";
 export type ClientMatchConfidence = "strong" | "medium" | "weak" | "none";
+export type ClientMatchType = "phone" | "email" | "name" | "none";
 
 export interface ClientRecord {
   activo?: boolean;
@@ -55,6 +56,7 @@ export interface ClientIdentityInput {
 export interface ClientIdentityResult {
   status: ClientMatchStatus;
   confidence: ClientMatchConfidence;
+  matchType: ClientMatchType;
   client?: ClientRecord;
   matches?: ClientRecord[];
   warnings?: string[];

@@ -90,6 +90,42 @@ function conversationTitle(conversation: ConversationRecord) {
   return conversation.clientName ?? conversation.customerName ?? conversation.displayName ?? conversation.phoneE164;
 }
 
+function isStrongDirectoryMatch(conversation: ConversationRecord) {
+  return (
+    conversation.clientStatus === "known" &&
+    conversation.clientConfidence === "strong" &&
+    (conversation.clientMatchType === "phone" || conversation.clientMatchType === "email")
+  );
+}
+
+function visibleNameSource(conversation: ConversationRecord) {
+  if (conversation.clientName && isStrongDirectoryMatch(conversation)) {
+    return "CLIENTES";
+  }
+
+  if (conversation.displayName) {
+    return "WhatsApp";
+  }
+
+  if (conversation.customerName) {
+    return "Conversación";
+  }
+
+  return "Teléfono";
+}
+
+function matchTypeLabel(conversation: ConversationRecord) {
+  if (isStrongDirectoryMatch(conversation)) {
+    return conversation.clientMatchType === "email" ? "email" : "teléfono";
+  }
+
+  if (conversation.clientMatchType === "name") {
+    return "nombre";
+  }
+
+  return "ninguno";
+}
+
 function conversationSubtitle(conversation: ConversationRecord) {
   const parts = [
     conversation.phoneE164,
@@ -649,8 +685,14 @@ export function ConversationsPanel({
                   {selected.clientEmail ? <span>{selected.clientEmail}</span> : null}
                   {selected.reservationId ? <span>Reserva: {selected.reservationId}</span> : null}
                   {selected.assignedAgent ? <span>{selected.assignedAgent}</span> : null}
-                  {selected.clientSheetName && selected.clientSheetRow ? (
+                  <span>Nombre visible: {visibleNameSource(selected)}</span>
+                  <span>Match directorio: {matchTypeLabel(selected)}</span>
+                  <span>Confianza: {selected.clientConfidence ?? "none"}</span>
+                  {isStrongDirectoryMatch(selected) && selected.clientSheetName && selected.clientSheetRow ? (
                     <span>CLIENTES · fila {selected.clientSheetRow}</span>
+                  ) : null}
+                  {selected.clientMatchType === "name" ? (
+                    <span>Coincidencia por nombre, revisar antes de tratar como cliente habitual.</span>
                   ) : null}
                 </div>
               </details>
@@ -782,19 +824,24 @@ function ClientBadges({
   compact?: boolean;
 }) {
   const status = conversation.clientStatus ?? "unknown";
-  const labels: Record<typeof status, string> = {
-    ambiguous: "Revisión manual",
-    blocked: "Revisión manual",
-    known: "Cliente habitual",
-    unknown: "Nuevo contacto",
-  };
+  const strongDirectoryMatch = isStrongDirectoryMatch(conversation);
+  const label =
+    status === "known" && strongDirectoryMatch
+      ? "Cliente habitual"
+      : status === "ambiguous" && conversation.clientMatchType === "name"
+        ? "Posible coincidencia"
+        : status === "ambiguous" || status === "blocked"
+          ? "Revisión manual"
+          : "Nuevo contacto";
+  const visualStatus =
+    status === "known" && !strongDirectoryMatch ? "unknown" : status;
 
   return (
     <span className={`conversation-client-badges ${compact ? "is-compact" : ""}`}>
-      <span className={`conversation-client-badge conversation-client-${status}`}>
-        {labels[status]}
+      <span className={`conversation-client-badge conversation-client-${visualStatus}`}>
+        {label}
       </span>
-      {conversation.clientSource ? (
+      {strongDirectoryMatch ? (
         <span className="conversation-client-badge conversation-client-source">
           Directorio
         </span>
