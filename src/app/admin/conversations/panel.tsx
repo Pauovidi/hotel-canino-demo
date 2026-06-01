@@ -726,7 +726,19 @@ export function ConversationsPanel({
                   <span>Disponibilidad: {availabilityLabel(selected)}</span>
                   {selected.reservationFlow?.email ? <span>Email recogido: {selected.reservationFlow.email}</span> : null}
                   {selected.reservationFlow?.petName ? <span>Mascota: {selected.reservationFlow.petName}</span> : null}
+                  {selected.reservationFlow?.petNames?.length ? (
+                    <span>Nombres mascota/s: {selected.reservationFlow.petNames.join(", ")}</span>
+                  ) : null}
                   {selected.reservationFlow?.petCount ? <span>Perros: {selected.reservationFlow.petCount}</span> : null}
+                  {selected.reservationFlow?.petCountInference ? (
+                    <span>Perros inferidos por: {selected.reservationFlow.petCountInference}</span>
+                  ) : null}
+                  {selected.reservationFlow?.petCountInconsistency ? (
+                    <span>
+                      Inconsistencia mascotas: {selected.reservationFlow.petCountInconsistency.nameCount} nombres /
+                      {selected.reservationFlow.petCountInconsistency.statedCount} perros
+                    </span>
+                  ) : null}
                   {selected.reservationFlow?.checkInDate ? (
                     <span>
                       Entrada: {selected.reservationFlow.checkInDate}

@@ -653,6 +653,159 @@ describe("WhatsApp reservation bridge", () => {
     expect(counters.writes).toBe(0);
   });
 
+  it("uses softer reservation copy and asks for pet names instead of dog count first", async () => {
+    const store = new MemoryConversationStore();
+    const { deps } = makeBridgeDeps();
+    const directory = createStaticClientDirectory([]);
+    const from = "whatsapp:+34600009991";
+
+    const start = await handleInboundWhatsApp(
+      { from, body: "Quiero reservar para mi mascota", messageSid: "SM_BRIDGE_COPY_START" },
+      store,
+      directory,
+      deps,
+    );
+    const newClient = await handleInboundWhatsApp(
+      { from, body: "no", messageSid: "SM_BRIDGE_COPY_NEW" },
+      store,
+      directory,
+      deps,
+    );
+    const petPrompt = await handleInboundWhatsApp(
+      { from, body: "Ana QA ana.qa@example.test", messageSid: "SM_BRIDGE_COPY_OWNER" },
+      store,
+      directory,
+      deps,
+    );
+
+    expect(start.botReply?.body).toBe("Genial. ¿Ya eres cliente de Somos Muy Perros? Responde sí o no.");
+    expect(newClient.botReply?.body).toContain("De acuerdo, te tomo los datos");
+    expect(petPrompt.botReply?.body).toContain("nombre o los nombres de tu mascota/s");
+    expect(petPrompt.botReply?.body).not.toContain("Dime el nombre de tu mascota y cuántos perros son.");
+    expect([start, newClient, petPrompt].filter((item) => item.botReply?.body.startsWith("Perfecto"))).toHaveLength(0);
+  });
+
+  it.each([
+    ["YUYU", "YUYU", ["YUYU"], 1],
+    ["YUYU y KIRA", "YUYU y KIRA", ["YUYU", "KIRA"], 2],
+    ["YUYU, KIRA y TOBY", "YUYU, KIRA y TOBY", ["YUYU", "KIRA", "TOBY"], 3],
+    ["Mis mascotas se llaman YUYU y KIRA", "YUYU y KIRA", ["YUYU", "KIRA"], 2],
+    ["Tengo dos perros, YUYU y KIRA", "YUYU y KIRA", ["YUYU", "KIRA"], 2],
+    ["YUYU, 1", "YUYU", ["YUYU"], 1],
+    ["El nombre de mi mascota es YUYU", "YUYU", ["YUYU"], 1],
+    ["Mi mascota se llama Toby", "Toby", ["Toby"], 1],
+  ] as const)("infers dog count from pet names: %s", async (message, petName, petNames, petCount) => {
+    const store = new MemoryConversationStore();
+    const { deps } = makeBridgeDeps();
+
+    await collectNewClientOwner({
+      store,
+      deps,
+      prefix: `SM_BRIDGE_PET_NAMES_${message}`,
+    });
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: message,
+        messageSid: `SM_BRIDGE_PET_NAMES_RESULT_${message}`,
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_dates",
+      petName,
+      petNames,
+      petCount,
+    });
+  });
+
+  it("asks for pet names when the user only provides a dog count", async () => {
+    const store = new MemoryConversationStore();
+    const { deps } = makeBridgeDeps();
+
+    await collectNewClientOwner({
+      store,
+      deps,
+      prefix: "SM_BRIDGE_PET_COUNT_ONLY",
+    });
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "2",
+        messageSid: "SM_BRIDGE_PET_COUNT_ONLY_RESULT",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_pet",
+      petCount: 2,
+    });
+    expect(result.botReply?.body).toContain("¿Cómo se llaman las dos mascotas?");
+    expect(result.botReply?.body).not.toContain("¿Quieres hacer una reserva");
+  });
+
+  it("detects inconsistent pet names and dog count", async () => {
+    const store = new MemoryConversationStore();
+    const { deps } = makeBridgeDeps();
+
+    await collectNewClientOwner({
+      store,
+      deps,
+      prefix: "SM_BRIDGE_PET_COUNT_INCONSISTENT",
+    });
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "YUYU y KIRA, son 3",
+        messageSid: "SM_BRIDGE_PET_COUNT_INCONSISTENT_RESULT",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_pet",
+      petName: "YUYU y KIRA",
+      petNames: ["YUYU", "KIRA"],
+      petCountInconsistency: { nameCount: 2, statedCount: 3 },
+    });
+    expect(result.botReply?.body).toContain("Tengo 2 nombres pero indicas 3 perros");
+  });
+
+  it("does not price automatically for more than four pet names", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+
+    await collectNewClientOwner({
+      store,
+      deps,
+      prefix: "SM_BRIDGE_TOO_MANY_PETS",
+    });
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "YUYU, KIRA, TOBY, LUNA y NALA",
+        messageSid: "SM_BRIDGE_TOO_MANY_PETS_RESULT",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(result.conversation.mode).toBe("human");
+    expect(result.conversation.humanRequested).toBe(true);
+    expect(result.conversation.pendingReservationProposal).toBeUndefined();
+    expect(result.botReply?.body).toContain("más de 4 perros");
+    expect(counters.checks).toBe(0);
+  });
+
   it("asks for stay hours when dates arrive without times", async () => {
     const store = new MemoryConversationStore();
     const { counters, deps } = makeBridgeDeps();
@@ -693,7 +846,7 @@ describe("WhatsApp reservation bridge", () => {
       checkInDate: "2026-12-29",
       checkOutDate: "2026-12-31",
     });
-    expect(result.botReply?.body).toContain("hora sería la entrada");
+    expect(result.botReply?.body).toContain("Necesito concretar las horas");
     expect(counters.checks).toBe(0);
   });
 
@@ -869,7 +1022,7 @@ describe("WhatsApp reservation bridge", () => {
     });
     expect(result.conversation.reservationFlow?.petName).toBeUndefined();
     expect(result.conversation.petName).toBeUndefined();
-    expect(result.botReply?.body).toContain("nombre de tu mascota");
+    expect(result.botReply?.body).toContain("nombre o los nombres");
     expect(counters.checks).toBe(0);
   });
 
@@ -1166,7 +1319,7 @@ describe("WhatsApp reservation bridge", () => {
     );
 
     expect(result.conversation.reservationFlow).toMatchObject({
-      status: "collecting_pet",
+      status: "collecting_notes",
       petName,
       checkInDate: "2026-12-30",
       checkInTime,
@@ -1337,6 +1490,64 @@ describe("WhatsApp reservation bridge", () => {
     expect(result.conversation.pendingReservationProposal).toMatchObject({
       status: "proposed",
       petCount: dogs,
+      price: expectedPrice,
+      priceSource: "calculated",
+    });
+    expect(result.botReply?.body).toContain(`${expectedPrice} €`);
+  });
+
+  it.each([
+    ["YUYU", 1, 60],
+    ["YUYU y KIRA", 2, 90],
+    ["YUYU, KIRA y TOBY", 3, 100],
+    ["YUYU, KIRA, TOBY y LUNA", 4, 110],
+  ] as const)("prices inferred pet names for a two-night stay: %s", async (names, petCount, expectedPrice) => {
+    const store = new MemoryConversationStore();
+    const { deps } = makeBridgeDeps();
+    const directory = createStaticClientDirectory([]);
+    const from = "whatsapp:+34600009991";
+
+    await collectNewClientOwner({
+      store,
+      deps,
+      from,
+      directory,
+      prefix: `SM_BRIDGE_INFERRED_PRICE_${petCount}`,
+    });
+    await handleInboundWhatsApp(
+      { from, body: names, messageSid: `SM_BRIDGE_INFERRED_PRICE_${petCount}_PETS` },
+      store,
+      directory,
+      deps,
+    );
+    await handleInboundWhatsApp(
+      { from, body: "Del 29 al 31 de diciembre de 2026", messageSid: `SM_BRIDGE_INFERRED_PRICE_${petCount}_DATES` },
+      store,
+      directory,
+      deps,
+    );
+    await handleInboundWhatsApp(
+      { from, body: "Entrada a las 12:00 y salida a las 12:00", messageSid: `SM_BRIDGE_INFERRED_PRICE_${petCount}_TIMES` },
+      store,
+      directory,
+      deps,
+    );
+    await handleInboundWhatsApp(
+      { from, body: "Sin notas", messageSid: `SM_BRIDGE_INFERRED_PRICE_${petCount}_NOTES` },
+      store,
+      directory,
+      deps,
+    );
+    const result = await handleInboundWhatsApp(
+      { from, body: "No", messageSid: `SM_BRIDGE_INFERRED_PRICE_${petCount}_VISIT` },
+      store,
+      directory,
+      deps,
+    );
+
+    expect(result.conversation.pendingReservationProposal).toMatchObject({
+      status: "proposed",
+      petCount,
       price: expectedPrice,
       priceSource: "calculated",
     });

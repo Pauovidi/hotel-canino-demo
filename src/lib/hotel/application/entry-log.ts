@@ -15,6 +15,7 @@ export interface EntryLogRecord {
   phoneDisplay: string;
   email: string;
   petName: string;
+  petCount: number;
   checkInDate: string;
   checkInTime: string;
   checkOutDate: string;
@@ -144,6 +145,7 @@ export function buildEntryLogRecord(record: ReservationRecord): EntryLogRecord {
     phoneDisplay: maskPhone(normalizePhone(record.phone)),
     email: displayEmail(record.ownerEmail),
     petName: record.petName ?? "Mascota pendiente",
+    petCount: record.petCount,
     checkInDate: record.checkInDate,
     checkInTime: displayTime(record.checkInTime ?? record.originalRequestedCheckInTime),
     checkOutDate: record.checkOutDate,

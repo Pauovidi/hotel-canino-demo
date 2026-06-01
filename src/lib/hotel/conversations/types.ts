@@ -39,7 +39,13 @@ export interface ConversationReservationFlow {
   email?: string;
   ownerName?: string;
   petName?: string;
+  petNames?: string[];
   petCount?: number;
+  petCountInference?: "names" | "explicit" | "names_and_explicit";
+  petCountInconsistency?: {
+    nameCount: number;
+    statedCount: number;
+  };
   checkInDate?: string;
   checkInTime?: string;
   checkInSlot?: "morning" | "afternoon";
@@ -68,6 +74,7 @@ export interface PendingReservationProposal {
   clientStatus: ConversationClientStatus;
   clientName?: string;
   petName: string;
+  petNames?: string[];
   checkIn: string;
   checkOut: string;
   checkInSlot: "morning" | "afternoon";

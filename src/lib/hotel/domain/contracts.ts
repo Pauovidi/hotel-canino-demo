@@ -183,6 +183,7 @@ export interface ReservationRecord {
   ownerName?: string;
   ownerEmail?: string;
   petName?: string;
+  petNames?: string[];
   phone?: string;
   checkInDate: string;
   checkInTime?: string;

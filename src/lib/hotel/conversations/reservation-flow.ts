@@ -21,6 +21,7 @@ const TIME_PREFERENCE_PROMPT =
   "Sin problema. ¿Prefieres mañana o tarde? Si te da igual, puedo poner la primera hora de la mañana o la primera de la tarde.";
 const TIME_CONTEXT_FALLBACK =
   "Para poder calcular disponibilidad y precio necesito la hora de entrada y la hora de salida. Si te da igual, puedo proponerte primera hora de la mañana o primera hora de la tarde.";
+const PET_NAMES_PROMPT = "Genial. Dime el nombre o los nombres de tu mascota/s.";
 
 const MONTHS: Record<string, number> = {
   enero: 1,
@@ -45,7 +46,7 @@ const EXIT_MARKER_PATTERN =
 const FALSE_PET_PREFIX_PATTERN =
   /^(?:entrada|salida|entra|entramos|entran|entraria|salimos|sale|salen|saldria|dejo|dejamos|llevaria|recojo|recogeria|llegada|recogida|del|desde|hasta|a las?|por la manana|por la tarde)\b/;
 const PET_DETAIL_STOP_PATTERN =
-  /\b(?:entrada|salida|entra|entramos|entran|entraria|salimos|sale|salen|saldria|dejo|dejamos|llevaria|recojo|recogeria|llegada|recogida|del|desde|hasta|a\s+las?|por\s+la\s+manana|por\s+la\s+tarde)\b.*$/iu;
+  /\b(?:entrada|salida|entra|entramos|entran|entraria|salimos|sale|salen|saldria|dejo|dejamos|llevaria|recojo|recogeria|llegada|recogida|del|desde|hasta|quiero|a\s+las?|por\s+la\s+manana|por\s+la\s+tarde)\b.*$/iu;
 
 export interface ReservationFlowOutcome {
   conversation: ConversationRecord;
@@ -547,14 +548,150 @@ function extractPetName(message: string): string | undefined {
   return candidate;
 }
 
-function extractPetCount(message: string): number | undefined {
+function countWordToNumber(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const normalized = normalizeText(value);
+  const map: Record<string, number> = {
+    "1": 1,
+    un: 1,
+    uno: 1,
+    una: 1,
+    "2": 2,
+    dos: 2,
+    "3": 3,
+    tres: 3,
+    "4": 4,
+    cuatro: 4,
+    "5": 5,
+    cinco: 5,
+    "6": 6,
+    seis: 6,
+  };
+  return map[normalized];
+}
+
+function extractStatedPetCount(message: string): number | undefined {
   const normalized = normalizeText(message);
-  if (/\b(4|cuatro)\s+perr/.test(normalized)) return 4;
-  if (/\b(3|tres)\s+perr/.test(normalized)) return 3;
-  if (/\b(2|dos)\s+perr/.test(normalized)) return 2;
-  if (/\b(1|un|una)\s+perr/.test(normalized)) return 1;
-  const numeric = normalized.match(/\b(\d)\b/);
-  return numeric ? Math.max(1, Math.min(4, Number.parseInt(numeric[1], 10))) : undefined;
+  const countToken = "(\\d|un|uno|una|dos|tres|cuatro|cinco|seis)";
+  const direct =
+    normalized.match(new RegExp(`\\b(?:tengo|serian|son)\\s+${countToken}\\s+perr`))?.[1] ??
+    normalized.match(new RegExp(`\\b${countToken}\\s+perr`))?.[1] ??
+    normalized.match(new RegExp(`\\bson\\s+${countToken}\\b`))?.[1] ??
+    normalized.match(new RegExp(`^${countToken}$`))?.[1];
+  return countWordToNumber(direct);
+}
+
+function isUnknownPetNames(message: string): boolean {
+  const normalized = normalizeText(message);
+  return /^(no lo se|no lo se aun|no lo se todavia|aun no lo se|todavia no lo se)$/.test(normalized);
+}
+
+function formatPetNames(names: string[]): string {
+  if (names.length <= 1) {
+    return names[0] ?? "";
+  }
+  if (names.length === 2) {
+    return `${names[0]} y ${names[1]}`;
+  }
+  return `${names.slice(0, -1).join(", ")} y ${names[names.length - 1]}`;
+}
+
+function namesQuestion(count: number): string {
+  if (count === 1) {
+    return "Gracias. ¿Cómo se llama la mascota?";
+  }
+  if (count === 2) {
+    return "Gracias. ¿Cómo se llaman las dos mascotas?";
+  }
+  return `Gracias. ¿Cómo se llaman las ${count} mascotas?`;
+}
+
+function cleanPetNamesCandidate(value: string): string {
+  return compact(value)
+    .replace(PET_DETAIL_STOP_PATTERN, "")
+    .replace(/\b(?:son|serian|serían)\s+(?:\d|un|uno|una|dos|tres|cuatro|cinco|seis)\s*$/iu, "")
+    .replace(/,\s*(?:son|serian|serían)\s+(?:\d|un|uno|una|dos|tres|cuatro|cinco|seis)\s*$/iu, "")
+    .replace(/\b(?:\d|un|uno|una|dos|tres|cuatro|cinco|seis)\s+perros?\b/iu, "")
+    .replace(/\b(?:y|e)\s*$/iu, "")
+    .replace(/^[,.\s]+|[,.\s]+$/g, "")
+    .trim();
+}
+
+function splitPetNames(candidate: string): string[] {
+  return candidate
+    .split(/\s*(?:,|\s+y\s+|\s+e\s+)\s*/iu)
+    .map((name) => compact(name))
+    .map((name) => name.replace(/^(?:son|se llaman|se llama)\s+/iu, "").trim())
+    .filter((name) => Boolean(name) && /[\p{L}]/u.test(name))
+    .filter((name) => !/^(?:perro|perros|mascota|mascotas|tengo|mis|mi|se|llama|llaman)$/iu.test(name));
+}
+
+function extractPetNames(message: string): string[] {
+  const normalized = normalizeText(message);
+  if (FALSE_PET_PREFIX_PATTERN.test(normalized)) {
+    return [];
+  }
+
+  const countToken = "(?:\\d|un|uno|una|dos|tres|cuatro|cinco|seis)";
+  const patterns = [
+    new RegExp(`\\btengo\\s+${countToken}\\s+perros?\\s*,\\s*(.+)$`, "iu"),
+    /\bmis\s+mascotas?\s+se\s+llaman?\s+(.+)$/iu,
+    /\bmi\s+mascota\s+se\s+llama\s+(.+)$/iu,
+    /\bnombre\s+de\s+(?:mi\s+)?(?:mascota|perro|perra)\s+(?:es|:)\s+(.+)$/iu,
+    /\bmis\s+perros?\s+son\s+(.+)$/iu,
+    /^son\s+(.+)$/iu,
+  ];
+  const match = patterns.map((pattern) => message.match(pattern)?.[1]).find(Boolean);
+  const hasOnlyCount = Boolean(extractStatedPetCount(message)) && !message.includes(",") && !/\s+y\s+/iu.test(message);
+  const rawCandidate = match ?? (hasOnlyCount ? undefined : message);
+  if (!rawCandidate) {
+    return [];
+  }
+
+  const candidate = cleanPetNamesCandidate(rawCandidate);
+  if (!candidate || FALSE_PET_PREFIX_PATTERN.test(normalizeText(candidate))) {
+    return [];
+  }
+
+  return splitPetNames(candidate);
+}
+
+function extractPetDetails(message: string): Partial<ConversationReservationFlow> {
+  const petNames = extractPetNames(message);
+  const nameCount = petNames.length;
+  const statedCount = extractStatedPetCount(message);
+  const explicitSingularName = extractPetName(message);
+  const names = nameCount > 0 ? petNames : explicitSingularName ? [explicitSingularName] : [];
+
+  if (names.length > 1 && statedCount && statedCount !== names.length) {
+    return {
+      petNames: names,
+      petName: formatPetNames(names),
+      petCountInconsistency: { nameCount: names.length, statedCount },
+    };
+  }
+
+  if (names.length > 0) {
+    return {
+      petNames: names,
+      petName: formatPetNames(names),
+      petCount: statedCount ?? names.length,
+      petCountInference: statedCount ? "names_and_explicit" : "names",
+      petCountInconsistency: undefined,
+    };
+  }
+
+  if (statedCount) {
+    return {
+      petCount: statedCount,
+      petCountInference: "explicit",
+    };
+  }
+
+  return {};
 }
 
 function extractNotes(message: string): Partial<ConversationReservationFlow> {
@@ -666,25 +803,31 @@ function proposalReply(flow: ConversationReservationFlow): string {
 
 function nextCollectionReply(flow: ConversationReservationFlow): string {
   if (flow.status === "asking_client_kind") {
-    return "Perfecto. ¿Ya eres cliente de Somos Muy Perros? Responde sí o no.";
+    return "Genial. ¿Ya eres cliente de Somos Muy Perros? Responde sí o no.";
   }
   if (flow.status === "asking_existing_email") {
     return "Genial. Para localizar tu ficha, dime el email con el que sueles reservar.";
   }
   if (flow.status === "collecting_owner") {
-    return "Perfecto. Te tomo los datos para la reserva. Primero dime tu nombre y apellidos y tu email.";
+    return "De acuerdo, te tomo los datos para la reserva. Primero dime tu nombre y apellidos y tu email.";
   }
   if (flow.status === "collecting_pet") {
-    return "Perfecto. Dime el nombre de tu mascota y cuántos perros son.";
+    if (flow.petCountInconsistency) {
+      return `Tengo ${flow.petCountInconsistency.nameCount} nombres pero indicas ${flow.petCountInconsistency.statedCount} perros. ¿Me confirmas los nombres de las ${flow.petCountInconsistency.statedCount} mascotas?`;
+    }
+    if (flow.petCount && !flow.petName) {
+      return namesQuestion(flow.petCount);
+    }
+    return PET_NAMES_PROMPT;
   }
   if (flow.status === "collecting_dates") {
     if (flow.checkInDate && flow.checkOutDate && (!flow.checkInTime || !flow.checkOutTime)) {
-      return "Perfecto. ¿A qué hora sería la entrada y a qué hora sería la salida?";
+      return "Necesito concretar las horas para revisar disponibilidad. ¿Prefieres mañana o tarde?";
     }
     if ((!flow.checkInDate || !flow.checkOutDate) && (flow.checkInTime || flow.checkOutTime)) {
       return "Gracias. ¿Qué fecha de entrada y qué fecha de salida serían?";
     }
-    return "Gracias. Dime la fecha y hora de entrada, y la fecha y hora de salida.";
+    return "Gracias. Ahora dime la fecha y hora de entrada, y la fecha y hora de salida.";
   }
   if (flow.status === "collecting_notes") {
     return "Anotado. ¿Hay alimentación, medicación o alguna observación importante?";
@@ -692,7 +835,7 @@ function nextCollectionReply(flow: ConversationReservationFlow): string {
   if (flow.status === "collecting_visit") {
     return "¿Quieres visitar el hotel antes de confirmar?";
   }
-  return "Perfecto. Sigo con la reserva.";
+  return "Vale. Sigo con la reserva.";
 }
 
 function syncConversationFromFlow(conversation: ConversationRecord, flow: ConversationReservationFlow): ConversationRecord {
@@ -714,7 +857,7 @@ function updateStage(flow: ConversationReservationFlow): ConversationReservation
   if (flow.clientKind === "new" && !hasMinimumClient(flow)) {
     return { ...flow, status: "collecting_owner" };
   }
-  if (!flow.petName || !flow.petCount) {
+  if (!flow.petName || !flow.petCount || Boolean(flow.petCountInconsistency) || flow.petCount > 4) {
     return { ...flow, status: "collecting_pet" };
   }
   if (!hasStayData(flow)) {
@@ -779,6 +922,7 @@ async function buildAvailableProposal(input: {
     ownerName: nextFlow.ownerName,
     ownerEmail: nextFlow.email,
     petName: nextFlow.petName!,
+    petNames: nextFlow.petNames,
     checkIn: nextFlow.checkInDate!,
     checkOut: nextFlow.checkOutDate!,
     checkInSlot: nextFlow.checkInSlot!,
@@ -865,7 +1009,7 @@ export async function advanceReservationFlow(input: {
     } else {
       return {
         conversation: syncConversationFromFlow(input.conversation, flow),
-        reply: "Perfecto. ¿Ya eres cliente de Somos Muy Perros? Responde sí o no.",
+        reply: "Genial. ¿Ya eres cliente de Somos Muy Perros? Responde sí o no.",
         eventType: "reservation_flow_waiting_client_kind",
       };
     }
@@ -932,7 +1076,7 @@ export async function advanceReservationFlow(input: {
       );
       return {
         conversation,
-        reply: "Perfecto. Dime el nombre de tu mascota, cuántos perros son, la fecha y hora de entrada, y la fecha y hora de salida.",
+        reply: "Genial. Dime el nombre o los nombres de tu mascota/s, y después vemos fechas y horarios.",
         eventType: "reservation_flow_existing_client_email_match",
         eventPayload: { matchType: "email", status: "known" },
       };
@@ -972,11 +1116,53 @@ export async function advanceReservationFlow(input: {
   }
 
   if (flow.status === "collecting_pet") {
-    flow = {
-      ...flow,
-      petName: extractPetName(input.message) ?? flow.petName,
-      petCount: extractPetCount(input.message) ?? flow.petCount,
-    };
+    if (isUnknownPetNames(input.message)) {
+      return {
+        conversation: {
+          ...syncConversationFromFlow(input.conversation, flow),
+          mode: "human",
+          humanRequested: true,
+          requiresManualReview: true,
+        },
+        reply: "Sin problema. Podemos dejarlo pendiente para revisión, pero necesitaremos los nombres antes de confirmar la reserva.",
+        eventType: "reservation_flow_pet_names_pending_review",
+      };
+    }
+
+    const petDetails = extractPetDetails(input.message);
+    flow = { ...flow, ...petDetails };
+
+    if (petDetails.petCountInconsistency) {
+      return {
+        conversation: syncConversationFromFlow(input.conversation, flow),
+        reply: nextCollectionReply(flow),
+        eventType: "reservation_flow_pet_count_inconsistent",
+        eventPayload: petDetails.petCountInconsistency,
+      };
+    }
+
+    if (flow.petCount && flow.petCount > 4) {
+      return {
+        conversation: {
+          ...syncConversationFromFlow(input.conversation, flow),
+          mode: "human",
+          humanRequested: true,
+          requiresManualReview: true,
+        },
+        reply: "Para más de 4 perros necesitamos revisarlo con el equipo antes de darte precio.",
+        eventType: "reservation_flow_pet_count_manual_review",
+        eventPayload: { petCount: flow.petCount },
+      };
+    }
+
+    if (flow.petCount && !flow.petName) {
+      return {
+        conversation: syncConversationFromFlow(input.conversation, flow),
+        reply: nextCollectionReply(flow),
+        eventType: "reservation_flow_waiting_pet_names",
+        eventPayload: { petCount: flow.petCount },
+      };
+    }
   }
 
   if (flow.status === "collecting_dates") {
@@ -1021,8 +1207,7 @@ export async function advanceReservationFlow(input: {
   flow = {
     ...flow,
     email: extractEmail(input.message) ?? flow.email,
-    petName: canUpdatePetName ? extractPetName(input.message) ?? flow.petName : flow.petName,
-    petCount: canReadReservationDetails ? extractPetCount(input.message) ?? flow.petCount : flow.petCount,
+    ...(canUpdatePetName ? defined(extractPetDetails(input.message)) : {}),
     ...(canReadReservationDetails ? defined(parseDatesAndTimes(input.message, now)) : {}),
   };
 
@@ -1037,9 +1222,9 @@ export async function advanceReservationFlow(input: {
     });
     const visitPrefix =
       current.status === "collecting_visit" && flow.wantsVisit === true
-        ? "Perfecto. Las visitas se coordinan de lunes a jueves de 10:00 a 18:00. Lo dejamos anotado para el equipo. "
+        ? "Anotado. Las visitas se coordinan de lunes a jueves de 10:00 a 18:00. Lo dejamos apuntado para el equipo. "
         : current.status === "collecting_visit" && flow.wantsVisit === false
-          ? "Perfecto, seguimos con la reserva. "
+          ? "De acuerdo, seguimos con la reserva. "
           : "";
     return {
       conversation: {
@@ -1055,9 +1240,9 @@ export async function advanceReservationFlow(input: {
   const conversation = syncConversationFromFlow(input.conversation, flow);
   const visitPrefix =
     current.status === "collecting_visit" && flow.wantsVisit === true
-      ? "Perfecto. Las visitas se coordinan de lunes a jueves de 10:00 a 18:00. Lo dejamos anotado para el equipo. "
+      ? "Anotado. Las visitas se coordinan de lunes a jueves de 10:00 a 18:00. Lo dejamos apuntado para el equipo. "
       : current.status === "collecting_visit" && flow.wantsVisit === false
-        ? "Perfecto, seguimos con la reserva. "
+        ? "De acuerdo, seguimos con la reserva. "
         : "";
 
   return {

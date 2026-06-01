@@ -129,7 +129,10 @@ export default async function EntryLogPage({
                   {record.phoneDisplay}
                   <small>{record.email}</small>
                 </span>
-                <strong>{record.petName}</strong>
+                <strong>
+                  {record.petName}
+                  <small>{record.petCount} perro{record.petCount === 1 ? "" : "s"}</small>
+                </strong>
                 <span>{record.source}</span>
                 <span className="demo-state demo-state-manual">{record.action}</span>
                 <span>{record.clientStatus}</span>

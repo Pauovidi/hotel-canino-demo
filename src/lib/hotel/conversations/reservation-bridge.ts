@@ -438,6 +438,7 @@ function toReservationRecord(input: {
     ownerName,
     ownerEmail: input.proposal.ownerEmail ?? input.conversation.clientEmail,
     petName: input.proposal.petName,
+    petNames: input.proposal.petNames,
     phone: input.conversation.phoneE164,
     checkInDate: input.proposal.checkIn,
     checkInTime: input.proposal.checkInTime,
@@ -608,7 +609,7 @@ export async function confirmPendingReservationProposal(input: {
     return {
       kind: "missing_proposal",
       reply:
-        "Perfecto. Para avanzar necesito saber si quieres hacer una reserva, consultar disponibilidad o resolver alguna duda.",
+        "Para avanzar necesito saber si quieres hacer una reserva, consultar disponibilidad o resolver alguna duda.",
       eventPayload: {
         reason: "missing_pending_proposal",
       },
@@ -619,7 +620,7 @@ export async function confirmPendingReservationProposal(input: {
     return {
       kind: "missing_proposal",
       reply:
-        "Perfecto. Para avanzar necesito saber si quieres hacer una reserva, consultar disponibilidad o resolver alguna duda.",
+        "Para avanzar necesito saber si quieres hacer una reserva, consultar disponibilidad o resolver alguna duda.",
       proposal: {
         ...proposal,
         status: "failed",
