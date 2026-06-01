@@ -294,7 +294,7 @@ async function runDirectSmoke() {
       from: "whatsapp:+34600009994",
       body: "si",
       expectMode: "bot",
-      expectReply: "necesito primero comprobar",
+      expectReply: "Para avanzar necesito saber",
     },
     {
       label: "stay-status",

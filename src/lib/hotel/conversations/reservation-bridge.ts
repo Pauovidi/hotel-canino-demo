@@ -240,6 +240,39 @@ function extractPetName(message: string, fallback?: string): string | undefined 
     .trim();
 }
 
+function greetingPrefix(message: string): string | undefined {
+  const normalized = normalize(message);
+  if (/\bbuenos dias\b/.test(normalized) || /\bbuen dia\b/.test(normalized)) {
+    return "Buenos días.";
+  }
+  if (/\bbuenas tardes\b/.test(normalized)) {
+    return "Buenas tardes.";
+  }
+  if (/\bbuenas noches\b/.test(normalized)) {
+    return "Buenas noches.";
+  }
+  if (/\bbuenas\b/.test(normalized)) {
+    return "Buenas.";
+  }
+  if (/\bhola+\b/.test(normalized) || /\bhey\b/.test(normalized)) {
+    return "¡Hola!";
+  }
+  return undefined;
+}
+
+function withGreeting(message: string, reply: string): string {
+  const prefix = greetingPrefix(message);
+  return prefix ? `${prefix} ${reply}` : reply;
+}
+
+function buildMissingReservationDetailsReply(message: string, intent: ConversationNluResult["intent"]): string {
+  const reply =
+    intent === "availability_request"
+      ? "Para consultar disponibilidad, dime la fecha de entrada, la fecha de salida y el nombre de tu mascota."
+      : "Te ayudo con la reserva. Dime, por favor, la fecha de entrada, la fecha de salida y el nombre de tu mascota.";
+  return withGreeting(message, reply);
+}
+
 function extractPetCount(message: string): number {
   const normalized = normalize(message);
   if (/\b(2|dos)\s+perr/.test(normalized)) {
@@ -444,8 +477,7 @@ export async function createPendingReservationProposal(input: {
   if (!details) {
     return {
       kind: "missing_data",
-      reply:
-        "Para comprobar disponibilidad necesito la fecha de entrada, la fecha de salida y el nombre de tu mascota.",
+      reply: buildMissingReservationDetailsReply(input.message, input.nlu.intent),
       eventPayload: {
         reason: "missing_pet_or_dates",
       },
@@ -553,7 +585,7 @@ export async function confirmPendingReservationProposal(input: {
     return {
       kind: "missing_proposal",
       reply:
-        "Para confirmarla necesito primero comprobar fechas y disponibilidad. ¿Qué fechas necesitas?",
+        "Perfecto. Para avanzar necesito saber si quieres hacer una reserva, consultar disponibilidad o resolver alguna duda.",
       eventPayload: {
         reason: "missing_pending_proposal",
       },
@@ -564,7 +596,7 @@ export async function confirmPendingReservationProposal(input: {
     return {
       kind: "missing_proposal",
       reply:
-        "Para confirmarla necesito primero comprobar fechas y disponibilidad. ¿Qué fechas necesitas?",
+        "Perfecto. Para avanzar necesito saber si quieres hacer una reserva, consultar disponibilidad o resolver alguna duda.",
       proposal: {
         ...proposal,
         status: "failed",

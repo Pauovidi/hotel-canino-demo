@@ -372,10 +372,21 @@ describe("conversation service", () => {
     expect(reset.conversation.messages).toHaveLength(beforeReset?.messages.length ?? 0);
     expect(reset.conversation.lastMessagePreview).not.toContain("reiniciar");
     expect(reset.botReply).toBeUndefined();
-    expect(reset.twiml).toContain("empezamos de nuevo");
+    expect(reset.twiml).toContain("Reiniciado.");
     expect(reset.conversation.unreadCount).toBe(0);
     expect(reset.conversation.events.some((event) => event.eventType === "conversation_reset_requested")).toBe(true);
     expect(reset.conversation.events.some((event) => event.eventType === "auto_reply_skipped_human_mode")).toBe(false);
+  });
+
+  it("answers a fresh greeting naturally after a hidden reset", async () => {
+    const store = new MemoryConversationStore();
+
+    await handleInboundWhatsApp({ from: "+34612345678", body: "reiniciar" }, store);
+    const greeting = await handleInboundWhatsApp({ from: "+34612345678", body: "Buenos días" }, store);
+
+    expect(greeting.botReply?.body).toBe("Buenos días. ¿En qué podemos ayudarte?");
+    expect(greeting.botReply?.body).not.toContain("horarios");
+    expect(greeting.botReply?.body).not.toContain("visitas");
   });
 
   it("does not let blocked clients reset out of human review", async () => {

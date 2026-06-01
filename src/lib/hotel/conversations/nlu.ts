@@ -45,9 +45,7 @@ export interface ConversationReplyPlan extends ConversationNluResult {
 }
 
 const GENERAL_INFORMATION_REPLY =
-  "¡Hola! Claro, puedo ayudarte con información sobre horarios, visitas, reservas, vacunas, comida, qué traer o funcionamiento del hotel. ¿Sobre qué necesitas información?";
-
-const GREETING_REPLY = "¡Hola! ¿En qué podemos ayudarte?";
+  "Claro. Te puedo ayudar con horarios, visitas, reservas, vacunas, alimentación, qué traer y funcionamiento del hotel. ¿Sobre qué necesitas información?";
 
 const HUMAN_HANDOFF_REPLY =
   "Perfecto, te paso con una persona del equipo. En cuanto puedan te responderán por aquí.";
@@ -56,10 +54,13 @@ const STAY_STATUS_REPLY =
   "Para darte una respuesta real sobre cómo está tu perro, lo revisa una persona del equipo y te contestamos por aquí.";
 
 const UNKNOWN_REPLY =
-  "No estoy seguro de haberlo entendido del todo. ¿Quieres información general, consultar disponibilidad o hablar con una persona del equipo?";
+  "Perdona, no te he entendido bien. ¿Quieres hacer una reserva, consultar disponibilidad o resolver alguna duda del hotel?";
 
 const RESERVATION_START_REPLY =
-  "Claro, te ayudo con la reserva. Dime, por favor, la fecha de entrada, la fecha de salida y el nombre de tu mascota.";
+  "Te ayudo con la reserva. Dime, por favor, la fecha de entrada, la fecha de salida y el nombre de tu mascota.";
+
+const AVAILABILITY_REQUEST_REPLY =
+  "Para consultar disponibilidad, dime la fecha de entrada, la fecha de salida y el nombre de tu mascota.";
 
 const RESERVATION_CONFIRM_REPLY =
   "Para confirmar una reserva necesitamos una propuesta válida revisada por el equipo. Si ya tienes una solicitud en marcha, te paso con una persona para confirmarla con seguridad.";
@@ -70,8 +71,7 @@ const RESERVATION_CANCEL_REPLY =
 const RESERVATION_MODIFY_REPLY =
   "Para cambiar fechas o datos de una reserva, envíame el identificador de reserva o el nombre del perro y las nuevas fechas. Lo revisa una persona del equipo antes de confirmar nada.";
 
-const CONVERSATION_RESET_REPLY =
-  "Perfecto, empezamos de nuevo. ¿Quieres información general, consultar disponibilidad o hablar con una persona del equipo?";
+const CONVERSATION_RESET_REPLY = "Reiniciado.";
 
 function normalizeText(value: string): string {
   return value
@@ -89,6 +89,40 @@ function hasAny(text: string, signals: string[]): boolean {
 
 function matchAny(text: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
+}
+
+function greetingPrefix(message: string): string | undefined {
+  const normalized = normalizeText(message);
+  if (/\bbuenos dias\b/.test(normalized) || /\bbuen dia\b/.test(normalized)) {
+    return "Buenos días.";
+  }
+  if (/\bbuenas tardes\b/.test(normalized)) {
+    return "Buenas tardes.";
+  }
+  if (/\bbuenas noches\b/.test(normalized)) {
+    return "Buenas noches.";
+  }
+  if (/\bbuenas\b/.test(normalized)) {
+    return "Buenas.";
+  }
+  if (/\bhola+\b/.test(normalized) || /\bhey\b/.test(normalized)) {
+    return "¡Hola!";
+  }
+  return undefined;
+}
+
+function withGreeting(message: string, reply: string): string {
+  const prefix = greetingPrefix(message);
+  return prefix ? `${prefix} ${reply}` : reply;
+}
+
+function isGreetingLike(normalized: string): boolean {
+  return matchAny(normalized, [
+    /^(en primer lugar|primero|antes de nada|perdona|gracias)?\s*(hola+\s+)?(buenas|buen dia|buenos dias|buenas tardes|buenas noches)\s*$/,
+    /^(hola+|hey|buenas)$/,
+    /^hola+\s+buenas$/,
+    /^(buenos dias|buen dia|buenas tardes|buenas noches)\s+(antes de nada|en primer lugar|primero)$/,
+  ]);
 }
 
 export function isAffirmativeConfirmationUtterance(message: string): boolean {
@@ -183,7 +217,7 @@ export function classifyConversationIntent(message: string): ConversationNluResu
 
   if (
     matchAny(normalized, [
-      /^(reiniciar|reset|empezar de nuevo|volver a empezar|borrar conversacion|empezar otra vez|olvida lo anterior)$/,
+      /^(reiniciar|reset|resetea|reinicia conversacion|empezar de nuevo|volver a empezar|borrar conversacion|empezar otra vez|olvida lo anterior)$/,
     ])
   ) {
     matchedSignals.push("conversation_reset");
@@ -254,14 +288,21 @@ export function classifyConversationIntent(message: string): ConversationNluResu
     hasAny(normalized, [
       "quiero reservar",
       "quiero hacer una reserva",
+      "quiero hacer reserva",
       "hacer una reserva",
+      "hacer reserva",
       "quiero una reserva",
       "necesito reservar",
+      "quisiera reservar",
+      "puedo reservar",
       "me gustaria reservar",
       "me gustaría reservar",
       "reservar",
+      "quiero reservar para mi perro",
       "reserva para",
       "plaza para",
+      "quiero dejar a mi perro",
+      "quiero dejar a mi mascota",
       "dejar a mi perro",
       "dejar a mi mascota",
     ])
@@ -282,6 +323,10 @@ export function classifyConversationIntent(message: string): ConversationNluResu
   if (
     hasAny(normalized, [
       "disponibilidad",
+      "consultar disponibilidad",
+      "quiero consultar disponibilidad",
+      "mirar disponibilidad",
+      "quiero mirar disponibilidad",
       "hay sitio",
       "hay hueco",
       "hay plaza",
@@ -344,19 +389,29 @@ export function classifyConversationIntent(message: string): ConversationNluResu
     return result("faq_what_to_bring");
   }
 
-  if (
-    matchAny(normalized, [
-      /^(hola+\s+)?(buenas|buen dia|buenos dias|buenas tardes|buenas noches)$/,
-      /^(hey|hola+)$/,
-      /^hola+\s+buenas$/,
-    ])
-  ) {
+  if (isGreetingLike(normalized)) {
     matchedSignals.push("greeting");
     return result("greeting");
   }
 
   if (
-    hasAny(normalized, ["informacion", "información", "info", "dudas", "como funciona"]) ||
+    hasAny(normalized, [
+      "informacion",
+      "información",
+      "info",
+      "duda",
+      "dudas",
+      "consulta",
+      "consultar",
+      "como funciona",
+      "necesito informacion",
+      "necesito información",
+      "me puedes informar",
+      "queria preguntar",
+      "quería preguntar",
+      "preguntar una cosa",
+      "tengo una duda",
+    ]) ||
     matchAny(normalized, [/^hola\s+(quiero|necesito|me gustaria)?\s*(informacion|info)$/])
   ) {
     matchedSignals.push("general_information");
@@ -376,16 +431,37 @@ export function buildConversationReplyPlan(message: string): ConversationReplyPl
 
   switch (nlu.intent) {
     case "greeting":
-      return { ...nlu, reply: GREETING_REPLY, handoff: false, source: "conversation_nlu" };
+      return {
+        ...nlu,
+        reply: `${greetingPrefix(message) ?? "¡Hola!"} ¿En qué podemos ayudarte?`,
+        handoff: false,
+        source: "conversation_nlu",
+      };
     case "general_information":
-      return { ...nlu, reply: GENERAL_INFORMATION_REPLY, handoff: false, source: "conversation_nlu" };
+      return {
+        ...nlu,
+        reply: withGreeting(message, GENERAL_INFORMATION_REPLY),
+        handoff: false,
+        source: "conversation_nlu",
+      };
     case "human_handoff":
       return { ...nlu, reply: HUMAN_HANDOFF_REPLY, handoff: true, source: "conversation_nlu" };
     case "stay_status_question":
       return { ...nlu, reply: STAY_STATUS_REPLY, handoff: true, source: "conversation_nlu" };
     case "reservation_start":
+      return {
+        ...nlu,
+        reply: withGreeting(message, RESERVATION_START_REPLY),
+        handoff: false,
+        source: "conversation_nlu",
+      };
     case "availability_request":
-      return { ...nlu, reply: RESERVATION_START_REPLY, handoff: false, source: "conversation_nlu" };
+      return {
+        ...nlu,
+        reply: withGreeting(message, AVAILABILITY_REQUEST_REPLY),
+        handoff: false,
+        source: "conversation_nlu",
+      };
     case "reservation_confirm":
       return { ...nlu, reply: RESERVATION_CONFIRM_REPLY, handoff: true, source: "conversation_nlu" };
     case "reservation_cancel":

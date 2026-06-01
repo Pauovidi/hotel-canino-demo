@@ -139,7 +139,11 @@ describe("conversation end-to-end policy QA", () => {
   it.each([
     ["Hola", "greeting", false],
     ["hola buenos días", "greeting", false],
+    ["En primer lugar, buenos días", "greeting", false],
     ["Hola, quiero información", "general_information", false],
+    ["Buenas, quería hacer una consulta", "general_information", false],
+    ["Hola, quiero hacer una reserva", "reservation_start", false],
+    ["Buenos días, quiero consultar disponibilidad", "availability_request", false],
     ["Me gustaría saber cómo funciona", "general_information", false],
     ["¿Qué tengo que llevar?", "faq_what_to_bring", false],
     ["¿Puedo visitar el hotel?", "faq_visits", false],
@@ -172,6 +176,13 @@ describe("conversation end-to-end policy QA", () => {
       expect(plan.reply).not.toContain("horarios");
       expect(plan.reply.toLowerCase()).not.toContain("caso");
     }
+  });
+
+  it("keeps reset as a hidden context reset with a compact reply", () => {
+    const plan = buildConversationReplyPlan("reinicia conversación");
+
+    expect(plan.intent).toBe("conversation_reset");
+    expect(plan.reply).toBe("Reiniciado.");
   });
 
   it("creates a reviewed proposal without attaching a confirmed reservationId from reservation copy", async () => {

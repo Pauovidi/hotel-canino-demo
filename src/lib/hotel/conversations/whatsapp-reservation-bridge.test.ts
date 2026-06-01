@@ -508,7 +508,9 @@ describe("WhatsApp reservation bridge", () => {
     );
 
     expect(result.conversation.mode).toBe("bot");
-    expect(result.botReply?.body).toContain("necesito primero comprobar");
+    expect(result.botReply?.body).toContain(
+      "Para avanzar necesito saber si quieres hacer una reserva, consultar disponibilidad o resolver alguna duda.",
+    );
     expect(counters.checks).toBe(0);
     expect(counters.writes).toBe(0);
     expect(counters.reservations).toHaveLength(0);
@@ -529,7 +531,9 @@ describe("WhatsApp reservation bridge", () => {
       deps,
     );
 
-    expect(result.botReply?.body).toContain("necesito primero comprobar");
+    expect(result.botReply?.body).toContain(
+      "Para avanzar necesito saber si quieres hacer una reserva, consultar disponibilidad o resolver alguna duda.",
+    );
     expect(counters.checks).toBe(0);
     expect(counters.writes).toBe(0);
     expect(counters.reservations).toHaveLength(0);
