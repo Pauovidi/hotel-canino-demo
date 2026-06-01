@@ -20,11 +20,33 @@ export interface EntryLogOperationalState {
 }
 
 function getStateFile(): string {
-  return resolveJsonStorePath({
+  const requestedPath = resolveJsonStorePath({
     fileName: "hotel-entry-log-state.json",
     pathEnv: "HOTEL_ENTRY_LOG_STATE_PATH",
     dirEnv: "HOTEL_ENTRY_LOG_STATE_DIR",
   });
+  const reservedStorePaths = [
+    resolveJsonStorePath({
+      fileName: "hotel-conversations.json",
+      pathEnv: "HOTEL_CONVERSATIONS_STORE_PATH",
+      dirEnv: "HOTEL_CONVERSATIONS_STORE_DIR",
+    }),
+    resolveJsonStorePath({
+      fileName: "hotel-canino-domain.json",
+      pathEnv: "HOTEL_DOMAIN_STORE_PATH",
+      dirEnv: "HOTEL_DEMO_STORE_DIR",
+    }),
+  ];
+  const normalizedRequestedPath = path.resolve(requestedPath);
+  const collidesWithReservedStore = reservedStorePaths.some(
+    (storePath) => path.resolve(storePath) === normalizedRequestedPath,
+  );
+
+  if (collidesWithReservedStore) {
+    return path.join(path.dirname(requestedPath), "hotel-entry-log-state.json");
+  }
+
+  return requestedPath;
 }
 
 async function ensureStateDirectory(): Promise<void> {

@@ -87,7 +87,7 @@ export default async function EntryLogPage({
           </div>
           <form action="/api/ops/entry-log/clean-managed" method="post">
             <button className="entry-log-secondary-action" type="submit">
-              Limpiar gestionados
+              Limpiar gestionados del registro
             </button>
           </form>
         </div>
@@ -143,7 +143,7 @@ export default async function EntryLogPage({
                         action={`/api/ops/entry-log/${encodeURIComponent(record.reservationId)}/remove`}
                         method="post"
                       >
-                        <button type="submit">Quitar</button>
+                        <button type="submit">Quitar del registro</button>
                       </form>
                     </>
                   ) : (
