@@ -1,23 +1,48 @@
 import { loadDemoState } from "./demo-store";
+import { loadEntryLogState, type EntryLogManagedReason, type EntryLogOperationalStatus } from "./entry-log-state";
 import type { ReservationRecord } from "../domain/contracts";
 
 export interface EntryLogRecord {
   reservationId: string;
+  displayRef: string;
+  reservationSummary: string;
   createdAt: string;
   source: "chatbot" | "formulario" | "recepción email" | "manual/revisión";
   action: "confirmada" | "modificada" | "rechazada" | "cancelada" | "revisión manual";
   clientName: string;
   clientStatus: "cliente habitual" | "nuevo contacto" | "ambiguo" | "bloqueado/revisión";
   phoneNormalized: string;
+  phoneDisplay: string;
   petName: string;
   checkInDate: string;
   checkOutDate: string;
   notes: string;
   gestetStatus: "pendiente Gestet" | "procesado Gestet";
+  operationalStatus: EntryLogOperationalStatus;
+  managedAt?: string;
+  managedReason?: EntryLogManagedReason;
+  hiddenAt?: string;
 }
 
 function normalizePhone(value?: string): string {
   return value?.replace(/[^\d+]/g, "") || "Pendiente";
+}
+
+function maskPhone(value: string): string {
+  const digits = value.replace(/[^\d]/g, "");
+  if (!digits) {
+    return "Pendiente";
+  }
+
+  return `***${digits.slice(-4)}`;
+}
+
+function displayReservationRef(value: string): string {
+  return value.length <= 8 ? value : `...${value.slice(-8)}`;
+}
+
+function reservationSummary(record: ReservationRecord): string {
+  return `${record.petName ?? "Mascota"} · ${record.checkInDate} → ${record.checkOutDate}`;
 }
 
 function mapSource(record: ReservationRecord): EntryLogRecord["source"] {
@@ -78,21 +103,27 @@ export function buildEntryLogRecord(record: ReservationRecord): EntryLogRecord {
 
   return {
     reservationId: record.reservationId,
+    displayRef: displayReservationRef(record.reservationId),
+    reservationSummary: reservationSummary(record),
     createdAt: record.createdAt,
     source: mapSource(record),
     action: mapAction(record),
     clientName: record.ownerName ?? "Cliente pendiente",
     clientStatus: mapClientStatus(record),
     phoneNormalized: normalizePhone(record.phone),
+    phoneDisplay: maskPhone(normalizePhone(record.phone)),
     petName: record.petName ?? "Mascota pendiente",
     checkInDate: record.checkInDate,
     checkOutDate: record.checkOutDate,
     notes: notes.join(" · ") || "Sin notas",
     gestetStatus: record.sheetRegistration ? "procesado Gestet" : "pendiente Gestet",
+    operationalStatus: "pending",
   };
 }
 
-export async function listEntryLogRecords(): Promise<EntryLogRecord[]> {
+export async function listEntryLogRecords(
+  options: { status?: "pending" | "managed" | "all" } = {},
+): Promise<EntryLogRecord[]> {
   let state: Awaited<ReturnType<typeof loadDemoState>>;
 
   try {
@@ -101,12 +132,36 @@ export async function listEntryLogRecords(): Promise<EntryLogRecord[]> {
     return [];
   }
 
+  const operationalState = await loadEntryLogState();
+  const status = options.status ?? "pending";
+
   return state.reservations
     .filter((record) =>
       ["confirmada", "cancelada", "sin_disponibilidad"].includes(record.status) ||
       record.reviewState === "necesita_revision" ||
       record.manualFollowupRequired,
     )
-    .map(buildEntryLogRecord)
+    .map((reservation) => {
+      const record = buildEntryLogRecord(reservation);
+      const operational = operationalState.records[record.reservationId];
+      return {
+        ...record,
+        operationalStatus: operational?.status ?? "pending",
+        managedAt: operational?.managedAt,
+        managedReason: operational?.managedReason,
+        hiddenAt: operational?.hiddenAt,
+      };
+    })
+    .filter((record) => {
+      if (status === "all") {
+        return true;
+      }
+
+      if (status === "managed") {
+        return record.operationalStatus === "managed";
+      }
+
+      return record.operationalStatus === "pending";
+    })
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }

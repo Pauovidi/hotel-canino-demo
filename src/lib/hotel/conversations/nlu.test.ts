@@ -18,6 +18,8 @@ describe("conversation NLU", () => {
     ["¿Qué vacunas necesita?", "faq_vaccines"],
     ["¿Mandáis fotos o vídeos?", "faq_photos_videos"],
     ["¿Tenéis sitio del 14 al 18 de abril?", "availability_request"],
+    ["quiero hacer una reserva", "reservation_start"],
+    ["Buenos días quiero hacer una reserva", "reservation_start"],
     ["Quiero reservar para Luna del 10 al 15 de agosto", "availability_request"],
     ["Mi mascota se llama Toby y busco del 29 al 31 de diciembre de este año", "availability_request"],
     ["si", "reservation_confirm"],
@@ -87,6 +89,26 @@ describe("conversation NLU", () => {
     expect(plan.reply).toContain("visitas");
     expect(plan.reply).not.toContain("Ese caso prefiero");
     expect(plan.reply).not.toContain("por aqui");
+  });
+
+  it("answers pure greetings with a short natural reply", () => {
+    const plan = buildConversationReplyPlan("Buenos días");
+
+    expect(plan.intent).toBe("greeting");
+    expect(plan.handoff).toBe(false);
+    expect(plan.reply).toContain("¿En qué podemos ayudarte?");
+    expect(plan.reply).not.toContain("horarios");
+    expect(plan.reply).not.toContain("visitas");
+  });
+
+  it("extracts pet name from explicit name phrasing without keeping connector words", () => {
+    const result = classifyConversationIntent(
+      "El nombre de mi mascota es YUYU, y quiero del 30 al 31 de Diciembre",
+    );
+
+    expect(result.intent).toBe("availability_request");
+    expect(result.slots.petName).toBe("YUYU");
+    expect(result.slots.petName).not.toBe("es YUYU");
   });
 
   it("does not invent live stay status", () => {

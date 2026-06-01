@@ -245,16 +245,21 @@ describe("conversations panel visible demo copy", () => {
 
     expect(page).toContain("verifyPanelPageAccess");
     expect(page).toContain("Registro de entrada");
-    expect(page).toContain("Aún no hay reservas confirmadas registradas por el chatbot.");
-    expect(page).toContain("Creación");
+    expect(page).toContain("No hay entradas en esta vista.");
+    expect(page).toContain("Pendientes");
+    expect(page).toContain("Gestionados");
+    expect(page).toContain("Limpiar gestionados");
     expect(page).toContain("Origen");
     expect(page).toContain("Acción");
     expect(page).toContain("Cliente");
+    expect(page).toContain("Contacto");
     expect(page).toContain("Estado cliente");
-    expect(page).toContain("Identificador");
+    expect(page).not.toContain("Identificador");
     expect(page).toContain("Mascota");
     expect(page).toContain("Entrada");
     expect(page).toContain("Salida");
+    expect(page).toContain("Reserva");
+    expect(page).toContain("Acciones");
     expect(page).toContain("Gestet");
     expect(entryLog).toContain("pendiente Gestet");
     expect(page.toLowerCase()).not.toContain("nif");

@@ -327,6 +327,60 @@ describe("WhatsApp reservation bridge", () => {
     expect(counters.writes).toBe(0);
   });
 
+  it("extracts explicit pet names and infers missing future years", async () => {
+    const store = new MemoryConversationStore();
+    const { deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-01-10T10:00:00.000Z"),
+    };
+
+    const proposed = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "El nombre de mi mascota es YUYU, y quiero del 30 al 31 de Diciembre",
+        messageSid: "SM_BRIDGE_YUYU_1",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(proposed.conversation.pendingReservationProposal).toMatchObject({
+      status: "proposed",
+      petName: "YUYU",
+      checkIn: "2026-12-30",
+      checkOut: "2026-12-31",
+    });
+  });
+
+  it("moves date ranges without year to next year when the date already passed", async () => {
+    const store = new MemoryConversationStore();
+    const { deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-12-31T10:00:00.000Z"),
+    };
+
+    const proposed = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "Quiero reservar para Toby del 29 al 31 de diciembre",
+        messageSid: "SM_BRIDGE_NEXT_YEAR_1",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(proposed.conversation.pendingReservationProposal).toMatchObject({
+      status: "proposed",
+      petName: "Toby",
+      checkIn: "2027-12-29",
+      checkOut: "2027-12-31",
+    });
+  });
+
   it("writes a confirmed proposal, projects it into entry log and upserts CLIENTES", async () => {
     const store = new MemoryConversationStore();
     const { counters, deps } = makeBridgeDeps();

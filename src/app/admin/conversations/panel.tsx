@@ -101,6 +101,24 @@ function conversationSubtitle(conversation: ConversationRecord) {
   return parts.join(" · ");
 }
 
+function isOperationalCommandBody(value: string) {
+  return /^(reiniciar|reset|empezar de nuevo|volver a empezar|borrar conversacion|empezar otra vez|olvida lo anterior)$/i.test(
+    value.trim(),
+  );
+}
+
+function shouldShowTimelineEvent(eventType: string) {
+  return ![
+    "nlu_classified",
+    "conversation_reset_requested",
+    "reservation_context_detected",
+    "reservation_proposal_checked",
+    "reservation_confirmation_checked",
+    "bot_reply_sent",
+    "client_directory_match",
+  ].includes(eventType);
+}
+
 export function ConversationsPanel({
   initialDashboard,
   twilioProviderMode,
@@ -368,7 +386,8 @@ export function ConversationsPanel({
         undefined,
         "DELETE",
       );
-      await refresh("archived", undefined, { force: true });
+      setMode("all");
+      await refresh("all", undefined, { force: true });
     });
   }
 
@@ -445,9 +464,17 @@ export function ConversationsPanel({
                 disabled={isPending && mode === filter.value}
               >
                 {filter.label}
+                {filter.value === "archived" && dashboard.stats.archived > 0 ? (
+                  <span>{dashboard.stats.archived}</span>
+                ) : null}
               </button>
             ))}
           </div>
+          {mode === "archived" ? (
+            <div className="conversation-archive-note">
+              Viendo histórico archivado. Puedes restaurar una conversación para devolverla al inbox.
+            </div>
+          ) : null}
 
           <div className="conversation-list">
             {isPending ? (
@@ -586,7 +613,11 @@ export function ConversationsPanel({
               ) : null}
               <div className="conversation-timeline" ref={timelineRef}>
                 {[...selected.messages, ...selected.events]
-                  .filter((item) => !("eventType" in item) || item.eventType !== "nlu_classified")
+                  .filter((item) =>
+                    "eventType" in item
+                      ? shouldShowTimelineEvent(item.eventType)
+                      : !isOperationalCommandBody(item.body),
+                  )
                   .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
                   .map((item) =>
                     "body" in item ? (

@@ -349,6 +349,7 @@ describe("conversation service", () => {
         createdFromMessageId: "msg_test",
       },
     });
+    const beforeReset = await store.getById(created.conversation.id);
 
     const reset = await handleInboundWhatsApp(
       { from: "+34612345678", body: "reiniciar" },
@@ -359,8 +360,11 @@ describe("conversation service", () => {
     expect(reset.conversation.humanRequested).toBe(false);
     expect(reset.conversation.assignedAgent).toBeUndefined();
     expect(reset.conversation.pendingReservationProposal).toBeUndefined();
-    expect(reset.conversation.messages.length).toBeGreaterThan(0);
-    expect(reset.botReply?.body).toContain("empezamos de nuevo");
+    expect(reset.conversation.messages).toHaveLength(beforeReset?.messages.length ?? 0);
+    expect(reset.conversation.lastMessagePreview).not.toContain("reiniciar");
+    expect(reset.botReply).toBeUndefined();
+    expect(reset.twiml).toContain("empezamos de nuevo");
+    expect(reset.conversation.unreadCount).toBe(0);
     expect(reset.conversation.events.some((event) => event.eventType === "conversation_reset_requested")).toBe(true);
     expect(reset.conversation.events.some((event) => event.eventType === "auto_reply_skipped_human_mode")).toBe(false);
   });
@@ -383,7 +387,9 @@ describe("conversation service", () => {
 
     expect(result.conversation.clientStatus).toBe("blocked");
     expect(result.conversation.mode).toBe("human");
-    expect(result.botReply?.body).toContain("revisamos tu solicitud");
+    expect(result.botReply).toBeUndefined();
+    expect(result.twiml).toContain("revisamos tu solicitud");
+    expect(result.conversation.messages).toHaveLength(0);
     expect(result.conversation.events.some((event) => event.eventType === "conversation_reset_requested")).toBe(false);
   });
 
@@ -614,6 +620,7 @@ describe("conversation service", () => {
     expect(archived.events.some((event) => event.eventType === "conversation_archived")).toBe(true);
     expect(await store.list()).toHaveLength(0);
     expect(await store.list({ mode: "archived" })).toHaveLength(1);
+    expect(await store.list({ mode: "archived", query: "información" })).toHaveLength(1);
 
     const restored = await unarchiveConversation(inbound.conversation.id, "admin", store);
 

@@ -131,12 +131,34 @@ function isoDate(year: number, month: number, day: number): string | undefined {
   ].join("-");
 }
 
-function resolveYear(rawYear: string | undefined, now: Date): number {
-  if (!rawYear || rawYear === "este ano") {
+function resolveYear(
+  rawYear: string | undefined,
+  now: Date,
+  month: number,
+  day: number,
+): number {
+  const normalized = rawYear?.trim();
+  if (normalized === "este ano") {
     return now.getUTCFullYear();
   }
 
-  return Number.parseInt(rawYear, 10);
+  if (
+    normalized === "ano que viene" ||
+    normalized === "el ano que viene" ||
+    normalized === "siguiente ano" ||
+    normalized === "proximo ano"
+  ) {
+    return now.getUTCFullYear() + 1;
+  }
+
+  if (normalized) {
+    return Number.parseInt(normalized, 10);
+  }
+
+  const currentYear = now.getUTCFullYear();
+  const today = Date.UTC(currentYear, now.getUTCMonth(), now.getUTCDate());
+  const candidate = Date.UTC(currentYear, month - 1, day);
+  return candidate >= today ? currentYear : currentYear + 1;
 }
 
 function parseDateRange(
@@ -145,22 +167,29 @@ function parseDateRange(
 ): { checkIn: string; checkOut: string } | undefined {
   const text = normalize(message);
   const sameMonth = text.match(
-    /\b(?:del|desde)\s+(\d{1,2})\s+(?:al|hasta)\s+(\d{1,2})\s+de\s+([a-z]+)(?:\s+de\s+(\d{4}|este\s+ano))?\b/,
+    /\b(?:del|desde)\s+(\d{1,2})\s+(?:al|hasta)\s+(\d{1,2})\s+de\s+([a-z]+)(?:\s+de\s+(\d{4}|este\s+ano|el\s+ano\s+que\s+viene|ano\s+que\s+viene|siguiente\s+ano|proximo\s+ano))?\b/,
   );
 
   if (sameMonth) {
     const startDay = Number.parseInt(sameMonth[1], 10);
     const endDay = Number.parseInt(sameMonth[2], 10);
     const month = MONTHS[sameMonth[3]];
-    const year = resolveYear(sameMonth[4], now);
-    const checkIn = month ? isoDate(year, month, startDay) : undefined;
-    const checkOut = month ? isoDate(year, month, endDay) : undefined;
+    if (!month) {
+      return undefined;
+    }
+    const year = resolveYear(sameMonth[4], now, month, startDay);
+    const checkIn = isoDate(year, month, startDay);
+    const sameYearCheckOut = isoDate(year, month, endDay);
+    const checkOut =
+      checkIn && sameYearCheckOut && sameYearCheckOut <= checkIn
+        ? isoDate(year + 1, month, endDay)
+        : sameYearCheckOut;
 
     return checkIn && checkOut && checkOut > checkIn ? { checkIn, checkOut } : undefined;
   }
 
   const explicitMonths = text.match(
-    /\b(?:del|desde)\s+(\d{1,2})\s+de\s+([a-z]+)\s+(?:al|hasta)\s+(\d{1,2})\s+de\s+([a-z]+)(?:\s+de\s+(\d{4}|este\s+ano))?\b/,
+    /\b(?:del|desde)\s+(\d{1,2})\s+de\s+([a-z]+)\s+(?:al|hasta)\s+(\d{1,2})\s+de\s+([a-z]+)(?:\s+de\s+(\d{4}|este\s+ano|el\s+ano\s+que\s+viene|ano\s+que\s+viene|siguiente\s+ano|proximo\s+ano))?\b/,
   );
 
   if (explicitMonths) {
@@ -168,9 +197,16 @@ function parseDateRange(
     const startMonth = MONTHS[explicitMonths[2]];
     const endDay = Number.parseInt(explicitMonths[3], 10);
     const endMonth = MONTHS[explicitMonths[4]];
-    const year = resolveYear(explicitMonths[5], now);
-    const checkIn = startMonth ? isoDate(year, startMonth, startDay) : undefined;
-    const checkOut = endMonth ? isoDate(year, endMonth, endDay) : undefined;
+    if (!startMonth || !endMonth) {
+      return undefined;
+    }
+    const year = resolveYear(explicitMonths[5], now, startMonth, startDay);
+    const checkIn = isoDate(year, startMonth, startDay);
+    const candidateCheckOut = isoDate(year, endMonth, endDay);
+    const checkOut =
+      checkIn && candidateCheckOut && candidateCheckOut <= checkIn
+        ? isoDate(year + 1, endMonth, endDay)
+        : candidateCheckOut;
 
     return checkIn && checkOut && checkOut > checkIn ? { checkIn, checkOut } : undefined;
   }
@@ -180,6 +216,10 @@ function parseDateRange(
 
 function extractPetName(message: string, fallback?: string): string | undefined {
   const match =
+    message.match(
+      /\b(?:el\s+)?nombre\s+de\s+(?:mi\s+)?(?:mascota|perro|perra)\s+es\s+([\p{L}'-]+(?:\s+[\p{L}'-]+){0,1})\b/iu,
+    ) ??
+    message.match(/\b(?:mi\s+)?(?:mascota|perro|perra)\s+es\s+([\p{L}'-]+(?:\s+[\p{L}'-]+){0,1})\b/iu) ??
     message.match(
       /\b(?:mi\s+)?(?:mascota|perro|perra)\s+se\s+llama\s+([\p{L}'-]+(?:\s+[\p{L}'-]+){0,1})\b/iu,
     ) ??
@@ -405,7 +445,7 @@ export async function createPendingReservationProposal(input: {
     return {
       kind: "missing_data",
       reply:
-        "Para comprobar disponibilidad necesito fechas completas con año y el nombre del perro. Por ejemplo: “Quiero reservar para Kira del 29 al 31 de diciembre de 2026”.",
+        "Para comprobar disponibilidad necesito la fecha de entrada, la fecha de salida y el nombre de tu mascota.",
       eventPayload: {
         reason: "missing_pet_or_dates",
       },

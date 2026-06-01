@@ -47,6 +47,8 @@ export interface ConversationReplyPlan extends ConversationNluResult {
 const GENERAL_INFORMATION_REPLY =
   "¡Hola! Claro, puedo ayudarte con información sobre horarios, visitas, reservas, vacunas, comida, qué traer o funcionamiento del hotel. ¿Sobre qué necesitas información?";
 
+const GREETING_REPLY = "¡Hola! ¿En qué podemos ayudarte?";
+
 const HUMAN_HANDOFF_REPLY =
   "Perfecto, te paso con una persona del equipo. En cuanto puedan te responderán por aquí.";
 
@@ -57,7 +59,7 @@ const UNKNOWN_REPLY =
   "No estoy seguro de haberlo entendido del todo. ¿Quieres información general, consultar disponibilidad o hablar con una persona del equipo?";
 
 const RESERVATION_START_REPLY =
-  "Puedo orientarte, pero para reservar necesitamos revisar disponibilidad y precio con los datos completos. Indícame fechas de entrada y salida, nombre del perro y un teléfono de contacto, o usa el formulario web del hotel.";
+  "Claro, te ayudo con la reserva. Dime, por favor, la fecha de entrada, la fecha de salida y el nombre de tu mascota.";
 
 const RESERVATION_CONFIRM_REPLY =
   "Para confirmar una reserva necesitamos una propuesta válida revisada por el equipo. Si ya tienes una solicitud en marcha, te paso con una persona para confirmarla con seguridad.";
@@ -140,11 +142,17 @@ function extractSlots(rawText: string, normalized: string): ConversationSlots {
   const phone = rawText.match(/(?:\+34\s*)?(?:\d[\s.-]?){9,}/)?.[0]?.trim();
   const reservationId = rawText.match(/\b(?:res|reserva)[-_ ]?[a-z0-9-]{4,}\b/i)?.[0];
   const petMatch =
+    rawText.match(
+      /\b(?:el\s+)?nombre\s+de\s+(?:mi\s+)?(?:mascota|perro|perra)\s+es\s+([A-ZÁÉÍÓÚÑ][\p{L}'-]{1,24})/u,
+    ) ??
+    rawText.match(/\b(?:mi\s+)?(?:mascota|perro|perra)\s+es\s+([A-ZÁÉÍÓÚÑ][\p{L}'-]{1,24})/u) ??
     rawText.match(/\b(?:mi\s+)?(?:mascota|perro|perra)\s+se\s+llama\s+([A-ZÁÉÍÓÚÑ][\p{L}'-]{1,24})/u) ??
     rawText.match(/\bse\s+llama\s+([A-ZÁÉÍÓÚÑ][\p{L}'-]{1,24})/u) ??
     rawText.match(/\b(?:para|perro|perra|mascota)\s+([A-ZÁÉÍÓÚÑ][\p{L}'-]{1,24})/u) ??
     rawText.match(/\b([A-ZÁÉÍÓÚÑ][\p{L}'-]{1,24})\s+(?:del|desde)\b/u);
-  const dateRange = normalized.match(/\b(?:del|desde)\s+([0-9]{1,2}(?:\s+de\s+\w+)?)\s+(?:al|hasta)\s+([0-9]{1,2}(?:\s+de\s+\w+)?(?:\s+de\s+(?:\d{4}|este\s+ano))?)\b/);
+  const dateRange = normalized.match(
+    /\b(?:del|desde)\s+([0-9]{1,2}(?:\s+de\s+\w+)?)\s+(?:al|hasta)\s+([0-9]{1,2}(?:\s+de\s+\w+)?(?:\s+de\s+(?:\d{4}|este\s+ano|el\s+ano\s+que\s+viene|ano\s+que\s+viene))?)\b/,
+  );
 
   return {
     email,
@@ -242,7 +250,22 @@ export function classifyConversationIntent(message: string): ConversationNluResu
     return result("reservation_confirm", "medium");
   }
 
-  if (hasAny(normalized, ["quiero reservar", "reservar", "reserva para", "plaza para"])) {
+  if (
+    hasAny(normalized, [
+      "quiero reservar",
+      "quiero hacer una reserva",
+      "hacer una reserva",
+      "quiero una reserva",
+      "necesito reservar",
+      "me gustaria reservar",
+      "me gustaría reservar",
+      "reservar",
+      "reserva para",
+      "plaza para",
+      "dejar a mi perro",
+      "dejar a mi mascota",
+    ])
+  ) {
     matchedSignals.push("reservation_start");
     return result(slots.checkIn || slots.checkOut ? "availability_request" : "reservation_start");
   }
@@ -323,8 +346,9 @@ export function classifyConversationIntent(message: string): ConversationNluResu
 
   if (
     matchAny(normalized, [
-      /^(hola\s+)?(buenas|buenos dias|buenas tardes|buenas noches)$/,
-      /^hola$/,
+      /^(hola+\s+)?(buenas|buen dia|buenos dias|buenas tardes|buenas noches)$/,
+      /^(hey|hola+)$/,
+      /^hola+\s+buenas$/,
     ])
   ) {
     matchedSignals.push("greeting");
@@ -352,6 +376,7 @@ export function buildConversationReplyPlan(message: string): ConversationReplyPl
 
   switch (nlu.intent) {
     case "greeting":
+      return { ...nlu, reply: GREETING_REPLY, handoff: false, source: "conversation_nlu" };
     case "general_information":
       return { ...nlu, reply: GENERAL_INFORMATION_REPLY, handoff: false, source: "conversation_nlu" };
     case "human_handoff":

@@ -128,6 +128,9 @@ describe("conversation panel operational UI", () => {
     expect(html).toContain("Archivadas");
     expect(html).toContain("Archivar");
     expect(source).toContain("conversation_archived");
+    expect(source).toContain("conversation_reset_requested");
+    expect(source).toContain("isOperationalCommandBody");
+    expect(source).toContain("setMode(\"all\")");
     expect(source).toContain("timeline.scrollHeight <= timeline.clientHeight");
     expect(source).toContain("left.createdAt.localeCompare(right.createdAt)");
   });

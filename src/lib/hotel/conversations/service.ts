@@ -566,17 +566,6 @@ export async function handleInboundWhatsApp(
     }
   }
 
-  const inbound = await store.addMessage(
-    createMessage({
-      conversationId: conversation.id,
-      direction: "inbound",
-      senderType: "user",
-      externalMessageSid: payload.messageSid,
-      body: safeBody,
-      rawPayload: sanitizeConversationPayload(payload.rawPayload),
-    }),
-  );
-
   const fresh = (await store.getById(conversation.id)) ?? conversation;
   const clientIdentity = await resolveAndPersistClientIdentity(
     store,
@@ -585,12 +574,86 @@ export async function handleInboundWhatsApp(
     clientDirectory,
   );
   const freshWithClient = clientIdentity.conversation;
+  const commandPlan = buildConversationReplyPlan(safeBody);
+
+  if (commandPlan.intent === "conversation_reset") {
+    const virtualInbound = createMessage({
+      conversationId: freshWithClient.id,
+      direction: "inbound",
+      senderType: "user",
+      externalMessageSid: payload.messageSid,
+      body: safeBody,
+      rawPayload: sanitizeConversationPayload(payload.rawPayload),
+    });
+    const latest = (await store.getById(freshWithClient.id)) ?? freshWithClient;
+
+    if (clientIdentity.identity.status === "blocked") {
+      const replyBody =
+        "Gracias, revisamos tu solicitud con el equipo y te contestamos por aquí.";
+      const humanRecord: ConversationRecord = {
+        ...latest,
+        mode: "human",
+        humanRequested: true,
+        priority: "urgent",
+        requiresManualReview: true,
+        unreadCount: 0,
+        updatedAt: nowIso(),
+      };
+      await store.replaceConversation(humanRecord);
+      return {
+        conversation: (await store.getById(freshWithClient.id)) ?? humanRecord,
+        inbound: virtualInbound,
+        twiml: buildTwilioMessageResponse(replyBody),
+      };
+    }
+
+    const resetRecord: ConversationRecord = {
+      ...latest,
+      mode: "bot",
+      humanRequested: false,
+      assignedAgent: undefined,
+      pendingReservationProposal: undefined,
+      pendingReservationContext: undefined,
+      unreadCount: 0,
+      requiresManualReview:
+        latest.clientStatus === "blocked" || latest.clientStatus === "ambiguous",
+      updatedAt: nowIso(),
+    };
+    await store.replaceConversation(resetRecord);
+    await store.addEvent(
+      createEvent(freshWithClient.id, "conversation_reset_requested", {
+        matchedFrom: "nlu",
+        hiddenCommand: true,
+        clearedPendingProposal: Boolean(latest.pendingReservationProposal),
+        clearedPendingContext: Boolean(latest.pendingReservationContext),
+      }),
+    );
+
+    return {
+      conversation: (await store.getById(freshWithClient.id)) ?? resetRecord,
+      inbound: virtualInbound,
+      twiml: buildTwilioMessageResponse(commandPlan.reply),
+    };
+  }
+
+  const inbound = await store.addMessage(
+    createMessage({
+      conversationId: freshWithClient.id,
+      direction: "inbound",
+      senderType: "user",
+      externalMessageSid: payload.messageSid,
+      body: safeBody,
+      rawPayload: sanitizeConversationPayload(payload.rawPayload),
+    }),
+  );
+
+  const freshAfterInbound = (await store.getById(freshWithClient.id)) ?? freshWithClient;
 
   if (clientIdentity.identity.status === "blocked") {
     const replyBody =
       "Gracias, revisamos tu solicitud con el equipo y te contestamos por aquí.";
     const humanRecord: ConversationRecord = {
-      ...freshWithClient,
+      ...freshAfterInbound,
       mode: "human",
       humanRequested: true,
       priority: "urgent",
@@ -600,7 +663,7 @@ export async function handleInboundWhatsApp(
     await store.replaceConversation(humanRecord);
     const botReply = await store.addMessage(
       createMessage({
-        conversationId: freshWithClient.id,
+        conversationId: freshAfterInbound.id,
         direction: "outbound",
         senderType: "bot",
         body: replyBody,
@@ -608,49 +671,10 @@ export async function handleInboundWhatsApp(
     );
 
     return {
-      conversation: (await store.getById(freshWithClient.id)) ?? humanRecord,
+      conversation: (await store.getById(freshAfterInbound.id)) ?? humanRecord,
       inbound,
       botReply,
       twiml: buildTwilioMessageResponse(replyBody),
-    };
-  }
-
-  const resetPlan = buildConversationReplyPlan(safeBody);
-  if (resetPlan.intent === "conversation_reset") {
-    const latest = (await store.getById(freshWithClient.id)) ?? freshWithClient;
-    const resetRecord: ConversationRecord = {
-      ...latest,
-      mode: "bot",
-      humanRequested: false,
-      assignedAgent: undefined,
-      pendingReservationProposal: undefined,
-      pendingReservationContext: undefined,
-      requiresManualReview:
-        latest.clientStatus === "blocked" || latest.clientStatus === "ambiguous",
-      updatedAt: nowIso(),
-    };
-    await store.replaceConversation(resetRecord);
-    await store.addEvent(
-      createEvent(freshWithClient.id, "conversation_reset_requested", {
-        matchedFrom: "nlu",
-        clearedPendingProposal: Boolean(latest.pendingReservationProposal),
-        clearedPendingContext: Boolean(latest.pendingReservationContext),
-      }),
-    );
-    const botReply = await store.addMessage(
-      createMessage({
-        conversationId: freshWithClient.id,
-        direction: "outbound",
-        senderType: "bot",
-        body: resetPlan.reply,
-      }),
-    );
-
-    return {
-      conversation: (await store.getById(freshWithClient.id)) ?? resetRecord,
-      inbound,
-      botReply,
-      twiml: buildTwilioMessageResponse(resetPlan.reply),
     };
   }
 
@@ -869,8 +893,9 @@ export async function handleInboundWhatsApp(
 
   if (replyPlan.handoff) {
     const replyBody = replyPlan.reply;
+    const latestForHandoff = (await store.getById(freshWithClient.id)) ?? freshAfterInbound;
     const humanRecord: ConversationRecord = {
-      ...freshWithClient,
+      ...latestForHandoff,
       mode: "human",
       humanRequested: true,
       updatedAt: nowIso(),

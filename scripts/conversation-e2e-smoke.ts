@@ -287,7 +287,7 @@ async function runDirectSmoke() {
       from: "whatsapp:+34600009993",
       body: "quiero consultar disponibilidad ¿es posible?",
       expectMode: "bot",
-      expectReply: "fechas completas",
+      expectReply: "fecha de entrada",
     },
     {
       label: "confirm-without-proposal",

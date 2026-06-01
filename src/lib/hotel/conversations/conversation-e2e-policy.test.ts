@@ -162,9 +162,14 @@ describe("conversation end-to-end policy QA", () => {
     expect(plan.intent).toBe(intent);
     expect(plan.handoff).toBe(handoff);
     expect(plan.reply).not.toContain("por aqui");
-    if (intent === "general_information" || intent === "greeting") {
+    if (intent === "general_information") {
       expect(plan.reply).toContain("horarios");
       expect(plan.reply).not.toContain("Ese caso prefiero");
+      expect(plan.reply.toLowerCase()).not.toContain("caso");
+    }
+    if (intent === "greeting") {
+      expect(plan.reply).toContain("¿En qué podemos ayudarte?");
+      expect(plan.reply).not.toContain("horarios");
       expect(plan.reply.toLowerCase()).not.toContain("caso");
     }
   });
