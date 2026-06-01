@@ -36,7 +36,6 @@ const filters: Array<{ label: string; value: FilterMode }> = [
   { label: "Humano", value: "human" },
   { label: "Bot", value: "bot" },
   { label: "Leídas", value: "read" },
-  { label: "Archivadas", value: "archived" },
 ];
 
 function formatDate(value?: string) {
@@ -117,6 +116,21 @@ function shouldShowTimelineEvent(eventType: string) {
     "bot_reply_sent",
     "client_directory_match",
   ].includes(eventType);
+}
+
+function conversationPreview(conversation: ConversationRecord) {
+  if (
+    conversation.lastMessagePreview &&
+    !isOperationalCommandBody(conversation.lastMessagePreview)
+  ) {
+    return conversation.lastMessagePreview;
+  }
+
+  const visibleMessage = [...conversation.messages]
+    .reverse()
+    .find((message) => !isOperationalCommandBody(message.body));
+
+  return visibleMessage?.body ?? "Sin mensajes visibles todavía.";
 }
 
 export function ConversationsPanel({
@@ -294,6 +308,12 @@ export function ConversationsPanel({
     run(() => refresh(nextMode, query, { force: true }));
   }
 
+  function changePrimaryView(nextView: "active" | "archived") {
+    const nextMode = nextView === "archived" ? "archived" : "all";
+    setMode(nextMode);
+    run(() => refresh(nextMode, query, { force: true }));
+  }
+
   function search(nextQuery: string) {
     setQuery(nextQuery);
     run(() => refresh(mode, nextQuery, { force: true }));
@@ -413,9 +433,34 @@ export function ConversationsPanel({
         <aside className="conversation-sidebar">
           <div className="conversation-sidebar-brand">
             <div>
-              <strong>Inbox WhatsApp</strong>
-              <small>Reservas y handoffs</small>
+              <strong>{mode === "archived" ? "Histórico de conversaciones" : "Inbox WhatsApp"}</strong>
+              <small>
+                {mode === "archived"
+                  ? "Conversaciones archivadas"
+                  : "Reservas y handoffs"}
+              </small>
             </div>
+          </div>
+
+          <div className="conversation-primary-tabs" role="tablist" aria-label="Vista del inbox">
+            <button
+              type="button"
+              className={mode !== "archived" ? "is-active" : ""}
+              onClick={() => changePrimaryView("active")}
+              disabled={isPending && mode !== "archived"}
+            >
+              Inbox activo
+              <span>{dashboard.stats.total}</span>
+            </button>
+            <button
+              type="button"
+              className={mode === "archived" ? "is-active" : ""}
+              onClick={() => changePrimaryView("archived")}
+              disabled={isPending && mode === "archived"}
+            >
+              Archivadas / Histórico
+              <span>{dashboard.stats.archived}</span>
+            </button>
           </div>
 
           <div className="conversation-metrics">
@@ -454,25 +499,24 @@ export function ConversationsPanel({
             })}`}
           </div>
 
-          <div className="conversation-tabs" role="tablist" aria-label="Filtros">
-            {filters.map((filter) => (
-              <button
-                key={filter.value}
-                className={mode === filter.value ? "is-active" : ""}
-                type="button"
-                onClick={() => changeMode(filter.value)}
-                disabled={isPending && mode === filter.value}
-              >
-                {filter.label}
-                {filter.value === "archived" && dashboard.stats.archived > 0 ? (
-                  <span>{dashboard.stats.archived}</span>
-                ) : null}
-              </button>
-            ))}
-          </div>
+          {mode !== "archived" ? (
+            <div className="conversation-tabs" role="tablist" aria-label="Filtros">
+              {filters.map((filter) => (
+                <button
+                  key={filter.value}
+                  className={mode === filter.value ? "is-active" : ""}
+                  type="button"
+                  onClick={() => changeMode(filter.value)}
+                  disabled={isPending && mode === filter.value}
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
           {mode === "archived" ? (
             <div className="conversation-archive-note">
-              Viendo histórico archivado. Puedes restaurar una conversación para devolverla al inbox.
+              Viendo Archivadas / Histórico. Puedes restaurar una conversación para devolverla al inbox activo.
             </div>
           ) : null}
 
@@ -482,8 +526,16 @@ export function ConversationsPanel({
             ) : null}
             {dashboard.conversations.length === 0 ? (
               <div className="conversation-empty">
-                <strong>No hay conversaciones para este filtro.</strong>
-                <span>Prueba con otro filtro o espera al siguiente WhatsApp entrante.</span>
+                <strong>
+                  {mode === "archived"
+                    ? "No hay conversaciones archivadas."
+                    : "No hay conversaciones todavía."}
+                </strong>
+                <span>
+                  {mode === "archived"
+                    ? "Cuando archives conversaciones, aparecerán en este histórico."
+                    : "Cuando entre un WhatsApp, aparecerá aquí sin cargar conversaciones demo."}
+                </span>
               </div>
             ) : (
               dashboard.conversations.map((conversation) => (
@@ -504,7 +556,7 @@ export function ConversationsPanel({
                       {conversationSubtitle(conversation)}
                     </span>
                     <ClientBadges conversation={conversation} compact />
-                    <small>{conversation.lastMessagePreview ?? "Sin mensajes todavía"}</small>
+                    <small>{conversationPreview(conversation)}</small>
                   </span>
                   <span className="conversation-list-meta">
                     <ModeBadge mode={conversation.mode} />

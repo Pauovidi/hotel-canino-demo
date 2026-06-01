@@ -135,15 +135,23 @@ class MemoryConversationStore implements ConversationStore {
 }
 
 describe("conversation service", () => {
-  it("auto-seeds local and preview empty stores without seeding production by default", async () => {
-    expect(shouldAutoSeedConversations({ NODE_ENV: "development" })).toBe(true);
-    expect(shouldAutoSeedConversations({ NODE_ENV: "production", VERCEL_ENV: "preview" })).toBe(true);
+  it("only auto-seeds fixtures with explicit opt-in or test runtime", async () => {
+    expect(shouldAutoSeedConversations({ NODE_ENV: "development" })).toBe(false);
+    expect(shouldAutoSeedConversations({ NODE_ENV: "test" })).toBe(true);
+    expect(shouldAutoSeedConversations({ NODE_ENV: "production", VERCEL_ENV: "preview" })).toBe(false);
     expect(shouldAutoSeedConversations({ NODE_ENV: "production", VERCEL_ENV: "production" })).toBe(false);
     expect(
       shouldAutoSeedConversations({
         NODE_ENV: "production",
         VERCEL_ENV: "production",
         HOTEL_CONVERSATIONS_DEMO_SEED: "true",
+      }),
+    ).toBe(true);
+    expect(
+      shouldAutoSeedConversations({
+        NODE_ENV: "production",
+        VERCEL_ENV: "preview",
+        HOTEL_CONVERSATIONS_SEED_DEMO: "true",
       }),
     ).toBe(true);
 
@@ -153,14 +161,15 @@ describe("conversation service", () => {
         NODE_ENV: "production",
         VERCEL_ENV: "preview",
       }),
-    ).resolves.toBe(true);
-    expect((await store.list()).length).toBeGreaterThanOrEqual(5);
+    ).resolves.toBe(false);
+    expect(await store.list()).toHaveLength(0);
     await expect(
       ensureDemoConversationSeed(store, {
-        NODE_ENV: "production",
-        VERCEL_ENV: "preview",
+        NODE_ENV: "development",
+        HOTEL_CONVERSATIONS_SEED_DEMO: "true",
       }),
-    ).resolves.toBe(false);
+    ).resolves.toBe(true);
+    expect((await store.list()).length).toBeGreaterThanOrEqual(5);
 
     const productionStore = new MemoryConversationStore();
     await expect(

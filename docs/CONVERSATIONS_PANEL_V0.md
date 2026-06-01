@@ -88,13 +88,13 @@ Conversaciones:
 - `DATABASE_URL` requerido si `HOTEL_PERSISTENCE_PROVIDER=postgres`
 - `HOTEL_CONVERSATIONS_STORE_PATH` opcional para fallback fichero.
 - `HOTEL_FILE_STORE_DIR=/data` recomendado para fallback fichero.
-- `HOTEL_CONVERSATIONS_DEMO_SEED=true` fuerza seed demo si la store esta vacia.
+- `HOTEL_CONVERSATIONS_DEMO_SEED=true` o `HOTEL_CONVERSATIONS_SEED_DEMO=true` fuerza seed demo si la store esta vacia.
 
 Auto-seed:
 
 - Local/test: si la store esta vacia, se crean conversaciones demo sinteticas.
-- Vercel preview: si la store esta vacia, se crean conversaciones demo sinteticas.
-- Produccion: no hay auto-seed salvo `HOTEL_CONVERSATIONS_DEMO_SEED=true`.
+- Vercel preview: no hay auto-seed por defecto. Si la store esta vacia, el inbox muestra estado vacio limpio.
+- Produccion: no hay auto-seed salvo opt-in explicito con `HOTEL_CONVERSATIONS_DEMO_SEED=true` o `HOTEL_CONVERSATIONS_SEED_DEMO=true`.
 
 Twilio:
 

@@ -82,6 +82,7 @@ export interface DemoSeedDecisionEnv {
   NODE_ENV?: string;
   VERCEL_ENV?: string;
   HOTEL_CONVERSATIONS_DEMO_SEED?: string;
+  HOTEL_CONVERSATIONS_SEED_DEMO?: string;
 }
 
 export const MANUAL_REPLY_MAX_CHARS = 1200;
@@ -142,15 +143,14 @@ export function isHumanRequest(body: string): boolean {
 export function shouldAutoSeedConversations(
   env: DemoSeedDecisionEnv = process.env,
 ): boolean {
-  if (env.HOTEL_CONVERSATIONS_DEMO_SEED === "true") {
+  if (
+    env.HOTEL_CONVERSATIONS_DEMO_SEED === "true" ||
+    env.HOTEL_CONVERSATIONS_SEED_DEMO === "true"
+  ) {
     return true;
   }
 
-  if (env.VERCEL_ENV === "preview") {
-    return true;
-  }
-
-  return env.NODE_ENV !== "production";
+  return env.NODE_ENV === "test";
 }
 
 export async function ensureDemoConversationSeed(

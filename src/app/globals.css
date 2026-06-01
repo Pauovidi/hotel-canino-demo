@@ -941,7 +941,8 @@ input {
 .conversation-refresh-button,
 .conversation-actions button,
 .conversation-composer button,
-.conversation-tabs button {
+.conversation-tabs button,
+.conversation-primary-tabs button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -977,6 +978,36 @@ input {
   min-height: 0;
 }
 
+.conversation-primary-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+  border: 1px solid rgba(34, 49, 35, 0.08);
+  border-radius: 14px;
+  background: rgba(76, 93, 57, 0.07);
+  padding: 0.35rem;
+}
+
+.conversation-primary-tabs button {
+  min-height: 2.35rem;
+  border-radius: 11px;
+  padding: 0.45rem 0.55rem;
+  font-size: 0.78rem;
+  font-weight: 900;
+  line-height: 1.05;
+}
+
+.conversation-primary-tabs button span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 999px;
+  background: rgba(34, 49, 35, 0.12);
+  font-size: 0.72rem;
+}
+
 .conversation-tabs button {
   display: inline-flex;
   align-items: center;
@@ -1007,6 +1038,7 @@ input {
 }
 
 .conversation-tabs button.is-active,
+.conversation-primary-tabs button.is-active,
 .conversation-actions button:hover,
 .conversation-composer button,
 .conversation-refresh-button:hover {
@@ -1023,7 +1055,8 @@ input {
   gap: 0.6rem;
   min-height: 0;
   overflow: auto;
-  padding-right: 0.2rem;
+  padding: 0.4rem 0.2rem 0 0;
+  scroll-padding-top: 0.4rem;
 }
 
 .conversation-archive-note {
@@ -1554,7 +1587,8 @@ input {
 }
 
 .conversation-sidebar {
-  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 0.65rem;
   padding: 0.8rem;
   overflow: hidden;
@@ -1611,6 +1645,7 @@ input {
 }
 
 .conversation-list {
+  flex: 1 1 auto;
   min-height: 0;
 }
 

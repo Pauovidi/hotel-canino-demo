@@ -94,7 +94,8 @@ describe("conversation panel operational UI", () => {
       expect(html).toContain(label);
     }
 
-    expect(css).toContain("grid-template-rows: auto auto auto auto minmax(0, 1fr)");
+    expect(css).toContain("flex-direction: column");
+    expect(css).toContain("padding: 0.4rem 0.2rem 0 0");
     expect(css).toContain(".conversation-tabs");
     expect(css).toContain("flex-wrap: nowrap");
     expect(css).toContain("overflow-x: auto");
@@ -126,6 +127,7 @@ describe("conversation panel operational UI", () => {
     const source = readFileSync(join(process.cwd(), "src/app/admin/conversations/panel.tsx"), "utf8");
 
     expect(html).toContain("Archivadas");
+    expect(html).toContain("Archivadas / Histórico");
     expect(html).toContain("Archivar");
     expect(source).toContain("conversation_archived");
     expect(source).toContain("conversation_reset_requested");
@@ -133,5 +135,43 @@ describe("conversation panel operational UI", () => {
     expect(source).toContain("setMode(\"all\")");
     expect(source).toContain("timeline.scrollHeight <= timeline.clientHeight");
     expect(source).toContain("left.createdAt.localeCompare(right.createdAt)");
+  });
+
+  it("makes archived history explicit and keeps an empty inbox free of demo fixtures", () => {
+    const empty: ConversationDashboard = {
+      conversations: [],
+      stats: {
+        total: 0,
+        pending: 0,
+        human: 0,
+        unread: 0,
+        read: 0,
+        archived: 0,
+      },
+    };
+    const html = renderToStaticMarkup(
+      <ConversationsPanel initialDashboard={empty} twilioProviderMode="sandbox" />,
+    );
+
+    expect(html).toContain("Inbox activo");
+    expect(html).toContain("Archivadas / Histórico");
+    expect(html).toContain("No hay conversaciones todavía.");
+    expect(html).not.toContain("Laura S.");
+    expect(html).not.toContain("Mascota: Kira");
+  });
+
+  it("uses a neutral snippet when the last preview is an operational command", () => {
+    const conversation = {
+      ...buildConversationSeed("2026-05-06T08:00:00.000Z").conversations[0],
+      messages: [],
+      lastMessagePreview: "reiniciar",
+    } satisfies ConversationRecord;
+
+    const html = renderToStaticMarkup(
+      <ConversationsPanel initialDashboard={dashboardWith(conversation)} twilioProviderMode="sandbox" />,
+    );
+
+    expect(html).toContain("Sin mensajes visibles todavía.");
+    expect(html).not.toContain(">reiniciar<");
   });
 });

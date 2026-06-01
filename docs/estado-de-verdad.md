@@ -243,8 +243,8 @@ FAQ puras:
 - Nuevas APIs protegidas: `GET/POST /api/conversations`, detalle por id, `reply`, `mode` y `mark-read`.
 - Nuevo webhook Twilio: `POST /api/twilio/whatsapp`.
 - Persistencia demo aislada: `/tmp/hotel-conversations.json` via `ConversationStore`.
-- Auto-seed demo en local/test/preview si la store de conversaciones esta vacia.
-- La V0.1 deja el inbox no vacio en preview/local, con cinco conversaciones sinteticas y UI de sidebar + detalle tipo chat.
+- Auto-seed demo solo en tests o con opt-in explicito (`HOTEL_CONVERSATIONS_DEMO_SEED=true` o `HOTEL_CONVERSATIONS_SEED_DEMO=true`).
+- En preview/production, una store vacia deja el inbox vacio y no mezcla conversaciones sinteticas con pruebas reales.
 - La V0.2 pule el inbox, refuerza seed/eventos demo y deja documentada la conexion Twilio Sandbox por `POST /api/twilio/whatsapp`.
 - La preview sigue protegida por Deployment Protection; Twilio Sandbox debe usar Protection Bypass for Automation para llamar a `/api/twilio/whatsapp`.
 - La V0.3 fija Twilio como proveedor principal; no hay ruta Meta directa. El panel muestra `Mock`, `Sandbox` o `Real`, y outbound real soporta `TWILIO_WHATSAPP_FROM` o `TWILIO_MESSAGING_SERVICE_SID`.
