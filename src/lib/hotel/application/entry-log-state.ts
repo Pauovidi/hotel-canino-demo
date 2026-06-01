@@ -1,4 +1,5 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { resolveJsonStorePath } from "../persistence/runtime";
 
@@ -17,6 +18,35 @@ export interface EntryLogOperationalRecord {
 export interface EntryLogOperationalState {
   records: Record<string, EntryLogOperationalRecord>;
   updatedAt: string;
+}
+
+function looksLikeReservedStorePayload(value: unknown): boolean {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      (Array.isArray((value as { conversations?: unknown }).conversations) ||
+        Array.isArray((value as { reservations?: unknown }).reservations)),
+  );
+}
+
+function pathContainsReservedStorePayload(filePath: string): boolean {
+  try {
+    if (!existsSync(filePath)) {
+      return false;
+    }
+
+    return looksLikeReservedStorePayload(JSON.parse(readFileSync(filePath, "utf8")));
+  } catch {
+    return false;
+  }
+}
+
+function fallbackStatePath(requestedPath: string): string {
+  const fallbackPath = path.join(path.dirname(requestedPath), "hotel-entry-log-state.json");
+  if (path.resolve(fallbackPath) === path.resolve(requestedPath)) {
+    return `${requestedPath}.safe`;
+  }
+  return fallbackPath;
 }
 
 function getStateFile(): string {
@@ -43,7 +73,11 @@ function getStateFile(): string {
   );
 
   if (collidesWithReservedStore) {
-    return path.join(path.dirname(requestedPath), "hotel-entry-log-state.json");
+    return fallbackStatePath(requestedPath);
+  }
+
+  if (pathContainsReservedStorePayload(requestedPath)) {
+    return fallbackStatePath(requestedPath);
   }
 
   return requestedPath;
@@ -59,6 +93,12 @@ export async function loadEntryLogState(): Promise<EntryLogOperationalState> {
   try {
     const raw = await readFile(getStateFile(), "utf8");
     const parsed = JSON.parse(raw) as Partial<EntryLogOperationalState>;
+    if (looksLikeReservedStorePayload(parsed)) {
+      return {
+        records: {},
+        updatedAt: new Date().toISOString(),
+      };
+    }
     return {
       records: parsed.records ?? {},
       updatedAt: parsed.updatedAt ?? new Date().toISOString(),
