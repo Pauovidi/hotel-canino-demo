@@ -287,7 +287,7 @@ async function runDirectSmoke() {
       from: "whatsapp:+34600009993",
       body: "quiero consultar disponibilidad ¿es posible?",
       expectMode: "bot",
-      expectReply: "fecha de entrada",
+      expectReply: "Ya eres cliente",
     },
     {
       label: "confirm-without-proposal",
@@ -355,18 +355,78 @@ async function runDirectSmoke() {
     });
   }
 
+  await handleInboundWhatsApp(
+    {
+      from: "whatsapp:+34600009993",
+      to: SANDBOX_TO,
+      body: "No soy cliente",
+      messageSid: "SM_QA_bridge_new_client",
+    },
+    store,
+    knownDirectory,
+    deps,
+  );
+  await handleInboundWhatsApp(
+    {
+      from: "whatsapp:+34600009993",
+      to: SANDBOX_TO,
+      body: "Toby Responsable toby.responsable@example.test",
+      messageSid: "SM_QA_bridge_owner",
+    },
+    store,
+    knownDirectory,
+    deps,
+  );
+  await handleInboundWhatsApp(
+    {
+      from: "whatsapp:+34600009993",
+      to: SANDBOX_TO,
+      body: "Toby QA, 1 perro",
+      messageSid: "SM_QA_bridge_pet",
+    },
+    store,
+    knownDirectory,
+    deps,
+  );
+  await handleInboundWhatsApp(
+    {
+      from: "whatsapp:+34600009993",
+      to: SANDBOX_TO,
+      body: "Del 29 al 31 de diciembre de 2026",
+      messageSid: "SM_QA_bridge_dates",
+    },
+    store,
+    knownDirectory,
+    deps,
+  );
+  await handleInboundWhatsApp(
+    {
+      from: "whatsapp:+34600009993",
+      to: SANDBOX_TO,
+      body: "Entrada a las 12:00 y salida a las 12:00",
+      messageSid: "SM_QA_bridge_times",
+    },
+    store,
+    knownDirectory,
+    deps,
+  );
+  await handleInboundWhatsApp(
+    {
+      from: "whatsapp:+34600009993",
+      to: SANDBOX_TO,
+      body: "Sin notas",
+      messageSid: "SM_QA_bridge_notes",
+    },
+    store,
+    knownDirectory,
+    deps,
+  );
   const contextualProposal = await handleInboundWhatsApp(
     {
       from: "whatsapp:+34600009993",
       to: SANDBOX_TO,
-      body: "Mi mascota se llama Toby QA y busco del 29 al 31 de diciembre de este año",
-      messageSid: "SM_QA_bridge_slot_fill",
-      rawPayload: {
-        From: "whatsapp:+34600009993",
-        To: SANDBOX_TO,
-        Body: "Mi mascota se llama Toby QA y busco del 29 al 31 de diciembre de este año",
-        MessageSid: "SM_QA_bridge_slot_fill",
-      },
+      body: "No",
+      messageSid: "SM_QA_bridge_visit",
     },
     store,
     knownDirectory,

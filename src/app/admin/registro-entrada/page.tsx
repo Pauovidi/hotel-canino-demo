@@ -116,10 +116,19 @@ export default async function EntryLogPage({
             </div>
             {records.map((record) => (
               <article key={record.reservationId} className="entry-log-row">
-                <span>{formatSpanishDate(record.checkInDate)}</span>
-                <span>{formatSpanishDate(record.checkOutDate)}</span>
+                <span>
+                  {formatSpanishDate(record.checkInDate)}
+                  <small>{record.checkInTime}</small>
+                </span>
+                <span>
+                  {formatSpanishDate(record.checkOutDate)}
+                  <small>{record.checkOutTime}</small>
+                </span>
                 <strong>{record.clientName}</strong>
-                <span>{record.phoneDisplay}</span>
+                <span>
+                  {record.phoneDisplay}
+                  <small>{record.email}</small>
+                </span>
                 <strong>{record.petName}</strong>
                 <span>{record.source}</span>
                 <span className="demo-state demo-state-manual">{record.action}</span>
@@ -127,6 +136,9 @@ export default async function EntryLogPage({
                 <span title={record.reservationId}>
                   {record.reservationSummary}
                   <small>Ref. {record.displayRef}</small>
+                  <small>
+                    {record.price} · precio {record.priceSource} · visita {record.wantsVisit}
+                  </small>
                 </span>
                 <span title={record.notes}>{record.notes}</span>
                 <span>{record.gestetStatus}</span>

@@ -7,12 +7,21 @@ import {
   type ClientIdentityResult,
   type ClientUpsertFromConfirmedReservationResult,
 } from "@/lib/hotel/clients";
-import { buildConversationReplyPlan, classifyConversationIntent } from "./nlu";
+import {
+  buildConversationReplyPlan,
+  classifyConversationIntent,
+  isAffirmativeConfirmationUtterance,
+} from "./nlu";
 import {
   confirmPendingReservationProposal,
-  createPendingReservationProposal,
   type WhatsAppReservationBridgeDeps,
 } from "./reservation-bridge";
+import {
+  advanceReservationFlow,
+  isReservationFlowActive,
+  isReservationFlowRejection,
+  startReservationFlow,
+} from "./reservation-flow";
 import { getConversationStore } from "./file-store";
 import type { ConversationStore } from "./store";
 import type {
@@ -271,8 +280,6 @@ function summarizeReservationId(value?: string): string | undefined {
   return value.length <= 8 ? "[reservation-id]" : `[reservation-id:${value.slice(-8)}]`;
 }
 
-const RESERVATION_CONTEXT_TTL_MS = 2 * 60 * 60 * 1000;
-
 function pendingContextIsLive(
   record: ConversationRecord,
   now = new Date(),
@@ -300,25 +307,6 @@ function shouldTreatAsReservationSlotFill(
     replyPlan.slots.petName || replyPlan.slots.checkIn || replyPlan.slots.checkOut,
   );
   return hasUsefulSlots || /\b(?:del|desde)\s+\d{1,2}\s+(?:al|hasta)\s+\d{1,2}\b/i.test(message);
-}
-
-function buildPendingReservationContext(input: {
-  conversation: ConversationRecord;
-  inboundMessageId: string;
-}): ConversationRecord["pendingReservationContext"] {
-  const now = new Date();
-  return {
-    contextId: createId("reservation_context"),
-    conversationId: input.conversation.id,
-    phoneNormalized: input.conversation.phoneNormalized,
-    status: "collecting",
-    source: "whatsapp",
-    requestedAt: now.toISOString(),
-    updatedAt: now.toISOString(),
-    expiresAt: new Date(now.getTime() + RESERVATION_CONTEXT_TTL_MS).toISOString(),
-    requestedFields: ["petName", "dates"],
-    createdFromMessageId: input.inboundMessageId,
-  };
 }
 
 function applyClientIdentity(
@@ -555,6 +543,91 @@ export async function getConversation(
   return store.getById(id);
 }
 
+async function confirmConversationReservation(input: {
+  store: ConversationStore;
+  conversation: ConversationRecord;
+  deps?: WhatsAppReservationBridgeDeps;
+}): Promise<{ conversation: ConversationRecord; reply: string }> {
+  const latest = (await input.store.getById(input.conversation.id)) ?? input.conversation;
+  const confirmation = await confirmPendingReservationProposal({
+    conversation: latest,
+    deps: input.deps,
+  });
+  await input.store.addEvent(
+    createEvent(latest.id, "reservation_confirmation_checked", {
+      kind: confirmation.kind,
+      ...confirmation.eventPayload,
+    }),
+  );
+
+  const latestAfterEvent = (await input.store.getById(latest.id)) ?? latest;
+  const updatedRecord: ConversationRecord = {
+    ...latestAfterEvent,
+    pendingReservationProposal:
+      confirmation.proposal ?? latestAfterEvent.pendingReservationProposal,
+    pendingReservationContext:
+      confirmation.kind === "confirmed"
+        ? undefined
+        : latestAfterEvent.pendingReservationContext,
+    reservationFlow:
+      latestAfterEvent.reservationFlow && confirmation.kind === "confirmed"
+        ? {
+            ...latestAfterEvent.reservationFlow,
+            status: "confirmed",
+            reservationId: confirmation.reservation?.reservationId,
+            updatedAt: nowIso(),
+          }
+        : latestAfterEvent.reservationFlow,
+    reservationId:
+      confirmation.reservation?.reservationId ?? latestAfterEvent.reservationId,
+    sourceRecordId:
+      confirmation.reservation?.reservationId ?? latestAfterEvent.sourceRecordId,
+    petName:
+      confirmation.reservation?.petName ?? latestAfterEvent.petName,
+    mode: confirmation.handoff ? "human" : latestAfterEvent.mode,
+    humanRequested: confirmation.handoff ? true : latestAfterEvent.humanRequested,
+    requiresManualReview:
+      latestAfterEvent.requiresManualReview || Boolean(confirmation.handoff),
+    updatedAt: nowIso(),
+  };
+  await input.store.replaceConversation(
+    applyClientReservationUpsert(updatedRecord, confirmation.clientDirectoryUpsert),
+  );
+
+  if (confirmation.kind === "confirmed" && confirmation.reservation) {
+    await input.store.addEvent(
+      createEvent(latest.id, "reservation_confirmed_from_whatsapp", {
+        reservationIdSummary: summarizeReservationId(confirmation.reservation.reservationId),
+        proposalId: confirmation.proposal?.proposalId,
+      }),
+    );
+  }
+
+  if (confirmation.clientDirectoryUpsert) {
+    await input.store.addEvent(
+      createEvent(
+        latest.id,
+        clientUpsertEventType(confirmation.clientDirectoryUpsert),
+        sanitizeClientUpsertPayload(confirmation.clientDirectoryUpsert),
+      ),
+    );
+  }
+
+  if (confirmation.handoff) {
+    await input.store.addEvent(
+      createEvent(latest.id, "human_requested", {
+        matchedFrom: "reservation_bridge",
+        reason: confirmation.kind,
+      }),
+    );
+  }
+
+  return {
+    conversation: (await input.store.getById(latest.id)) ?? updatedRecord,
+    reply: confirmation.reply,
+  };
+}
+
 export async function handleInboundWhatsApp(
   payload: InboundWhatsAppPayload,
   store: ConversationStore = getConversationStore(),
@@ -625,6 +698,7 @@ export async function handleInboundWhatsApp(
       assignedAgent: undefined,
       pendingReservationProposal: undefined,
       pendingReservationContext: undefined,
+      reservationFlow: undefined,
       unreadCount: 0,
       requiresManualReview:
         latest.clientStatus === "blocked" || latest.clientStatus === "ambiguous",
@@ -637,6 +711,7 @@ export async function handleInboundWhatsApp(
         hiddenCommand: true,
         clearedPendingProposal: Boolean(latest.pendingReservationProposal),
         clearedPendingContext: Boolean(latest.pendingReservationContext),
+        clearedReservationFlow: Boolean(latest.reservationFlow),
       }),
     );
 
@@ -697,6 +772,111 @@ export async function handleInboundWhatsApp(
     };
   }
 
+  const latestBeforeFlow = (await store.getById(freshWithClient.id)) ?? freshWithClient;
+  if (isReservationFlowActive(latestBeforeFlow)) {
+    if (
+      latestBeforeFlow.reservationFlow?.status === "pending_confirmation" &&
+      isAffirmativeConfirmationUtterance(safeBody)
+    ) {
+      const confirmed = await confirmConversationReservation({
+        store,
+        conversation: latestBeforeFlow,
+        deps: reservationBridgeDeps,
+      });
+      const botReply = await store.addMessage(
+        createMessage({
+          conversationId: latestBeforeFlow.id,
+          direction: "outbound",
+          senderType: "bot",
+          body: confirmed.reply,
+        }),
+      );
+
+      return {
+        conversation: (await store.getById(latestBeforeFlow.id)) ?? confirmed.conversation,
+        inbound,
+        botReply,
+        twiml: buildTwilioMessageResponse(confirmed.reply),
+      };
+    }
+
+    if (
+      latestBeforeFlow.reservationFlow?.status === "pending_confirmation" &&
+      isReservationFlowRejection(safeBody)
+    ) {
+      const rejected: ConversationRecord = {
+        ...latestBeforeFlow,
+        pendingReservationProposal: latestBeforeFlow.pendingReservationProposal
+          ? {
+              ...latestBeforeFlow.pendingReservationProposal,
+              status: "cancelled",
+              failureReason: "customer_rejected",
+            }
+          : undefined,
+        reservationFlow: latestBeforeFlow.reservationFlow
+          ? {
+              ...latestBeforeFlow.reservationFlow,
+              status: "rejected",
+              updatedAt: nowIso(),
+            }
+          : undefined,
+        updatedAt: nowIso(),
+      };
+      await store.replaceConversation(rejected);
+      await store.addEvent(
+        createEvent(latestBeforeFlow.id, "reservation_flow_rejected", {
+          reason: "customer_rejected",
+        }),
+      );
+      const replyBody =
+        "De acuerdo, no confirmamos la reserva. Si quieres mirar otras fechas, dime cuáles.";
+      const botReply = await store.addMessage(
+        createMessage({
+          conversationId: latestBeforeFlow.id,
+          direction: "outbound",
+          senderType: "bot",
+          body: replyBody,
+        }),
+      );
+      return {
+        conversation: (await store.getById(latestBeforeFlow.id)) ?? rejected,
+        inbound,
+        botReply,
+        twiml: buildTwilioMessageResponse(replyBody),
+      };
+    }
+
+    const flow = await advanceReservationFlow({
+      conversation: latestBeforeFlow,
+      inboundMessageId: inbound.id,
+      message: safeBody,
+      clientDirectory,
+      deps: reservationBridgeDeps,
+    });
+
+    if (flow) {
+      await store.replaceConversation(flow.conversation);
+      await store.addEvent(
+        createEvent(flow.conversation.id, flow.eventType, flow.eventPayload),
+      );
+      const botReply = await store.addMessage(
+        createMessage({
+          conversationId: flow.conversation.id,
+          direction: "outbound",
+          senderType: "bot",
+          body: flow.reply,
+        }),
+      );
+
+      return {
+        conversation: (await store.getById(flow.conversation.id)) ?? flow.conversation,
+        inbound,
+        botReply,
+        twiml: buildTwilioMessageResponse(flow.reply),
+      };
+    }
+  }
+
   const initialReplyPlan = buildConversationReplyPlan(safeBody);
   const latestBeforePlan = (await store.getById(freshWithClient.id)) ?? freshWithClient;
   const replyPlan = shouldTreatAsReservationSlotFill(
@@ -729,161 +909,70 @@ export async function handleInboundWhatsApp(
     replyPlan.intent === "availability_request" ||
     replyPlan.intent === "reservation_start"
   ) {
-    const proposalOutcome = await createPendingReservationProposal({
-      conversation: freshWithClient,
-      inboundMessageId: inbound.id,
-      message: safeBody,
-      nlu: replyPlan,
-      deps: reservationBridgeDeps,
-    });
-    await store.addEvent(
-      createEvent(freshWithClient.id, "reservation_proposal_checked", {
-        kind: proposalOutcome.kind,
-        ...proposalOutcome.eventPayload,
-      }),
-    );
-
-    const proposalRecord: ConversationRecord = {
-      ...((await store.getById(freshWithClient.id)) ?? freshWithClient),
-      pendingReservationProposal:
-        proposalOutcome.proposal ??
-        ((await store.getById(freshWithClient.id)) ?? freshWithClient).pendingReservationProposal,
-      pendingReservationContext:
-        proposalOutcome.kind === "missing_data"
-          ? buildPendingReservationContext({
-              conversation: freshWithClient,
-              inboundMessageId: inbound.id,
-            })
-          : proposalOutcome.proposal
-            ? undefined
-            : ((await store.getById(freshWithClient.id)) ?? freshWithClient)
-                .pendingReservationContext,
-      petName:
-        proposalOutcome.proposal?.petName ??
-        ((await store.getById(freshWithClient.id)) ?? freshWithClient).petName,
-      mode: proposalOutcome.handoff ? "human" : freshWithClient.mode,
-      humanRequested: proposalOutcome.handoff ? true : freshWithClient.humanRequested,
-      requiresManualReview:
-        ((await store.getById(freshWithClient.id)) ?? freshWithClient).requiresManualReview ||
-        Boolean(proposalOutcome.handoff),
-      updatedAt: nowIso(),
-    };
-    await store.replaceConversation(proposalRecord);
-
-    if (proposalOutcome.proposal) {
-      await store.addEvent(
-        createEvent(freshWithClient.id, "reservation_proposal_created", {
-          proposalId: proposalOutcome.proposal.proposalId,
-          petName: proposalOutcome.proposal.petName,
-          checkIn: proposalOutcome.proposal.checkIn,
-          checkOut: proposalOutcome.proposal.checkOut,
-          expiresAt: proposalOutcome.proposal.expiresAt,
-        }),
-      );
-    } else if (proposalOutcome.kind === "missing_data") {
-      await store.addEvent(
-        createEvent(freshWithClient.id, "reservation_context_detected", {
-          reason: proposalOutcome.eventPayload?.reason,
-          requestedFields: ["petName", "dates"],
-        }),
-      );
-    }
-
-    if (proposalOutcome.handoff) {
+    if (freshWithClient.clientStatus === "ambiguous") {
+      const reviewRecord: ConversationRecord = {
+        ...((await store.getById(freshWithClient.id)) ?? freshWithClient),
+        mode: "human",
+        humanRequested: true,
+        requiresManualReview: true,
+        updatedAt: nowIso(),
+      };
+      await store.replaceConversation(reviewRecord);
       await store.addEvent(
         createEvent(freshWithClient.id, "human_requested", {
-          matchedFrom: "reservation_bridge",
-          reason: proposalOutcome.kind,
+          matchedFrom: "client_directory",
+          reason: "ambiguous_client",
         }),
       );
+      const replyBody = "Gracias, revisamos tu solicitud con el equipo y te contestamos por aquí.";
+      const botReply = await store.addMessage(
+        createMessage({
+          conversationId: freshWithClient.id,
+          direction: "outbound",
+          senderType: "bot",
+          body: replyBody,
+        }),
+      );
+      return {
+        conversation: (await store.getById(freshWithClient.id)) ?? reviewRecord,
+        inbound,
+        botReply,
+        twiml: buildTwilioMessageResponse(replyBody),
+      };
     }
 
+    const flow = startReservationFlow({
+      conversation: (await store.getById(freshWithClient.id)) ?? freshWithClient,
+      inboundMessageId: inbound.id,
+      now: reservationBridgeDeps?.now?.(),
+    });
+    await store.replaceConversation(flow.conversation);
+    await store.addEvent(
+      createEvent(flow.conversation.id, flow.eventType, flow.eventPayload),
+    );
     const botReply = await store.addMessage(
       createMessage({
-        conversationId: freshWithClient.id,
+        conversationId: flow.conversation.id,
         direction: "outbound",
         senderType: "bot",
-        body: proposalOutcome.reply,
+        body: flow.reply,
       }),
     );
 
     return {
-      conversation: (await store.getById(freshWithClient.id)) ?? proposalRecord,
+      conversation: (await store.getById(flow.conversation.id)) ?? flow.conversation,
       inbound,
       botReply,
-      twiml: buildTwilioMessageResponse(proposalOutcome.reply),
+      twiml: buildTwilioMessageResponse(flow.reply),
     };
   }
 
   if (replyPlan.intent === "reservation_confirm") {
-    const latest = (await store.getById(freshWithClient.id)) ?? freshWithClient;
-    const confirmation = await confirmPendingReservationProposal({
-      conversation: latest,
+    const confirmation = await confirmConversationReservation({
+      store,
+      conversation: (await store.getById(freshWithClient.id)) ?? freshWithClient,
       deps: reservationBridgeDeps,
     });
-    await store.addEvent(
-      createEvent(freshWithClient.id, "reservation_confirmation_checked", {
-        kind: confirmation.kind,
-        ...confirmation.eventPayload,
-      }),
-    );
-
-    const updatedRecord: ConversationRecord = {
-      ...((await store.getById(freshWithClient.id)) ?? latest),
-      pendingReservationProposal:
-        confirmation.proposal ??
-        ((await store.getById(freshWithClient.id)) ?? latest).pendingReservationProposal,
-      pendingReservationContext:
-        confirmation.kind === "confirmed"
-          ? undefined
-          : ((await store.getById(freshWithClient.id)) ?? latest).pendingReservationContext,
-      reservationId:
-        confirmation.reservation?.reservationId ??
-        ((await store.getById(freshWithClient.id)) ?? latest).reservationId,
-      sourceRecordId:
-        confirmation.reservation?.reservationId ??
-        ((await store.getById(freshWithClient.id)) ?? latest).sourceRecordId,
-      petName:
-        confirmation.reservation?.petName ??
-        ((await store.getById(freshWithClient.id)) ?? latest).petName,
-      mode: confirmation.handoff ? "human" : latest.mode,
-      humanRequested: confirmation.handoff ? true : latest.humanRequested,
-      requiresManualReview:
-        ((await store.getById(freshWithClient.id)) ?? latest).requiresManualReview ||
-        Boolean(confirmation.handoff),
-      updatedAt: nowIso(),
-    };
-    await store.replaceConversation(
-      applyClientReservationUpsert(updatedRecord, confirmation.clientDirectoryUpsert),
-    );
-
-    if (confirmation.kind === "confirmed" && confirmation.reservation) {
-      await store.addEvent(
-        createEvent(freshWithClient.id, "reservation_confirmed_from_whatsapp", {
-          reservationIdSummary: summarizeReservationId(confirmation.reservation.reservationId),
-          proposalId: confirmation.proposal?.proposalId,
-        }),
-      );
-    }
-
-    if (confirmation.clientDirectoryUpsert) {
-      await store.addEvent(
-        createEvent(
-          freshWithClient.id,
-          clientUpsertEventType(confirmation.clientDirectoryUpsert),
-          sanitizeClientUpsertPayload(confirmation.clientDirectoryUpsert),
-        ),
-      );
-    }
-
-    if (confirmation.handoff) {
-      await store.addEvent(
-        createEvent(freshWithClient.id, "human_requested", {
-          matchedFrom: "reservation_bridge",
-          reason: confirmation.kind,
-        }),
-      );
-    }
 
     const botReply = await store.addMessage(
       createMessage({
@@ -895,7 +984,7 @@ export async function handleInboundWhatsApp(
     );
 
     return {
-      conversation: (await store.getById(freshWithClient.id)) ?? updatedRecord,
+      conversation: (await store.getById(freshWithClient.id)) ?? confirmation.conversation,
       inbound,
       botReply,
       twiml: buildTwilioMessageResponse(confirmation.reply),

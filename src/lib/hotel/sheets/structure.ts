@@ -1204,9 +1204,21 @@ export function buildReservationCellNote(reservation: DemoReservationRecord): st
     `${SHEETS_RESERVATION_ID_NOTE_KEY}=${reservation.id}`,
     `Mascota: ${reservation.petName}`,
     reservation.ownerName ? `Cliente: ${reservation.ownerName}` : undefined,
+    reservation.ownerEmail ? `Email: ${reservation.ownerEmail}` : undefined,
     `Entrada: ${reservation.entryDate} ${reservation.entrySlot}`,
+    reservation.entryTime ? `Hora entrada: ${reservation.entryTime}` : undefined,
     `Salida: ${reservation.exitDate} ${reservation.exitSlot}`,
+    reservation.exitTime ? `Hora salida: ${reservation.exitTime}` : undefined,
     `Perros: ${reservation.dogs}`,
+    reservation.price !== undefined ? `Precio: ${reservation.price} EUR` : undefined,
+    reservation.priceSource ? `Fuente precio: ${reservation.priceSource}` : undefined,
+    reservation.wantsVisit === true
+      ? "Visita previa: sí"
+      : reservation.wantsVisit === false
+        ? "Visita previa: no"
+        : undefined,
+    reservation.foodNotes ? `Alimentación: ${reservation.foodNotes}` : undefined,
+    reservation.medicationNotes ? `Medicación: ${reservation.medicationNotes}` : undefined,
     reservation.originalRequestedCheckInTime
       ? `Hora entrada solicitada: ${reservation.originalRequestedCheckInTime}`
       : undefined,

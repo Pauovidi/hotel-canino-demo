@@ -126,6 +126,39 @@ function matchTypeLabel(conversation: ConversationRecord) {
   return "ninguno";
 }
 
+function reservationStatusLabel(conversation: ConversationRecord) {
+  const status = conversation.reservationFlow?.status;
+  const labels: Record<string, string> = {
+    asking_client_kind: "recopilando datos",
+    asking_existing_email: "recopilando datos",
+    collecting_owner: "recopilando datos",
+    collecting_pet: "recopilando datos",
+    collecting_dates: "recopilando datos",
+    collecting_notes: "recopilando datos",
+    collecting_visit: "recopilando datos",
+    pending_availability: "pendiente disponibilidad",
+    pending_confirmation: "pendiente confirmación",
+    confirmed: "confirmada",
+    rejected: "rechazada",
+    no_availability: "sin disponibilidad",
+  };
+
+  return status ? labels[status] ?? status : "sin reserva activa";
+}
+
+function availabilityLabel(conversation: ConversationRecord) {
+  const status = conversation.reservationFlow?.availabilityStatus;
+  if (status === "available") return "disponible";
+  if (status === "unavailable") return "no disponible";
+  return "pendiente";
+}
+
+function visitLabel(value?: boolean | null) {
+  if (value === true) return "sí";
+  if (value === false) return "no";
+  return "sin responder";
+}
+
 function conversationSubtitle(conversation: ConversationRecord) {
   const parts = [
     conversation.phoneE164,
@@ -688,6 +721,31 @@ export function ConversationsPanel({
                   <span>Nombre visible: {visibleNameSource(selected)}</span>
                   <span>Match directorio: {matchTypeLabel(selected)}</span>
                   <span>Confianza: {selected.clientConfidence ?? "none"}</span>
+                  <span>Cliente: {selected.clientStatus ?? "unknown"}</span>
+                  <span>Estado reserva: {reservationStatusLabel(selected)}</span>
+                  <span>Disponibilidad: {availabilityLabel(selected)}</span>
+                  {selected.reservationFlow?.email ? <span>Email recogido: {selected.reservationFlow.email}</span> : null}
+                  {selected.reservationFlow?.petName ? <span>Mascota: {selected.reservationFlow.petName}</span> : null}
+                  {selected.reservationFlow?.petCount ? <span>Perros: {selected.reservationFlow.petCount}</span> : null}
+                  {selected.reservationFlow?.checkInDate ? (
+                    <span>
+                      Entrada: {selected.reservationFlow.checkInDate}
+                      {selected.reservationFlow.checkInTime ? ` ${selected.reservationFlow.checkInTime}` : ""}
+                    </span>
+                  ) : null}
+                  {selected.reservationFlow?.checkOutDate ? (
+                    <span>
+                      Salida: {selected.reservationFlow.checkOutDate}
+                      {selected.reservationFlow.checkOutTime ? ` ${selected.reservationFlow.checkOutTime}` : ""}
+                    </span>
+                  ) : null}
+                  {selected.reservationFlow?.price !== undefined ? (
+                    <span>
+                      Precio: {selected.reservationFlow.price} € · priceSource=
+                      {selected.reservationFlow.priceSource ?? "pending"}
+                    </span>
+                  ) : null}
+                  <span>Visita: {visitLabel(selected.reservationFlow?.wantsVisit)}</span>
                   {isStrongDirectoryMatch(selected) && selected.clientSheetName && selected.clientSheetRow ? (
                     <span>CLIENTES · fila {selected.clientSheetRow}</span>
                   ) : null}

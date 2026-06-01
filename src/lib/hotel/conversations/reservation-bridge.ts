@@ -343,6 +343,13 @@ function buildProposalReply(proposal: PendingReservationProposal): string {
 }
 
 function buildConfirmationReply(proposal: PendingReservationProposal): string {
+  if (proposal.checkInTime && proposal.checkOutTime && proposal.price !== undefined) {
+    return `Reserva confirmada. La reserva para ${proposal.petName} del ${formatDateRange(
+      proposal.checkIn,
+      proposal.checkOut,
+    )} queda anotada, con entrada a las ${proposal.checkInTime} y salida a las ${proposal.checkOutTime}. El precio es ${proposal.price} €. El equipo revisará cualquier detalle adicional si hace falta.`;
+  }
+
   return `Perfecto, la reserva de ${proposal.petName} del ${formatDateRange(
     proposal.checkIn,
     proposal.checkOut,
@@ -397,6 +404,7 @@ function toReservationRecord(input: {
   nowIso: string;
 }): ReservationRecord {
   const ownerName =
+    input.proposal.ownerName ??
     input.conversation.clientName ??
     input.conversation.displayName ??
     input.conversation.customerName ??
@@ -428,17 +436,32 @@ function toReservationRecord(input: {
     createdAt: input.proposal.requestedAt,
     updatedAt: input.nowIso,
     ownerName,
-    ownerEmail: input.conversation.clientEmail,
+    ownerEmail: input.proposal.ownerEmail ?? input.conversation.clientEmail,
     petName: input.proposal.petName,
     phone: input.conversation.phoneE164,
     checkInDate: input.proposal.checkIn,
+    checkInTime: input.proposal.checkInTime,
     checkInSlot: input.proposal.checkInSlot,
+    originalRequestedCheckInTime: input.proposal.checkInTime,
+    normalizedCheckInTime: input.proposal.checkInTime,
     checkOutDate: input.proposal.checkOut,
+    checkOutTime: input.proposal.checkOutTime,
     checkOutSlot: input.proposal.checkOutSlot,
+    originalRequestedCheckOutTime: input.proposal.checkOutTime,
+    normalizedCheckOutTime: input.proposal.checkOutTime,
     petCount: input.proposal.petCount,
-    notes: "Reserva creada desde WhatsApp por el chatbot. Pendiente de incorporacion/revision Gestet.",
+    notes:
+      input.proposal.notes ??
+      "Reserva creada desde WhatsApp por el chatbot. Pendiente de incorporacion/revision Gestet.",
+    foodNotes: input.proposal.foodNotes,
+    medicationNotes: input.proposal.medicationNotes,
+    wantsVisit: input.proposal.wantsVisit,
+    priceSource: input.proposal.priceSource,
+    priceNeedsReview: input.proposal.priceNeedsReview,
+    clientKind: input.proposal.ownerEmail ? "new" : undefined,
     reviewFlags: [],
     availability: mapLegacyAvailabilityToDomain(input.availability, false),
+    pricing: input.proposal.pricing,
     sheetRegistration: input.writeResult
       ? {
           sheetName: input.writeResult.sheetName,
@@ -787,10 +810,11 @@ export async function confirmPendingReservationProposal(input: {
         phoneE164: input.conversation.phoneE164,
         phoneNormalized: input.conversation.phoneNormalized,
         clientName:
+          proposal.ownerName ??
           input.conversation.clientName ??
           input.conversation.displayName ??
           input.conversation.customerName,
-        email: input.conversation.clientEmail,
+        email: proposal.ownerEmail ?? input.conversation.clientEmail,
         reservationId: reservation.reservationId,
         petName: proposal.petName,
         checkIn: proposal.checkIn,

@@ -13,9 +13,15 @@ export interface EntryLogRecord {
   clientStatus: "cliente habitual" | "nuevo contacto" | "ambiguo" | "bloqueado/revisión";
   phoneNormalized: string;
   phoneDisplay: string;
+  email: string;
   petName: string;
   checkInDate: string;
+  checkInTime: string;
   checkOutDate: string;
+  checkOutTime: string;
+  price: string;
+  priceSource: "calculado" | "sin precio";
+  wantsVisit: "sí" | "no" | "sin responder";
   notes: string;
   gestetStatus: "pendiente Gestet" | "procesado Gestet";
   operationalStatus: EntryLogOperationalStatus;
@@ -35,6 +41,28 @@ function maskPhone(value: string): string {
   }
 
   return `***${digits.slice(-4)}`;
+}
+
+function displayEmail(value?: string): string {
+  return value?.trim() || "Pendiente";
+}
+
+function displayTime(value?: string): string {
+  return value?.trim() || "Pendiente";
+}
+
+function displayPrice(record: ReservationRecord): string {
+  return record.pricing?.total !== undefined ? `${record.pricing.total} €` : "Pendiente";
+}
+
+function displayVisit(value: ReservationRecord["wantsVisit"]): EntryLogRecord["wantsVisit"] {
+  if (value === true) {
+    return "sí";
+  }
+  if (value === false) {
+    return "no";
+  }
+  return "sin responder";
 }
 
 function displayReservationRef(value: string): string {
@@ -96,6 +124,8 @@ function mapClientStatus(record: ReservationRecord): EntryLogRecord["clientStatu
 export function buildEntryLogRecord(record: ReservationRecord): EntryLogRecord {
   const notes = [
     record.notes,
+    record.foodNotes ? `Alimentación: ${record.foodNotes}` : undefined,
+    record.medicationNotes ? `Medicación: ${record.medicationNotes}` : undefined,
     record.specialNotes,
     record.checkInTimeAdjustmentMessage,
     record.checkOutTimeAdjustmentMessage,
@@ -112,9 +142,15 @@ export function buildEntryLogRecord(record: ReservationRecord): EntryLogRecord {
     clientStatus: mapClientStatus(record),
     phoneNormalized: normalizePhone(record.phone),
     phoneDisplay: maskPhone(normalizePhone(record.phone)),
+    email: displayEmail(record.ownerEmail),
     petName: record.petName ?? "Mascota pendiente",
     checkInDate: record.checkInDate,
+    checkInTime: displayTime(record.checkInTime ?? record.originalRequestedCheckInTime),
     checkOutDate: record.checkOutDate,
+    checkOutTime: displayTime(record.checkOutTime ?? record.originalRequestedCheckOutTime),
+    price: displayPrice(record),
+    priceSource: record.priceSource === "calculated" ? "calculado" : "sin precio",
+    wantsVisit: displayVisit(record.wantsVisit),
     notes: notes.join(" · ") || "Sin notas",
     gestetStatus: record.sheetRegistration ? "procesado Gestet" : "pendiente Gestet",
     operationalStatus: "pending",

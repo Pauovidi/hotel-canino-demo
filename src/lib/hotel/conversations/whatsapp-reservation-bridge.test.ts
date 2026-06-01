@@ -252,8 +252,83 @@ function makeBridgeDeps(options: {
   };
 }
 
+async function createNewClientPricedProposal(input: {
+  store: ConversationStore;
+  deps: ReturnType<typeof makeBridgeDeps>["deps"];
+  from?: string;
+  petName?: string;
+  dogs?: number;
+  dateText?: string;
+  directory?: ReturnType<typeof createStaticClientDirectory>;
+  prefix?: string;
+}) {
+  const from = input.from ?? "whatsapp:+34600009991";
+  const directory = input.directory ?? createStaticClientDirectory([]);
+  const prefix = input.prefix ?? "SM_FLOW";
+  await handleInboundWhatsApp(
+    { from, body: "Quiero reservar para mi mascota", messageSid: `${prefix}_START` },
+    input.store,
+    directory,
+    input.deps,
+  );
+  await handleInboundWhatsApp(
+    { from, body: "No soy cliente", messageSid: `${prefix}_NEW` },
+    input.store,
+    directory,
+    input.deps,
+  );
+  await handleInboundWhatsApp(
+    { from, body: "Ana QA ana.qa@example.test", messageSid: `${prefix}_OWNER` },
+    input.store,
+    directory,
+    input.deps,
+  );
+  await handleInboundWhatsApp(
+    {
+      from,
+      body: `${input.petName ?? "Kira QA"}, ${input.dogs ?? 1} perro${(input.dogs ?? 1) > 1 ? "s" : ""}`,
+      messageSid: `${prefix}_PET`,
+    },
+    input.store,
+    directory,
+    input.deps,
+  );
+  await handleInboundWhatsApp(
+    {
+      from,
+      body: input.dateText ?? "Del 29 al 31 de diciembre de 2026",
+      messageSid: `${prefix}_DATES`,
+    },
+    input.store,
+    directory,
+    input.deps,
+  );
+  await handleInboundWhatsApp(
+    {
+      from,
+      body: "Entrada a las 12:00 y salida a las 12:00",
+      messageSid: `${prefix}_TIMES`,
+    },
+    input.store,
+    directory,
+    input.deps,
+  );
+  await handleInboundWhatsApp(
+    { from, body: "Sin notas", messageSid: `${prefix}_NOTES` },
+    input.store,
+    directory,
+    input.deps,
+  );
+  return handleInboundWhatsApp(
+    { from, body: "No", messageSid: `${prefix}_VISIT` },
+    input.store,
+    directory,
+    input.deps,
+  );
+}
+
 describe("WhatsApp reservation bridge", () => {
-  it("creates a pending proposal from a full reservation request without writing Sheets", async () => {
+  it("asks client branch before proposing availability", async () => {
     const store = new MemoryConversationStore();
     const { counters, deps } = makeBridgeDeps();
 
@@ -270,21 +345,19 @@ describe("WhatsApp reservation bridge", () => {
 
     expect(result.conversation.mode).toBe("bot");
     expect(result.conversation.reservationId).toBeUndefined();
-    expect(result.conversation.pendingReservationProposal).toMatchObject({
-      status: "proposed",
-      petName: "Kira QA",
-      checkIn: "2026-12-29",
-      checkOut: "2026-12-31",
+    expect(result.conversation.pendingReservationProposal).toBeUndefined();
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "asking_client_kind",
+      clientKind: "unknown",
     });
-    expect(result.botReply?.body).toContain("Tenemos disponibilidad");
-    expect(result.botReply?.body).toContain("¿Quieres que dejemos la reserva anotada?");
-    expect(counters.checks).toBe(1);
+    expect(result.botReply?.body).toContain("¿Ya eres cliente de Somos Muy Perros?");
+    expect(counters.checks).toBe(0);
     expect(counters.writes).toBe(0);
     expect(counters.reservations).toHaveLength(0);
     expect(counters.clientUpserts).toHaveLength(0);
   });
 
-  it("completes availability context with a natural pet/date follow-up", async () => {
+  it("builds a priced proposal after collecting client data, stay times, notes and visit", async () => {
     const store = new MemoryConversationStore();
     const { counters, deps } = makeBridgeDeps();
     const timedDeps = {
@@ -292,39 +365,349 @@ describe("WhatsApp reservation bridge", () => {
       now: () => new Date("2026-05-29T10:00:00.000Z"),
     };
 
-    const start = await handleInboundWhatsApp(
-      {
-        from: "whatsapp:+34600009991",
-        body: "quiero consultar disponibilidad ¿es posible?",
-        messageSid: "SM_BRIDGE_SLOT_FILL_1",
-      },
+    const proposed = await createNewClientPricedProposal({
       store,
-      createStaticClientDirectory([]),
-      timedDeps,
-    );
-    const proposed = await handleInboundWhatsApp(
-      {
-        from: "whatsapp:+34600009991",
-        body: "Mi mascota se llama Toby y busco del 29 al 31 de diciembre de este año",
-        messageSid: "SM_BRIDGE_SLOT_FILL_2",
-      },
-      store,
-      createStaticClientDirectory([]),
-      timedDeps,
-    );
+      deps: timedDeps,
+      petName: "Toby",
+      prefix: "SM_BRIDGE_SLOT_FILL",
+    });
 
-    expect(start.conversation.pendingReservationProposal).toBeUndefined();
-    expect(start.conversation.pendingReservationContext?.status).toBe("collecting");
-    expect(proposed.conversation.pendingReservationContext).toBeUndefined();
     expect(proposed.conversation.pendingReservationProposal).toMatchObject({
       status: "proposed",
       petName: "Toby",
       checkIn: "2026-12-29",
       checkOut: "2026-12-31",
+      checkInTime: "12:00",
+      checkOutTime: "12:00",
+      price: 60,
+      priceSource: "calculated",
     });
     expect(proposed.botReply?.body).toContain("Tenemos disponibilidad");
+    expect(proposed.botReply?.body).toContain("60 €");
     expect(counters.checks).toBe(1);
     expect(counters.writes).toBe(0);
+  });
+
+  it("asks habitual clients for email before collecting reservation details", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "Quiero reservar",
+        messageSid: "SM_BRIDGE_HABITUAL_START",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "Sí soy cliente",
+        messageSid: "SM_BRIDGE_HABITUAL_YES",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "asking_existing_email",
+      clientKind: "habitual",
+    });
+    expect(result.botReply?.body).toContain("email");
+    expect(counters.checks).toBe(0);
+    expect(counters.writes).toBe(0);
+  });
+
+  it("matches habitual clients by exact email from CLIENTES", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+    const directory = createStaticClientDirectory([
+      {
+        nombre: "Cliente QA Email",
+        email: "cliente.email@example.test",
+        rowNumber: 22,
+        sheetName: "CLIENTES_QA",
+      },
+    ]);
+
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "Quiero reservar",
+        messageSid: "SM_BRIDGE_EMAIL_MATCH_START",
+      },
+      store,
+      directory,
+      deps,
+    );
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "Sí soy cliente",
+        messageSid: "SM_BRIDGE_EMAIL_MATCH_YES",
+      },
+      store,
+      directory,
+      deps,
+    );
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "cliente.email@example.test",
+        messageSid: "SM_BRIDGE_EMAIL_MATCH_VALUE",
+      },
+      store,
+      directory,
+      deps,
+    );
+
+    expect(result.conversation).toMatchObject({
+      clientStatus: "known",
+      clientConfidence: "strong",
+      clientMatchType: "email",
+      clientName: "Cliente QA Email",
+      clientEmail: "cliente.email@example.test",
+    });
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_pet",
+      clientKind: "habitual",
+      email: "cliente.email@example.test",
+      ownerName: "Cliente QA Email",
+    });
+    expect(result.conversation.events.some((event) => event.eventType === "reservation_flow_existing_client_email_match")).toBe(true);
+    expect(counters.checks).toBe(0);
+  });
+
+  it("falls back to new contact collection when habitual email is not found", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "Quiero reservar",
+        messageSid: "SM_BRIDGE_EMAIL_MISS_START",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "Sí soy cliente",
+        messageSid: "SM_BRIDGE_EMAIL_MISS_YES",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "noexiste@example.test",
+        messageSid: "SM_BRIDGE_EMAIL_MISS_VALUE",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(result.conversation.clientStatus).toBe("unknown");
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_owner",
+      clientKind: "new",
+      email: "noexiste@example.test",
+    });
+    expect(result.botReply?.body).toContain("nuevo contacto");
+    expect(counters.checks).toBe(0);
+  });
+
+  it("starts new-client collection without checking availability", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "Quiero reservar",
+        messageSid: "SM_BRIDGE_NEW_START",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "No soy cliente",
+        messageSid: "SM_BRIDGE_NEW_NO",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_owner",
+      clientKind: "new",
+    });
+    expect(result.botReply?.body).toContain("nombre y apellidos");
+    expect(counters.checks).toBe(0);
+    expect(counters.writes).toBe(0);
+  });
+
+  it("asks for stay hours when dates arrive without times", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+
+    await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "Quiero reservar", messageSid: "SM_BRIDGE_HOURS_START" },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "No soy cliente", messageSid: "SM_BRIDGE_HOURS_NEW" },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "Ana QA ana.qa@example.test", messageSid: "SM_BRIDGE_HOURS_OWNER" },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "Toby, 1 perro", messageSid: "SM_BRIDGE_HOURS_PET" },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    const result = await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "Del 29 al 31 de diciembre de 2026", messageSid: "SM_BRIDGE_HOURS_DATES" },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_dates",
+      checkInDate: "2026-12-29",
+      checkOutDate: "2026-12-31",
+    });
+    expect(result.botReply?.body).toContain("hora sería la entrada");
+    expect(counters.checks).toBe(0);
+  });
+
+  it("extracts explicit dates and times from a rich pet answer", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+
+    await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "Quiero reservar", messageSid: "SM_BRIDGE_RICH_START" },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "No soy cliente", messageSid: "SM_BRIDGE_RICH_NEW" },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "Ana QA ana.qa@example.test", messageSid: "SM_BRIDGE_RICH_OWNER" },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "Bimba, 2 perros, del 29 al 31 de diciembre de 2026, entrada a las 10:30 y salida a las 17:00",
+        messageSid: "SM_BRIDGE_RICH_DETAILS",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_notes",
+      petName: "Bimba",
+      petCount: 2,
+      checkInDate: "2026-12-29",
+      checkInTime: "10:30",
+      checkInSlot: "morning",
+      checkOutDate: "2026-12-31",
+      checkOutTime: "17:00",
+      checkOutSlot: "afternoon",
+    });
+    expect(counters.checks).toBe(0);
+  });
+
+  it("records visit preferences before proposing the reservation", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+    const directory = createStaticClientDirectory([]);
+    const from = "whatsapp:+34600009991";
+
+    await handleInboundWhatsApp({ from, body: "Quiero reservar", messageSid: "SM_BRIDGE_VISIT_START" }, store, directory, deps);
+    await handleInboundWhatsApp({ from, body: "No soy cliente", messageSid: "SM_BRIDGE_VISIT_NEW" }, store, directory, deps);
+    await handleInboundWhatsApp({ from, body: "Ana QA ana.qa@example.test", messageSid: "SM_BRIDGE_VISIT_OWNER" }, store, directory, deps);
+    await handleInboundWhatsApp({ from, body: "Toby, 1 perro", messageSid: "SM_BRIDGE_VISIT_PET" }, store, directory, deps);
+    await handleInboundWhatsApp({ from, body: "Del 29 al 31 de diciembre de 2026", messageSid: "SM_BRIDGE_VISIT_DATES" }, store, directory, deps);
+    await handleInboundWhatsApp({ from, body: "Entrada a las 12:00 y salida a las 12:00", messageSid: "SM_BRIDGE_VISIT_TIMES" }, store, directory, deps);
+    await handleInboundWhatsApp({ from, body: "Sin notas", messageSid: "SM_BRIDGE_VISIT_NOTES" }, store, directory, deps);
+    const result = await handleInboundWhatsApp(
+      { from, body: "Sí, quiero visitar el hotel", messageSid: "SM_BRIDGE_VISIT_YES" },
+      store,
+      directory,
+      deps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "pending_confirmation",
+      wantsVisit: true,
+    });
+    expect(result.conversation.pendingReservationProposal).toMatchObject({
+      status: "proposed",
+      wantsVisit: true,
+    });
+    expect(result.botReply?.body).toContain("Las visitas se coordinan");
+    expect(counters.checks).toBe(1);
+  });
+
+  it.each([
+    [1, 60],
+    [2, 90],
+    [3, 100],
+    [4, 110],
+  ])("prices a two-night stay for %i dog(s) at %i euros", async (dogs, expectedPrice) => {
+    const store = new MemoryConversationStore();
+    const { deps } = makeBridgeDeps();
+
+    const result = await createNewClientPricedProposal({
+      store,
+      deps,
+      dogs,
+      petName: `Tarifa ${dogs}`,
+      prefix: `SM_BRIDGE_PRICE_${dogs}`,
+    });
+
+    expect(result.conversation.pendingReservationProposal).toMatchObject({
+      status: "proposed",
+      petCount: dogs,
+      price: expectedPrice,
+      priceSource: "calculated",
+    });
+    expect(result.botReply?.body).toContain(`${expectedPrice} €`);
   });
 
   it("extracts explicit pet names and infers missing future years", async () => {
@@ -335,22 +718,36 @@ describe("WhatsApp reservation bridge", () => {
       now: () => new Date("2026-01-10T10:00:00.000Z"),
     };
 
+    await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "Quiero reservar", messageSid: "SM_BRIDGE_YUYU_START" },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+    await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "No", messageSid: "SM_BRIDGE_YUYU_NEW" },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+    await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "Ana QA ana.qa@example.test", messageSid: "SM_BRIDGE_YUYU_OWNER" },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
     const proposed = await handleInboundWhatsApp(
-      {
-        from: "whatsapp:+34600009991",
-        body: "El nombre de mi mascota es YUYU, y quiero del 30 al 31 de Diciembre",
-        messageSid: "SM_BRIDGE_YUYU_1",
-      },
+      { from: "whatsapp:+34600009991", body: "El nombre de mi mascota es YUYU, 1 perro, y quiero del 30 al 31 de Diciembre", messageSid: "SM_BRIDGE_YUYU_1" },
       store,
       createStaticClientDirectory([]),
       timedDeps,
     );
 
-    expect(proposed.conversation.pendingReservationProposal).toMatchObject({
-      status: "proposed",
+    expect(proposed.conversation.reservationFlow).toMatchObject({
+      status: "collecting_dates",
       petName: "YUYU",
-      checkIn: "2026-12-30",
-      checkOut: "2026-12-31",
+      checkInDate: "2026-12-30",
+      checkOutDate: "2026-12-31",
     });
   });
 
@@ -362,20 +759,16 @@ describe("WhatsApp reservation bridge", () => {
       now: () => new Date("2026-12-31T10:00:00.000Z"),
     };
 
-    const proposed = await handleInboundWhatsApp(
-      {
-        from: "whatsapp:+34600009991",
-        body: "Quiero reservar para Toby del 29 al 31 de diciembre",
-        messageSid: "SM_BRIDGE_NEXT_YEAR_1",
-      },
+    const proposed = await createNewClientPricedProposal({
       store,
-      createStaticClientDirectory([]),
-      timedDeps,
-    );
+      deps: timedDeps,
+      petName: "Toby",
+      dateText: "Del 29 al 31 de diciembre",
+      prefix: "SM_BRIDGE_NEXT_YEAR",
+    });
 
     expect(proposed.conversation.pendingReservationProposal).toMatchObject({
       status: "proposed",
-      petName: "Toby",
       checkIn: "2027-12-29",
       checkOut: "2027-12-31",
     });
@@ -385,15 +778,12 @@ describe("WhatsApp reservation bridge", () => {
     const store = new MemoryConversationStore();
     const { counters, deps } = makeBridgeDeps();
 
-    await handleInboundWhatsApp(
+    await createNewClientPricedProposal(
       {
-        from: "whatsapp:+34600009991",
-        body: "Quiero reservar para Kira QA del 29 al 31 de diciembre de 2026",
-        messageSid: "SM_BRIDGE_CONFIRM_1",
+        store,
+        deps,
+        prefix: "SM_BRIDGE_CONFIRM_1",
       },
-      store,
-      createStaticClientDirectory([]),
-      deps,
     );
     const confirmed = await handleInboundWhatsApp(
       {
@@ -463,16 +853,11 @@ describe("WhatsApp reservation bridge", () => {
     const store = new MemoryConversationStore();
     const { counters, deps } = makeBridgeDeps();
 
-    await handleInboundWhatsApp(
-      {
-        from: "whatsapp:+34600009991",
-        body: "Quiero reservar para Kira QA del 29 al 31 de diciembre de 2026",
-        messageSid: `SM_BRIDGE_SHORT_${utterance}_1`,
-      },
+    await createNewClientPricedProposal({
       store,
-      createStaticClientDirectory([]),
       deps,
-    );
+      prefix: `SM_BRIDGE_SHORT_${utterance}_1`,
+    });
     const confirmed = await handleInboundWhatsApp(
       {
         from: "whatsapp:+34600009991",
@@ -543,16 +928,11 @@ describe("WhatsApp reservation bridge", () => {
     const store = new MemoryConversationStore();
     const { counters, deps } = makeBridgeDeps({ availabilitySequence: [true, false] });
 
-    await handleInboundWhatsApp(
-      {
-        from: "whatsapp:+34600009991",
-        body: "Quiero reservar para Kira QA del 29 al 31 de diciembre de 2026",
-        messageSid: "SM_BRIDGE_LOST_1",
-      },
+    await createNewClientPricedProposal({
       store,
-      createStaticClientDirectory([]),
       deps,
-    );
+      prefix: "SM_BRIDGE_LOST_1",
+    });
     const result = await handleInboundWhatsApp(
       {
         from: "whatsapp:+34600009991",
@@ -581,16 +961,11 @@ describe("WhatsApp reservation bridge", () => {
       now: () => now,
     };
 
-    await handleInboundWhatsApp(
-      {
-        from: "whatsapp:+34600009991",
-        body: "Quiero reservar para Kira QA del 29 al 31 de diciembre de 2026",
-        messageSid: "SM_BRIDGE_EXPIRED_1",
-      },
+    await createNewClientPricedProposal({
       store,
-      createStaticClientDirectory([]),
-      timedDeps,
-    );
+      deps: timedDeps,
+      prefix: "SM_BRIDGE_EXPIRED_1",
+    });
     now = new Date("2026-05-27T13:01:00.000Z");
     const result = await handleInboundWhatsApp(
       {
@@ -613,16 +988,11 @@ describe("WhatsApp reservation bridge", () => {
     const store = new MemoryConversationStore();
     const { counters, deps } = makeBridgeDeps();
 
-    const proposed = await handleInboundWhatsApp(
-      {
-        from: "whatsapp:+34600009991",
-        body: "Quiero reservar para Kira QA del 29 al 31 de diciembre de 2026",
-        messageSid: "SM_BRIDGE_HUMAN_MODE_1",
-      },
+    const proposed = await createNewClientPricedProposal({
       store,
-      createStaticClientDirectory([]),
       deps,
-    );
+      prefix: "SM_BRIDGE_HUMAN_MODE_1",
+    });
     await store.replaceConversation({
       ...proposed.conversation,
       mode: "human",
@@ -649,16 +1019,11 @@ describe("WhatsApp reservation bridge", () => {
     const store = new MemoryConversationStore();
     const { counters, deps } = makeBridgeDeps({ writeFails: true });
 
-    await handleInboundWhatsApp(
-      {
-        from: "whatsapp:+34600009991",
-        body: "Quiero reservar para Kira QA del 29 al 31 de diciembre de 2026",
-        messageSid: "SM_BRIDGE_WRITE_FAIL_1",
-      },
+    await createNewClientPricedProposal({
       store,
-      createStaticClientDirectory([]),
       deps,
-    );
+      prefix: "SM_BRIDGE_WRITE_FAIL_1",
+    });
     const result = await handleInboundWhatsApp(
       {
         from: "whatsapp:+34600009991",
@@ -684,16 +1049,11 @@ describe("WhatsApp reservation bridge", () => {
     const store = new MemoryConversationStore();
     const { counters, deps } = makeBridgeDeps({ recordUpsertFails: true });
 
-    await handleInboundWhatsApp(
-      {
-        from: "whatsapp:+34600009991",
-        body: "Quiero reservar para Kira QA del 29 al 31 de diciembre de 2026",
-        messageSid: "SM_BRIDGE_RECORD_FAIL_1",
-      },
+    await createNewClientPricedProposal({
       store,
-      createStaticClientDirectory([]),
       deps,
-    );
+      prefix: "SM_BRIDGE_RECORD_FAIL_1",
+    });
     const result = await handleInboundWhatsApp(
       {
         from: "whatsapp:+34600009991",
@@ -729,16 +1089,11 @@ describe("WhatsApp reservation bridge", () => {
     const store = new MemoryConversationStore();
     const { counters, deps } = makeBridgeDeps({ clientUpsertFails: true });
 
-    await handleInboundWhatsApp(
-      {
-        from: "whatsapp:+34600009991",
-        body: "Quiero reservar para Kira QA del 29 al 31 de diciembre de 2026",
-        messageSid: "SM_BRIDGE_CLIENT_UPSERT_FAIL_1",
-      },
+    await createNewClientPricedProposal({
       store,
-      createStaticClientDirectory([]),
       deps,
-    );
+      prefix: "SM_BRIDGE_CLIENT_UPSERT_FAIL_1",
+    });
     const result = await handleInboundWhatsApp(
       {
         from: "whatsapp:+34600009991",
@@ -763,16 +1118,11 @@ describe("WhatsApp reservation bridge", () => {
     const store = new MemoryConversationStore();
     const { counters, deps } = makeBridgeDeps();
 
-    await handleInboundWhatsApp(
-      {
-        from: "whatsapp:+34600009991",
-        body: "Quiero reservar para Kira QA del 29 al 31 de diciembre de 2026",
-        messageSid: "SM_BRIDGE_PRIVACY_1",
-      },
+    await createNewClientPricedProposal({
       store,
-      createStaticClientDirectory([]),
       deps,
-    );
+      prefix: "SM_BRIDGE_PRIVACY_1",
+    });
     const result = await handleInboundWhatsApp(
       {
         from: "whatsapp:+34600009991",
@@ -870,16 +1220,11 @@ describe("WhatsApp reservation bridge", () => {
     const store = new MemoryConversationStore();
     const { counters, deps } = makeBridgeDeps();
 
-    await handleInboundWhatsApp(
-      {
-        from: "whatsapp:+34600009991",
-        body: "Quiero reservar para Kira QA del 29 al 31 de diciembre de 2026",
-        messageSid: "SM_BRIDGE_IDEMPOTENT_1",
-      },
+    await createNewClientPricedProposal({
       store,
-      createStaticClientDirectory([]),
       deps,
-    );
+      prefix: "SM_BRIDGE_IDEMPOTENT_1",
+    });
     await handleInboundWhatsApp(
       {
         from: "whatsapp:+34600009991",
@@ -929,16 +1274,12 @@ describe("WhatsApp reservation bridge", () => {
       },
     ]);
 
-    await handleInboundWhatsApp(
-      {
-        from: "whatsapp:+34600009991",
-        body: "Quiero reservar para Kira QA del 29 al 31 de diciembre de 2026",
-        messageSid: "SM_BRIDGE_EXISTING_CLIENT_1",
-      },
+    await createNewClientPricedProposal({
       store,
-      directory,
       deps,
-    );
+      directory,
+      prefix: "SM_BRIDGE_EXISTING_CLIENT_1",
+    });
     const result = await handleInboundWhatsApp(
       {
         from: "whatsapp:+34600009991",

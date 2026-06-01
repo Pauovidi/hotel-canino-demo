@@ -188,12 +188,75 @@ describe("conversation end-to-end policy QA", () => {
   it("creates a reviewed proposal without attaching a confirmed reservationId from reservation copy", async () => {
     const store = new MemoryConversationStore();
 
-    const result = await handleInboundWhatsApp(
+    await handleInboundWhatsApp(
       {
         from: qaPhone,
         to: "whatsapp:+14155238886",
         body: "Quiero reservar para Kira QA del 29 al 31 de diciembre de 2026",
         messageSid: "SM_QA_RESERVATION_START",
+      },
+      store,
+      createStaticClientDirectory([]),
+    );
+    await handleInboundWhatsApp(
+      {
+        from: qaPhone,
+        body: "No soy cliente",
+        messageSid: "SM_QA_RESERVATION_NEW",
+      },
+      store,
+      createStaticClientDirectory([]),
+    );
+    await handleInboundWhatsApp(
+      {
+        from: qaPhone,
+        body: "Ana QA ana.qa@example.test",
+        messageSid: "SM_QA_RESERVATION_OWNER",
+      },
+      store,
+      createStaticClientDirectory([]),
+    );
+    await handleInboundWhatsApp(
+      {
+        from: qaPhone,
+        body: "Kira QA, 1 perro",
+        messageSid: "SM_QA_RESERVATION_PET",
+      },
+      store,
+      createStaticClientDirectory([]),
+    );
+    await handleInboundWhatsApp(
+      {
+        from: qaPhone,
+        body: "Del 29 al 31 de diciembre de 2026",
+        messageSid: "SM_QA_RESERVATION_DATES",
+      },
+      store,
+      createStaticClientDirectory([]),
+    );
+    await handleInboundWhatsApp(
+      {
+        from: qaPhone,
+        body: "Entrada a las 12:00 y salida a las 12:00",
+        messageSid: "SM_QA_RESERVATION_TIMES",
+      },
+      store,
+      createStaticClientDirectory([]),
+    );
+    await handleInboundWhatsApp(
+      {
+        from: qaPhone,
+        body: "Sin notas",
+        messageSid: "SM_QA_RESERVATION_NOTES",
+      },
+      store,
+      createStaticClientDirectory([]),
+    );
+    const result = await handleInboundWhatsApp(
+      {
+        from: qaPhone,
+        body: "No",
+        messageSid: "SM_QA_RESERVATION_VISIT",
       },
       store,
       createStaticClientDirectory([]),
@@ -208,6 +271,7 @@ describe("conversation end-to-end policy QA", () => {
       checkOut: "2026-12-31",
     });
     expect(result.botReply?.body).toContain("Tenemos disponibilidad");
+    expect(result.botReply?.body).toContain("60 €");
     expect(
       result.conversation.events.some(
         (event) =>
