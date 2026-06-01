@@ -387,6 +387,38 @@ async function collectNewClientPet(input: {
   );
 }
 
+async function collectNewClientDatesWithoutTimes(input: {
+  store: ConversationStore;
+  deps: ReturnType<typeof makeBridgeDeps>["deps"];
+  from?: string;
+  directory?: ReturnType<typeof createStaticClientDirectory>;
+  prefix: string;
+  petName?: string;
+  dateText?: string;
+}) {
+  const from = input.from ?? "whatsapp:+34600009991";
+  const directory = input.directory ?? createStaticClientDirectory([]);
+  await collectNewClientPet({
+    store: input.store,
+    deps: input.deps,
+    from,
+    directory,
+    prefix: input.prefix,
+    petName: input.petName ?? "YUYU",
+    dogs: 1,
+  });
+  return handleInboundWhatsApp(
+    {
+      from,
+      body: input.dateText ?? "Del 29 al 30 de diciembre",
+      messageSid: `${input.prefix}_DATES_ONLY`,
+    },
+    input.store,
+    directory,
+    input.deps,
+  );
+}
+
 describe("WhatsApp reservation bridge", () => {
   it("asks client branch before proposing availability", async () => {
     const store = new MemoryConversationStore();
@@ -874,6 +906,180 @@ describe("WhatsApp reservation bridge", () => {
     expect(result.conversation.reservationFlow?.checkInTime).toBeUndefined();
     expect(result.conversation.reservationFlow?.checkOutTime).toBeUndefined();
     expect(result.botReply?.body).toContain("hora");
+    expect(counters.checks).toBe(0);
+  });
+
+  it.each([
+    "me da igual",
+    "lo que vosotros me digáis",
+    "cuando mejor os venga",
+    "me adapto",
+  ])("keeps reservation context and asks for a time preference on indifferent hour replies: %s", async (message) => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-06-01T10:00:00.000Z"),
+    };
+
+    await collectNewClientDatesWithoutTimes({
+      store,
+      deps: timedDeps,
+      prefix: `SM_BRIDGE_TIME_PREF_${message}`,
+    });
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: message,
+        messageSid: `SM_BRIDGE_TIME_PREF_RESULT_${message}`,
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_dates",
+      email: "ana.qa@example.test",
+      petName: "YUYU",
+      petCount: 1,
+      checkInDate: "2026-12-29",
+      checkOutDate: "2026-12-30",
+      timePreferencePrompted: true,
+    });
+    expect(result.conversation.reservationFlow?.checkInTime).toBeUndefined();
+    expect(result.conversation.reservationFlow?.checkOutTime).toBeUndefined();
+    expect(result.botReply?.body).toContain("¿Prefieres mañana o tarde?");
+    expect(result.botReply?.body).not.toContain("no te he entendido");
+    expect(counters.checks).toBe(0);
+  });
+
+  it.each([
+    ["mañana", "08:00", "08:00"],
+    ["tarde", "16:30", "16:30"],
+    ["me da igual", "08:00", "16:30"],
+  ] as const)("resolves hours after an indifferent prompt with %s", async (preference, checkInTime, checkOutTime) => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-06-01T10:00:00.000Z"),
+    };
+
+    await collectNewClientDatesWithoutTimes({
+      store,
+      deps: timedDeps,
+      prefix: `SM_BRIDGE_TIME_PREF_RESOLVE_${preference}`,
+    });
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "me da igual",
+        messageSid: `SM_BRIDGE_TIME_PREF_RESOLVE_${preference}_PROMPT`,
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: preference,
+        messageSid: `SM_BRIDGE_TIME_PREF_RESOLVE_${preference}_ANSWER`,
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_notes",
+      email: "ana.qa@example.test",
+      petName: "YUYU",
+      checkInDate: "2026-12-29",
+      checkInTime,
+      checkOutDate: "2026-12-30",
+      checkOutTime,
+    });
+    expect(result.botReply?.body).toContain("alimentación");
+    expect(counters.checks).toBe(0);
+  });
+
+  it.each([
+    ["10 y 18", "10:00", "18:00"],
+    ["10 de la mañana y 6 de la tarde", "10:00", "18:00"],
+    ["entrada a las 10 y salida a las 18", "10:00", "18:00"],
+    ["por la mañana y por la tarde", "08:00", "16:30"],
+  ] as const)("extracts contextual time pairs while awaiting hours: %s", async (message, checkInTime, checkOutTime) => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-06-01T10:00:00.000Z"),
+    };
+
+    await collectNewClientDatesWithoutTimes({
+      store,
+      deps: timedDeps,
+      prefix: `SM_BRIDGE_CONTEXT_TIMES_${message}`,
+    });
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: message,
+        messageSid: `SM_BRIDGE_CONTEXT_TIMES_RESULT_${message}`,
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_notes",
+      petName: "YUYU",
+      checkInTime,
+      checkOutTime,
+    });
+    expect(result.botReply?.body).not.toContain("no te he entendido");
+    expect(counters.checks).toBe(0);
+  });
+
+  it("keeps context and asks a contextual clarification for PM times outside the reception day", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-06-01T10:00:00.000Z"),
+    };
+
+    await collectNewClientDatesWithoutTimes({
+      store,
+      deps: timedDeps,
+      prefix: "SM_BRIDGE_CONTEXT_PM_OUT_OF_RANGE",
+    });
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "10 PM y 10 PM",
+        messageSid: "SM_BRIDGE_CONTEXT_PM_OUT_OF_RANGE_RESULT",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_dates",
+      email: "ana.qa@example.test",
+      petName: "YUYU",
+      checkInDate: "2026-12-29",
+      checkOutDate: "2026-12-30",
+      timePreferencePrompted: true,
+    });
+    expect(result.conversation.reservationFlow?.checkInTime).toBeUndefined();
+    expect(result.botReply?.body).toContain("He entendido 22:00");
+    expect(result.botReply?.body).toContain("primera hora de la mañana");
+    expect(result.botReply?.body).not.toContain("no te he entendido");
     expect(counters.checks).toBe(0);
   });
 

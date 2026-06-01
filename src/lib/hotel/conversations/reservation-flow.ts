@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { ClientDirectoryService, normalizeEmail, type ClientDirectory } from "@/lib/hotel/clients";
 import { getHotelFeatureFlags, getHotelRuntimeConfig } from "@/lib/hotel/config";
 import type { PricingQuote as DomainPricingQuote } from "@/lib/hotel/domain/contracts";
-import type { HotelSlot } from "@/lib/hotel/domain/slots";
+import { HOTEL_SLOT_WINDOWS, type HotelSlot } from "@/lib/hotel/domain/slots";
 import { quoteStayPrice } from "@/lib/hotel/pricing/engine";
 import type { PricingQuote } from "@/lib/hotel/pricing/types";
 import { buildGoogleSheetAdapter, buildMockSheetAdapter } from "@/lib/hotel/sheets";
@@ -15,6 +15,12 @@ import type {
 
 const RESERVATION_FLOW_TTL_MS = 2 * 60 * 60 * 1000;
 const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+const DEFAULT_MORNING_TIME = HOTEL_SLOT_WINDOWS.morning.start;
+const DEFAULT_AFTERNOON_TIME = HOTEL_SLOT_WINDOWS.afternoon.start;
+const TIME_PREFERENCE_PROMPT =
+  "Sin problema. ¿Prefieres mañana o tarde? Si te da igual, puedo poner la primera hora de la mañana o la primera de la tarde.";
+const TIME_CONTEXT_FALLBACK =
+  "Para poder calcular disponibilidad y precio necesito la hora de entrada y la hora de salida. Si te da igual, puedo proponerte primera hora de la mañana o primera hora de la tarde.";
 
 const MONTHS: Record<string, number> = {
   enero: 1,
@@ -154,20 +160,30 @@ function parseTime(raw: string | undefined): string | undefined {
     .replace(/[¿?¡!,.;()[\]{}"'`´]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  if (/\bmanana\b/.test(normalized)) {
+  if (!/\d/.test(normalized) && /\bmanana\b/.test(normalized)) {
     return "mañana";
   }
-  if (/\btarde\b/.test(normalized)) {
+  if (!/\d/.test(normalized) && /\btarde\b/.test(normalized)) {
     return "tarde";
   }
 
-  const match = normalized.match(/\b(\d{1,2})(?:(?::|\.)\s*(\d{2})|h(?:\s*(\d{2}))?)?\b/);
+  const match = normalized.match(
+    /\b(\d{1,2})(?:(?::|\.)\s*(\d{2})|h(?:\s*(\d{2}))?)?(?:\s*(am|pm|a\s*m|p\s*m))?(?:\s+de\s+la\s+(manana|tarde|noche))?\b/,
+  );
   if (!match) {
     return undefined;
   }
 
-  const hour = Number.parseInt(match[1], 10);
+  let hour = Number.parseInt(match[1], 10);
   const minute = match[2] || match[3] ? Number.parseInt(match[2] ?? match[3], 10) : 0;
+  const meridiem = match[4]?.replace(/\s+/g, "");
+  const dayPart = match[5];
+  if ((meridiem === "pm" || dayPart === "tarde" || dayPart === "noche") && hour < 12) {
+    hour += 12;
+  }
+  if (meridiem === "am" && hour === 12) {
+    hour = 0;
+  }
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
     return undefined;
   }
@@ -230,10 +246,169 @@ function findDateInText(
 
 function findTimeInText(value: string): string | undefined {
   const labeled = value.match(
-    /\b(?:a\s+las?|a\s+la|sobre\s+las?|hacia\s+las?|por\s+la\s+)(manana|tarde|\d{1,2}(?:(?::|\.)\d{2})?h?)\b/,
+    /\b(?:a\s+las?|a\s+la|sobre\s+las?|hacia\s+las?|por\s+la\s+)(manana|tarde|\d{1,2}(?:(?::|\.)\d{2})?h?(?:\s*(?:am|pm|a\s*m|p\s*m))?(?:\s+de\s+la\s+(?:manana|tarde|noche))?)\b/,
   );
-  const compactTime = labeled?.[1] ?? value.match(/\b(manana|tarde|\d{1,2}(?:(?::|\.)\d{2})?h?)\b/)?.[1];
+  const compactTime = labeled?.[1] ?? value.match(/\b(manana|tarde|\d{1,2}(?:(?::|\.)\d{2})?h?(?:\s*(?:am|pm|a\s*m|p\s*m))?(?:\s+de\s+la\s+(?:manana|tarde|noche))?)\b/)?.[1];
   return parseTime(compactTime);
+}
+
+function defaultTimeForSlot(slot: HotelSlot): string {
+  return slot === "morning" ? DEFAULT_MORNING_TIME : DEFAULT_AFTERNOON_TIME;
+}
+
+function hasDatesAndNeedsTimes(flow: ConversationReservationFlow): boolean {
+  return Boolean(flow.checkInDate && flow.checkOutDate && (!flow.checkInTime || !flow.checkOutTime));
+}
+
+function isIndifferentTimePreference(message: string): boolean {
+  const normalized = normalizeText(message);
+  return /^(me da igual|me es indiferente|lo que vosotros me digais|lo que me digais|lo que digais|cuando mejor os venga|cuando os vaya bien|me adapto|cualquiera|la que sea|poned vosotros|como querais|lo que querais)$/.test(normalized);
+}
+
+function isMorningPreference(message: string): boolean {
+  const normalized = normalizeText(message);
+  return /\b(manana|por la manana|mejor manana|primera hora de la manana)\b/.test(normalized);
+}
+
+function isAfternoonPreference(message: string): boolean {
+  const normalized = normalizeText(message);
+  return /\b(tarde|por la tarde|mejor tarde|primera hora de la tarde)\b/.test(normalized);
+}
+
+function minutesFromTime(time: string): number {
+  const [hours, minutes] = time.split(":").map(Number);
+  return hours * 60 + minutes;
+}
+
+function isOutsideReceptionDay(time: string): boolean {
+  const value = minutesFromTime(time);
+  return (
+    value < minutesFromTime(HOTEL_SLOT_WINDOWS.morning.start) ||
+    value > minutesFromTime(HOTEL_SLOT_WINDOWS.afternoon.end)
+  );
+}
+
+function buildTimeOutOfRangeReply(times: string[]): string {
+  const unique = Array.from(new Set(times));
+  const understood = unique.length === 1 ? unique[0] : unique.join(" y ");
+  return `He entendido ${understood}, pero puede quedar fuera del horario habitual. ¿Quieres que lo dejemos en primera hora de la mañana o primera hora de la tarde?`;
+}
+
+function extractLooseTimeMentions(message: string): string[] {
+  const normalized = normalizeDateTimeText(message);
+  const mentions: string[] = [];
+  const matcher =
+    /\b(?:a\s+las?\s+)?(\d{1,2})(?:(?::|\.)\s*(\d{2}))?(?:\s*(am|pm|a\s*m|p\s*m))?(?:\s+de\s+la\s+(manana|tarde|noche))?\b/g;
+  let match: RegExpExecArray | null;
+  while ((match = matcher.exec(normalized)) !== null) {
+    const [raw] = match;
+    const parsed = parseTime(raw);
+    if (parsed) {
+      mentions.push(parsed);
+    }
+  }
+  return mentions;
+}
+
+function buildTimePatch(
+  checkInTime: string,
+  checkOutTime: string,
+): Partial<ConversationReservationFlow> {
+  return {
+    checkInTime,
+    checkInSlot: slotFromTime(checkInTime),
+    checkOutTime,
+    checkOutSlot: slotFromTime(checkOutTime),
+    timePreferencePrompted: undefined,
+  };
+}
+
+function resolveAwaitingTimeInput(
+  flow: ConversationReservationFlow,
+  message: string,
+): { patch?: Partial<ConversationReservationFlow>; reply?: string; eventType?: string; eventPayload?: Record<string, unknown> } | undefined {
+  if (!hasDatesAndNeedsTimes(flow)) {
+    return undefined;
+  }
+
+  const morning = isMorningPreference(message);
+  const afternoon = isAfternoonPreference(message);
+  const indifferent = isIndifferentTimePreference(message);
+
+  if (indifferent && !flow.timePreferencePrompted) {
+    return {
+      patch: { timePreferencePrompted: true },
+      reply: TIME_PREFERENCE_PROMPT,
+      eventType: "reservation_flow_waiting_time_preference",
+      eventPayload: { awaiting: "check_in_out_times", preference: "indifferent_prompted" },
+    };
+  }
+
+  if (indifferent && flow.timePreferencePrompted) {
+    return {
+      patch: buildTimePatch(DEFAULT_MORNING_TIME, DEFAULT_AFTERNOON_TIME),
+      eventPayload: { preference: "indifferent_defaults", checkInTime: DEFAULT_MORNING_TIME, checkOutTime: DEFAULT_AFTERNOON_TIME },
+    };
+  }
+
+  const explicit = parseDatesAndTimes(message, new Date());
+  if (explicit.checkInTime && explicit.checkOutTime) {
+    const outOfRange = [explicit.checkInTime, explicit.checkOutTime].filter(isOutsideReceptionDay);
+    if (outOfRange.length > 0) {
+      return {
+        patch: { timePreferencePrompted: true },
+        reply: buildTimeOutOfRangeReply(outOfRange),
+        eventType: "reservation_flow_time_out_of_range",
+        eventPayload: { outOfRangeTimes: outOfRange },
+      };
+    }
+    return {
+      patch: {
+        checkInTime: explicit.checkInTime,
+        checkInSlot: explicit.checkInSlot,
+        checkOutTime: explicit.checkOutTime,
+        checkOutSlot: explicit.checkOutSlot,
+        timePreferencePrompted: undefined,
+      },
+      eventPayload: { source: "explicit_entry_exit_times" },
+    };
+  }
+
+  const looseTimes = extractLooseTimeMentions(message);
+  if (looseTimes.length >= 2) {
+    const [checkInTime, checkOutTime] = looseTimes;
+    const outOfRange = [checkInTime, checkOutTime].filter(isOutsideReceptionDay);
+    if (outOfRange.length > 0) {
+      return {
+        patch: { timePreferencePrompted: true },
+        reply: buildTimeOutOfRangeReply(outOfRange),
+        eventType: "reservation_flow_time_out_of_range",
+        eventPayload: { outOfRangeTimes: outOfRange },
+      };
+    }
+    return {
+      patch: buildTimePatch(checkInTime, checkOutTime),
+      eventPayload: { source: "loose_time_pair", checkInTime, checkOutTime },
+    };
+  }
+
+  if (morning && afternoon) {
+    return {
+      patch: buildTimePatch(DEFAULT_MORNING_TIME, DEFAULT_AFTERNOON_TIME),
+      eventPayload: { preference: "morning_afternoon", checkInTime: DEFAULT_MORNING_TIME, checkOutTime: DEFAULT_AFTERNOON_TIME },
+    };
+  }
+
+  if (morning || afternoon) {
+    const slot: HotelSlot = morning ? "morning" : "afternoon";
+    const time = defaultTimeForSlot(slot);
+    return {
+      patch: buildTimePatch(time, time),
+      eventPayload: { preference: slot, checkInTime: time, checkOutTime: time },
+    };
+  }
+
+  return undefined;
 }
 
 function parseDateTimeSegment(
@@ -805,7 +980,24 @@ export async function advanceReservationFlow(input: {
   }
 
   if (flow.status === "collecting_dates") {
-    flow = { ...flow, ...defined(parseDatesAndTimes(input.message, now)) };
+    const awaitingTime = resolveAwaitingTimeInput(flow, input.message);
+    if (awaitingTime?.reply) {
+      const nextFlow = { ...flow, ...awaitingTime.patch, updatedAt: nowIso(now) };
+      return {
+        conversation: syncConversationFromFlow(input.conversation, nextFlow),
+        reply: awaitingTime.reply,
+        eventType: awaitingTime.eventType ?? "reservation_flow_waiting_time_preference",
+        eventPayload: {
+          status: nextFlow.status,
+          ...awaitingTime.eventPayload,
+        },
+      };
+    }
+
+    flow = {
+      ...flow,
+      ...defined(awaitingTime?.patch ?? parseDatesAndTimes(input.message, now)),
+    };
   }
 
   if (flow.status === "collecting_notes") {
@@ -824,10 +1016,12 @@ export async function advanceReservationFlow(input: {
   // Opportunistically extract details from richer answers once the client branch is known.
   const canReadReservationDetails =
     current.status === "collecting_pet" || current.status === "collecting_dates";
+  const canUpdatePetName =
+    current.status === "collecting_pet" || (canReadReservationDetails && !flow.petName);
   flow = {
     ...flow,
     email: extractEmail(input.message) ?? flow.email,
-    petName: canReadReservationDetails ? extractPetName(input.message) ?? flow.petName : flow.petName,
+    petName: canUpdatePetName ? extractPetName(input.message) ?? flow.petName : flow.petName,
     petCount: canReadReservationDetails ? extractPetCount(input.message) ?? flow.petCount : flow.petCount,
     ...(canReadReservationDetails ? defined(parseDatesAndTimes(input.message, now)) : {}),
   };
@@ -868,7 +1062,7 @@ export async function advanceReservationFlow(input: {
 
   return {
     conversation,
-    reply: `${visitPrefix}${nextCollectionReply(flow)}`,
+    reply: `${visitPrefix}${hasDatesAndNeedsTimes(flow) && flow.timePreferencePrompted ? TIME_CONTEXT_FALLBACK : nextCollectionReply(flow)}`,
     eventType: "reservation_flow_updated",
     eventPayload: {
       status: flow.status,
