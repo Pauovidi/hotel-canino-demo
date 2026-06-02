@@ -8,6 +8,9 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const STORE_FAILURE_REPLY =
+  "Gracias, hemos recibido tu mensaje. Si no te contestamos de inmediato, una persona del equipo lo revisará por aquí.";
+
 function validateWebhookToken(request: Request): boolean {
   const expected = process.env.TWILIO_WEBHOOK_AUTH_TOKEN;
   if (!expected) {
@@ -74,16 +77,23 @@ function twilioXmlResponse(twiml?: string, status = 200): NextResponse {
   });
 }
 
+function safeErrorPayload(error: unknown) {
+  return {
+    errorName: error instanceof Error ? error.name : "UnknownError",
+    safeErrorCode:
+      error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code).slice(0, 80)
+        : undefined,
+  };
+}
+
 export async function POST(request: Request) {
   if (!validateWebhookToken(request)) {
     return twilioXmlResponse(undefined, 401);
   }
 
   const contentType = request.headers.get("content-type") ?? "";
-  const form =
-    contentType.includes("application/json")
-      ? undefined
-      : await request.formData();
+  const form = contentType.includes("application/json") ? undefined : await request.formData();
   const json = form ? undefined : ((await request.json()) as Record<string, unknown>);
   const raw = Object.fromEntries(
     (form
@@ -102,14 +112,36 @@ export async function POST(request: Request) {
     return twilioXmlResponse();
   }
 
-  const result = await handleInboundWhatsApp({
-    from,
-    to,
-    body,
-    messageSid,
-    displayName: String(raw.ProfileName ?? raw.profileName ?? ""),
-    rawPayload: sanitizeTwilioPayload(raw),
+  console.info("twilio_webhook_received", {
+    hasFrom: Boolean(from),
+    hasTo: Boolean(to),
+    hasBody: Boolean(body),
+    hasMessageSid: Boolean(messageSid),
   });
 
-  return twilioXmlResponse(resolveTwilioWebhookTwiml(result));
+  try {
+    const result = await handleInboundWhatsApp({
+      from,
+      to,
+      body,
+      messageSid,
+      displayName: String(raw.ProfileName ?? raw.profileName ?? ""),
+      rawPayload: sanitizeTwilioPayload(raw),
+    });
+    const twiml = resolveTwilioWebhookTwiml(result);
+
+    console.info("twilio_webhook_reply_built", {
+      hasBotReply: Boolean(result.botReply?.body),
+      hasTwimlMessage: twiml.includes("<Message>"),
+    });
+    console.info("twilio_webhook_twiml_sent", {
+      status: 200,
+      contentType: "text/xml",
+    });
+
+    return twilioXmlResponse(twiml);
+  } catch (error) {
+    console.error("twilio_webhook_store_failed", safeErrorPayload(error));
+    return twilioXmlResponse(buildTwilioMessageResponse(STORE_FAILURE_REPLY));
+  }
 }

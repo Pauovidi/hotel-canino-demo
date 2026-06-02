@@ -30,6 +30,8 @@ interface ConversationsPanelProps {
 type FilterMode = NonNullable<ConversationListFilters["mode"]>;
 export const CONVERSATION_PANEL_POLL_INTERVAL_MS = 3000;
 
+type ActionResponsePayload = { ok?: boolean; error?: string };
+
 const filters: Array<{ label: string; value: FilterMode }> = [
   { label: "Todas", value: "all" },
   { label: "Pendientes", value: "pending" },
@@ -49,6 +51,28 @@ function formatDate(value?: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+export async function readJsonOrEmpty(response: Response): Promise<ActionResponsePayload> {
+  const text = await response.text();
+  if (!text.trim()) {
+    return response.ok ? { ok: true } : { ok: false, error: `HTTP ${response.status}` };
+  }
+
+  const contentType = response.headers.get("Content-Type") ?? "";
+  if (!contentType.toLowerCase().includes("json")) {
+    return response.ok
+      ? { ok: true }
+      : { ok: false, error: text.slice(0, 180) || `HTTP ${response.status}` };
+  }
+
+  try {
+    return JSON.parse(text) as ActionResponsePayload;
+  } catch {
+    return response.ok
+      ? { ok: true }
+      : { ok: false, error: "La respuesta del servidor no se pudo leer." };
+  }
 }
 
 function formatEventType(value: string) {
@@ -420,10 +444,10 @@ export function ConversationsPanel({
       credentials: "same-origin",
       body: body ? JSON.stringify(body) : method === "DELETE" ? undefined : "{}",
     });
-    const data = (await response.json()) as { ok?: boolean; error?: string };
+    const data = await readJsonOrEmpty(response);
 
     if (!response.ok || data.ok === false) {
-      throw new Error(data.error ?? "La accion no se pudo completar.");
+      throw new Error(data.error ?? "La acción no se pudo completar.");
     }
   }
 

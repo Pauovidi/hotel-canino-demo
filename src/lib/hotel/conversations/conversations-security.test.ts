@@ -9,6 +9,10 @@ import {
   resolveTwilioWebhookTwiml,
 } from "../../../app/api/twilio/whatsapp/route";
 import { POST as postConversationsReset } from "../../../app/api/conversations/reset/route";
+import {
+  DELETE as deleteConversationArchive,
+  POST as postConversationArchive,
+} from "../../../app/api/conversations/[id]/archive/route";
 
 import { createStaticClientDirectory } from "@/lib/hotel/clients";
 import {
@@ -27,6 +31,7 @@ describe("conversations security", () => {
     delete process.env.TWILIO_WEBHOOK_AUTH_TOKEN;
     delete process.env.VERCEL_ENV;
     delete process.env.HOTEL_CONVERSATIONS_STORE_DIR;
+    delete process.env.HOTEL_CONVERSATIONS_STORE_PATH;
     delete process.env.HOTEL_PANEL_USERNAME;
     delete process.env.HOTEL_PANEL_PASSWORD;
     if (tempDir) {
@@ -110,6 +115,8 @@ describe("conversations security", () => {
       "src/app/api/conversations/[id]/mode/route.ts",
       "src/app/api/conversations/[id]/mark-read/route.ts",
       "src/app/api/conversations/[id]/messages/route.ts",
+      "src/app/api/conversations/[id]/archive/route.ts",
+      "src/app/api/conversations/[id]/media-mock/route.ts",
       "src/app/api/conversations/events/route.ts",
       "src/app/api/conversations/reset/route.ts",
     ];
@@ -118,6 +125,7 @@ describe("conversations security", () => {
       const source = readFileSync(path.join(process.cwd(), routeFile), "utf8");
       expect(source, routeFile).toContain("requirePanelAuth");
       expect(source, routeFile).toContain("if (!auth.ok)");
+      expect(source, routeFile).toContain("NextResponse.json");
     }
   });
 
@@ -180,6 +188,55 @@ describe("conversations security", () => {
     );
     expect(snapshot.conversations).toEqual([]);
     expect(snapshot.suppressDemoSeed).toBe(true);
+  });
+
+  it("returns JSON for archive and unarchive panel actions", async () => {
+    tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-conversation-archive-route-"));
+    process.env.HOTEL_CONVERSATIONS_STORE_DIR = tempDir;
+    process.env.HOTEL_PANEL_USERNAME = "admin";
+    process.env.HOTEL_PANEL_PASSWORD = "correct-password";
+    resetConversationStoreForTests();
+
+    const created = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600000042",
+        to: "whatsapp:+14155238886",
+        body: "Hola, quiero información",
+        messageSid: "SM_ARCHIVE_ROUTE_001",
+      },
+      getConversationStore(),
+      createStaticClientDirectory([]),
+    );
+    const authorization = `Basic ${Buffer.from("admin:correct-password").toString("base64")}`;
+    const context = { params: Promise.resolve({ id: created.conversation.id }) };
+    const archive = await postConversationArchive(
+      new Request("https://example.test/api/conversations/id/archive", {
+        method: "POST",
+        headers: { authorization, "content-type": "application/json" },
+        body: JSON.stringify({ reason: "qa_cleanup" }),
+      }),
+      context,
+    );
+    const archiveJson = await archive.json();
+
+    expect(archive.status).toBe(200);
+    expect(archive.headers.get("Content-Type")).toContain("application/json");
+    expect(archiveJson.ok).toBe(true);
+    expect(archiveJson.conversation.archivedAt).toBeDefined();
+
+    const unarchive = await deleteConversationArchive(
+      new Request("https://example.test/api/conversations/id/archive", {
+        method: "DELETE",
+        headers: { authorization, "content-type": "application/json" },
+      }),
+      context,
+    );
+    const unarchiveJson = await unarchive.json();
+
+    expect(unarchive.status).toBe(200);
+    expect(unarchive.headers.get("Content-Type")).toContain("application/json");
+    expect(unarchiveJson.ok).toBe(true);
+    expect(unarchiveJson.conversation.archivedAt).toBeUndefined();
   });
 
   it("enforces the manual reply character limit on server-side routes", () => {
@@ -348,6 +405,73 @@ describe("conversations security", () => {
         mode: "human",
       }),
     );
+  });
+
+  it("returns TwiML Message and persists inbound plus bot reply for a greeting webhook", async () => {
+    tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-twilio-greeting-"));
+    process.env.HOTEL_CONVERSATIONS_STORE_DIR = tempDir;
+    process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+    resetConversationStoreForTests();
+
+    const response = await postTwilioWebhook(
+      new Request("https://example.test/api/twilio/whatsapp?token=expected-token", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          From: "whatsapp:+34600000004",
+          To: "whatsapp:+14155238886",
+          Body: "hola, buenos días",
+          MessageSid: "SM_GREETING_TOKEN_001",
+        }),
+      }),
+    );
+    const text = await response.text();
+    const payload = JSON.parse(
+      readFileSync(path.join(tempDir, "hotel-conversations.json"), "utf8"),
+    );
+    const messages = payload.conversations[0].messages as Array<{ body: string; senderType: string }>;
+    const botReply = messages.find((message) => message.senderType === "bot");
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("text/xml");
+    expect(text).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?><Response><Message>Buenos días. ¿En qué podemos ayudarte?</Message></Response>',
+    );
+    expect(text.trim()).not.toMatch(/^\{/);
+    expect(messages.some((message) => message.senderType === "user")).toBe(true);
+    expect(botReply?.body).toBe("Buenos días. ¿En qué podemos ayudarte?");
+    expect(text).toContain(botReply?.body ?? "");
+  });
+
+  it("returns a controlled TwiML Message when the conversation store fails", async () => {
+    tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-twilio-store-failure-"));
+    process.env.HOTEL_CONVERSATIONS_STORE_PATH = tempDir;
+    process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+    resetConversationStoreForTests();
+
+    const response = await postTwilioWebhook(
+      new Request("https://example.test/api/twilio/whatsapp?token=expected-token", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          From: "whatsapp:+34600000005",
+          To: "whatsapp:+14155238886",
+          Body: "hola, buenos días",
+          MessageSid: "SM_STORE_FAILURE_TOKEN_001",
+        }),
+      }),
+    );
+    const text = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("text/xml");
+    expect(text).toContain("<Response><Message>");
+    expect(text).toContain("hemos recibido tu mensaje");
+    expect(text.trim()).not.toMatch(/^\{/);
   });
 
   it("does not add direct Meta WhatsApp API routes or transports", () => {

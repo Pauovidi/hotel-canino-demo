@@ -2,6 +2,7 @@ import packageJson from "../../../../package.json";
 import { NextResponse } from "next/server";
 import { readHotelPersistenceConfig } from "@/lib/hotel/persistence/runtime";
 import { readTwilioWhatsAppConfig } from "@/lib/hotel/twilio/client";
+import { readGoogleSheetsConversationStoreHealth } from "@/lib/hotel/conversations/google-sheets-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,6 +21,7 @@ function readPersistenceHealth() {
 export async function GET() {
   const twilio = readTwilioWhatsAppConfig();
   const persistence = readPersistenceHealth();
+  const conversationStore = readGoogleSheetsConversationStoreHealth();
 
   return NextResponse.json({
     ok: true,
@@ -31,6 +33,7 @@ export async function GET() {
       process.env.VERCEL_GIT_COMMIT_SHA ??
       null,
     uptime: Math.round(process.uptime()),
+    vercelEnv: process.env.VERCEL_ENV ?? null,
     whatsapp: {
       provider: "twilio",
       mode: twilio.providerMode,
@@ -42,6 +45,16 @@ export async function GET() {
       conversationStoreProvider: persistence.conversationStoreProvider,
       databaseUrlConfigured: persistence.databaseUrlConfigured,
       durableFileBaseDir: persistence.durableFileBaseDir,
+    },
+    conversationStore: {
+      provider: persistence.conversationStoreProvider,
+      sheetName: conversationStore.sheetName,
+      configured:
+        persistence.conversationStoreProvider !== "google_sheets" ||
+        conversationStore.configured,
+      googleSheetsConfigured: conversationStore.configured,
+      hasSpreadsheetId: conversationStore.hasSpreadsheetId,
+      hasCredentialSource: conversationStore.hasCredentialSource,
     },
   });
 }

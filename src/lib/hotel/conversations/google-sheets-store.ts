@@ -35,11 +35,38 @@ export interface GoogleSheetsConversationStoreDeps {
   now?: () => Date;
 }
 
-function getConversationsSheetName(): string {
+export function getConversationsSheetName(): string {
   return (
     process.env.HOTEL_CONVERSATIONS_SHEET_NAME?.trim() ||
     DEFAULT_CONVERSATIONS_SHEET_NAME
   );
+}
+
+export function readGoogleSheetsConversationStoreHealth(env: NodeJS.ProcessEnv = process.env) {
+  const hasSpreadsheetId = Boolean(env.HOTEL_GOOGLE_SHEETS_SPREADSHEET_ID?.trim());
+  const hasAccessToken = Boolean(env.HOTEL_GOOGLE_SHEETS_ACCESS_TOKEN?.trim());
+  const hasServiceAccountJson = Boolean(env.HOTEL_GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON?.trim());
+  const hasServiceAccountParts = Boolean(
+    (
+      env.HOTEL_GOOGLE_SHEETS_SERVICE_ACCOUNT_EMAIL ??
+      env.GOOGLE_SERVICE_ACCOUNT_EMAIL
+    )?.trim() &&
+      (
+        env.HOTEL_GOOGLE_SHEETS_PRIVATE_KEY ??
+        env.GOOGLE_PRIVATE_KEY
+      )?.trim(),
+  );
+
+  return {
+    sheetName:
+      env.HOTEL_CONVERSATIONS_SHEET_NAME?.trim() ||
+      DEFAULT_CONVERSATIONS_SHEET_NAME,
+    configured:
+      hasSpreadsheetId &&
+      (hasAccessToken || hasServiceAccountJson || hasServiceAccountParts),
+    hasSpreadsheetId,
+    hasCredentialSource: hasAccessToken || hasServiceAccountJson || hasServiceAccountParts,
+  };
 }
 
 function normalizeSheetTitle(value: string): string {

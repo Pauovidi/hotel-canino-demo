@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { createStaticClientDirectory } from "@/lib/hotel/clients";
 import { GoogleSheetsConversationStore } from "./google-sheets-store";
+import {
+  archiveConversation,
+  handleInboundWhatsApp,
+  unarchiveConversation,
+} from "./service";
 import type { Conversation } from "./types";
 
 function createFakeSheetsContext() {
@@ -105,5 +111,82 @@ describe("GoogleSheetsConversationStore", () => {
       "archived_at",
       "snapshot_json",
     ]);
+  });
+
+  it("persists archived state, restores history and reopens on new inbound", async () => {
+    const fake = createFakeSheetsContext();
+    const firstStore = new GoogleSheetsConversationStore("CONVERSATIONS", {
+      createSheetsClient: fake.createSheetsClient,
+      now: () => new Date("2026-06-02T10:00:00.000Z"),
+    });
+
+    await firstStore.upsertConversation(conversation());
+    await firstStore.addMessage({
+      id: "msg_google_sheets_archive_inbound",
+      conversationId: "conv_google_sheets_qa",
+      direction: "inbound",
+      senderType: "user",
+      transport: "whatsapp",
+      body: "Hola, quiero información",
+      createdAt: "2026-06-02T10:01:00.000Z",
+    });
+    await firstStore.addEvent({
+      id: "evt_google_sheets_archive_created",
+      conversationId: "conv_google_sheets_qa",
+      eventType: "conversation_created",
+      createdAt: "2026-06-02T10:00:00.000Z",
+    });
+
+    const archived = await archiveConversation(
+      "conv_google_sheets_qa",
+      "admin",
+      "qa_cleanup",
+      firstStore,
+    );
+
+    expect(archived.archivedAt).toBeDefined();
+    expect(await firstStore.list()).toHaveLength(0);
+    expect(await firstStore.list({ mode: "archived" })).toHaveLength(1);
+    expect((await firstStore.load()).conversations.filter((item) => item.archivedAt)).toHaveLength(1);
+
+    const reloadedStore = new GoogleSheetsConversationStore("CONVERSATIONS", {
+      createSheetsClient: fake.createSheetsClient,
+      now: () => new Date("2026-06-02T10:02:00.000Z"),
+    });
+    const archivedAfterReload = await reloadedStore.list({ mode: "archived" });
+
+    expect(archivedAfterReload).toHaveLength(1);
+    expect(archivedAfterReload[0].messages).toHaveLength(1);
+    expect(
+      archivedAfterReload[0].events.some((event) => event.eventType === "conversation_archived"),
+    ).toBe(true);
+
+    const restored = await unarchiveConversation("conv_google_sheets_qa", "admin", reloadedStore);
+
+    expect(restored.archivedAt).toBeUndefined();
+    expect(await reloadedStore.list()).toHaveLength(1);
+    expect(await reloadedStore.list({ mode: "archived" })).toHaveLength(0);
+
+    await archiveConversation("conv_google_sheets_qa", "admin", "qa_cleanup", reloadedStore);
+    const reopened = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        to: "whatsapp:+14155238886",
+        body: "Hola de nuevo",
+        messageSid: "SM_GOOGLE_ARCHIVE_REOPEN",
+      },
+      reloadedStore,
+      createStaticClientDirectory([]),
+    );
+
+    expect(reopened.conversation.archivedAt).toBeUndefined();
+    expect(await reloadedStore.list()).toHaveLength(1);
+    expect(await reloadedStore.list({ mode: "archived" })).toHaveLength(0);
+    expect(reopened.conversation.messages.length).toBeGreaterThan(1);
+    expect(
+      reopened.conversation.events.some(
+        (event) => event.eventType === "conversation_reopened_from_inbound",
+      ),
+    ).toBe(true);
   });
 });

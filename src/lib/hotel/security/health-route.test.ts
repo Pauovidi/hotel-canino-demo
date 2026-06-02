@@ -17,6 +17,11 @@ describe("health route", () => {
     process.env.TWILIO_WHATSAPP_PROVIDER_MODE = "real";
     process.env.DATABASE_URL = "postgres://user:password@example.test/db";
     process.env.HOTEL_PERSISTENCE_PROVIDER = "postgres";
+    process.env.HOTEL_CONVERSATIONS_STORE_PROVIDER = "google_sheets";
+    process.env.HOTEL_CONVERSATIONS_SHEET_NAME = "CONVERSATIONS";
+    process.env.HOTEL_GOOGLE_SHEETS_SPREADSHEET_ID = "sheet_secret_like_id";
+    process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL = "service@example.test";
+    process.env.GOOGLE_PRIVATE_KEY = "private-secret-key";
 
     const response = await GET();
     const json = await response.json();
@@ -32,7 +37,20 @@ describe("health route", () => {
       }),
     );
     expect(json.persistence.provider).toBe("postgres");
+    expect(json.persistence.conversationStoreProvider).toBe("google_sheets");
+    expect(json.conversationStore).toEqual(
+      expect.objectContaining({
+        provider: "google_sheets",
+        sheetName: "CONVERSATIONS",
+        configured: true,
+        googleSheetsConfigured: true,
+        hasSpreadsheetId: true,
+        hasCredentialSource: true,
+      }),
+    );
     expect(serialized).not.toContain("super-secret-token");
     expect(serialized).not.toContain("password@example");
+    expect(serialized).not.toContain("sheet_secret_like_id");
+    expect(serialized).not.toContain("private-secret-key");
   });
 });

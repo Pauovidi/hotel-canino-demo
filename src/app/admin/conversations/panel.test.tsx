@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ConversationsPanel } from "./panel";
+import { ConversationsPanel, readJsonOrEmpty } from "./panel";
 import { buildConversationSeed } from "@/lib/hotel/conversations/demo-seed";
 import type {
   ConversationDashboard,
@@ -24,6 +24,20 @@ function dashboardWith(conversation: ConversationRecord): ConversationDashboard 
 }
 
 describe("conversation panel operational UI", () => {
+  it("parses empty and non-json action responses without throwing JSON errors", async () => {
+    await expect(readJsonOrEmpty(new Response(null, { status: 204 }))).resolves.toEqual({
+      ok: true,
+    });
+    await expect(
+      readJsonOrEmpty(
+        new Response("upstream failed", {
+          status: 502,
+          headers: { "Content-Type": "text/plain" },
+        }),
+      ),
+    ).resolves.toEqual({ ok: false, error: "upstream failed" });
+  });
+
   it("shows only the human takeover action while the bot owns the conversation", () => {
     const conversation = {
       ...buildConversationSeed("2026-05-06T08:00:00.000Z").conversations[0],
@@ -133,6 +147,7 @@ describe("conversation panel operational UI", () => {
     expect(source).toContain("conversation_reset_requested");
     expect(source).toContain("isOperationalCommandBody");
     expect(source).toContain("setMode(\"all\")");
+    expect(source).toContain("readJsonOrEmpty(response)");
     expect(source).toContain("timeline.scrollHeight <= timeline.clientHeight");
     expect(source).toContain("left.createdAt.localeCompare(right.createdAt)");
   });
