@@ -4,6 +4,7 @@ import { GoogleSheetsConversationStore } from "./google-sheets-store";
 import {
   archiveConversation,
   handleInboundWhatsApp,
+  listConversationDashboard,
   unarchiveConversation,
 } from "./service";
 import type { Conversation } from "./types";
@@ -188,5 +189,46 @@ describe("GoogleSheetsConversationStore", () => {
         (event) => event.eventType === "conversation_reopened_from_inbound",
       ),
     ).toBe(true);
+  });
+
+  it("normalizes incomplete rows and skips corrupt rows without crashing dashboards", async () => {
+    const fake = createFakeSheetsContext();
+    fake.sheets.set("CONVERSATIONS", [
+      ["id", "phone_normalized", "updated_at", "archived_at", "snapshot_json"],
+      [
+        "conv_partial",
+        "34600000000",
+        "",
+        "",
+        JSON.stringify({
+          id: "conv_partial",
+          phoneNormalized: "34600000000",
+        }),
+      ],
+      ["conv_corrupt", "34600000001", "", "", "{not-json"],
+    ]);
+    const store = new GoogleSheetsConversationStore("CONVERSATIONS", {
+      createSheetsClient: fake.createSheetsClient,
+      now: () => new Date("2026-06-02T10:03:00.000Z"),
+    });
+
+    const dashboard = await listConversationDashboard(undefined, store);
+
+    expect(dashboard.conversations).toHaveLength(1);
+    expect(dashboard.conversations[0]).toMatchObject({
+      id: "conv_partial",
+      phoneNormalized: "34600000000",
+      mode: "bot",
+      unreadCount: 0,
+      messages: [],
+      events: [],
+      sourceType: "whatsapp",
+      status: "open",
+    });
+    expect(dashboard.stats).toMatchObject({
+      total: 1,
+      archived: 0,
+    });
+    await expect(store.list({ query: "34600000000" })).resolves.toHaveLength(1);
   });
 });

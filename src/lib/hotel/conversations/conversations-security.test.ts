@@ -9,6 +9,7 @@ import {
   resolveTwilioWebhookTwiml,
 } from "../../../app/api/twilio/whatsapp/route";
 import { POST as postConversationsReset } from "../../../app/api/conversations/reset/route";
+import { GET as getConversationsApi } from "../../../app/api/conversations/route";
 import {
   DELETE as deleteConversationArchive,
   POST as postConversationArchive,
@@ -237,6 +238,30 @@ describe("conversations security", () => {
     expect(unarchive.headers.get("Content-Type")).toContain("application/json");
     expect(unarchiveJson.ok).toBe(true);
     expect(unarchiveJson.conversation.archivedAt).toBeUndefined();
+  });
+
+  it("returns controlled JSON when the conversations dashboard store fails", async () => {
+    tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-conversation-api-store-failure-"));
+    process.env.HOTEL_CONVERSATIONS_STORE_PATH = tempDir;
+    process.env.HOTEL_PANEL_USERNAME = "admin";
+    process.env.HOTEL_PANEL_PASSWORD = "correct-password";
+    resetConversationStoreForTests();
+
+    const authorization = `Basic ${Buffer.from("admin:correct-password").toString("base64")}`;
+    const response = await getConversationsApi(
+      new Request("https://example.test/api/conversations", {
+        method: "GET",
+        headers: { authorization },
+      }),
+    );
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Content-Type")).toContain("application/json");
+    expect(json).toEqual({
+      ok: false,
+      error: "No se pudo cargar el panel de conversaciones.",
+    });
   });
 
   it("enforces the manual reply character limit on server-side routes", () => {

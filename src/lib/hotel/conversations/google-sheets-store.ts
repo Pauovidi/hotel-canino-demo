@@ -84,11 +84,150 @@ function parseRecord(row: unknown[]): ConversationRecord | undefined {
   }
 
   try {
-    const parsed = JSON.parse(rawJson) as ConversationRecord;
-    return parsed && typeof parsed.id === "string" ? parsed : undefined;
-  } catch {
+    return normalizeGoogleSheetsRecord(JSON.parse(rawJson));
+  } catch (error) {
+    console.warn("conversation_store_corrupt_row_skipped", {
+      provider: "google_sheets",
+      errorName: error instanceof Error ? error.name : "UnknownError",
+    });
     return undefined;
   }
+}
+
+function normalizeMessage(
+  conversationId: string,
+  value: Record<string, unknown>,
+  index: number,
+): Message {
+  const rawDirection = String(value.direction ?? "");
+  const rawSenderType = String(value.senderType ?? value.author ?? "user");
+  const senderType: Message["senderType"] =
+    rawSenderType === "bot" ||
+    rawSenderType === "human" ||
+    rawSenderType === "system" ||
+    rawSenderType === "user"
+      ? rawSenderType
+      : "user";
+
+  return {
+    id: String(value.id ?? `${conversationId}-msg-${index}`),
+    conversationId,
+    direction:
+      rawDirection === "outbound" || senderType === "bot" || senderType === "human"
+        ? "outbound"
+        : "inbound",
+    senderType,
+    transport: "whatsapp",
+    externalMessageSid:
+      typeof value.externalMessageSid === "string" ? value.externalMessageSid : undefined,
+    body: String(value.body ?? value.text ?? ""),
+    rawPayload: value.rawPayload,
+    createdAt: String(value.createdAt ?? value.at ?? new Date().toISOString()),
+  };
+}
+
+function normalizeGoogleSheetsRecord(value: unknown): ConversationRecord | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const id = String(record.id ?? record.conversationId ?? "");
+  if (!id) {
+    return undefined;
+  }
+
+  const rawMessages = Array.isArray(record.messages) ? record.messages : [];
+  const messages = rawMessages
+    .map((message, index) => normalizeMessage(id, message as Record<string, unknown>, index))
+    .filter((message) => message.body.trim());
+  const rawEvents = Array.isArray(record.events) ? record.events : [];
+  const events = rawEvents.map((event, index) => {
+    const rawEvent = event && typeof event === "object" ? (event as Record<string, unknown>) : {};
+    const eventType = String(rawEvent.eventType ?? rawEvent.type ?? "event");
+    return {
+      id: String(rawEvent.id ?? `${id}-evt-${index}`),
+      conversationId: id,
+      eventType,
+      type: typeof rawEvent.type === "string" ? rawEvent.type : eventType,
+      label: typeof rawEvent.label === "string" ? rawEvent.label : eventType,
+      payload: rawEvent.payload,
+      createdAt: String(rawEvent.createdAt ?? rawEvent.at ?? new Date().toISOString()),
+      at: typeof rawEvent.at === "string" ? rawEvent.at : undefined,
+    };
+  });
+  const phoneE164 = String(record.phoneE164 ?? "");
+  const phoneNormalized = String(
+    record.phoneNormalized ?? phoneE164.replace(/[^\d]/g, "") ?? id,
+  );
+  const channel = String(record.channel ?? record.sourceType ?? "whatsapp");
+  const lastMessage = messages.at(-1);
+  const createdAt = String(record.createdAt ?? messages[0]?.createdAt ?? new Date().toISOString());
+  const updatedAt = String(
+    record.updatedAt ?? record.lastMessageAt ?? lastMessage?.createdAt ?? createdAt,
+  );
+
+  return {
+    ...record,
+    id,
+    phoneE164,
+    phoneNormalized: phoneNormalized || id,
+    displayName: typeof record.displayName === "string" ? record.displayName : undefined,
+    customerName: typeof record.customerName === "string" ? record.customerName : undefined,
+    petName: typeof record.petName === "string" ? record.petName : undefined,
+    channel,
+    status: typeof record.status === "string" ? record.status : "open",
+    priority: typeof record.priority === "string" ? record.priority : "normal",
+    tags: Array.isArray(record.tags)
+      ? record.tags.filter((tag): tag is string => typeof tag === "string")
+      : [],
+    sourceType:
+      channel === "web" ||
+      channel === "email" ||
+      channel === "manual" ||
+      channel === "demo" ||
+      channel === "reservation" ||
+      channel === "whatsapp"
+        ? channel
+        : "unknown",
+    mode: record.mode === "human" ? "human" : "bot",
+    humanRequested: Boolean(record.humanRequested),
+    unreadCount:
+      typeof record.unreadCount === "number" && Number.isFinite(record.unreadCount)
+        ? record.unreadCount
+        : messages.filter((message) => message.direction === "inbound").length,
+    archivedAt: typeof record.archivedAt === "string" ? record.archivedAt : undefined,
+    archivedBy: typeof record.archivedBy === "string" ? record.archivedBy : undefined,
+    archivedReason:
+      typeof record.archivedReason === "string" ? record.archivedReason : undefined,
+    clientStatus:
+      record.clientStatus === "known" ||
+      record.clientStatus === "unknown" ||
+      record.clientStatus === "ambiguous" ||
+      record.clientStatus === "blocked"
+        ? record.clientStatus
+        : "unknown",
+    clientWarnings: Array.isArray(record.clientWarnings)
+      ? record.clientWarnings.filter((warning): warning is string => typeof warning === "string")
+      : [],
+    requiresManualReview: Boolean(record.requiresManualReview),
+    createdAt,
+    updatedAt,
+    lastInboundAt:
+      typeof record.lastInboundAt === "string"
+        ? record.lastInboundAt
+        : messages.findLast((message) => message.direction === "inbound")?.createdAt,
+    lastOutboundAt:
+      typeof record.lastOutboundAt === "string"
+        ? record.lastOutboundAt
+        : messages.findLast((message) => message.direction === "outbound")?.createdAt,
+    lastMessagePreview:
+      typeof record.lastMessagePreview === "string"
+        ? record.lastMessagePreview
+        : lastMessage?.body.slice(0, 180),
+    messages,
+    events,
+  } as ConversationRecord;
 }
 
 function isRecord(value: ConversationRecord | undefined): value is ConversationRecord {

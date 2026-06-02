@@ -10,6 +10,16 @@ import type { ConversationListFilters } from "@/lib/hotel/conversations/types";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function safeDashboardError(error: unknown) {
+  return {
+    errorName: error instanceof Error ? error.name : "UnknownError",
+    safeErrorCode:
+      error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code).slice(0, 80)
+        : undefined,
+  };
+}
+
 function sanitizeDemoInboundPayload(body: {
   from?: string;
   body?: string;
@@ -43,7 +53,16 @@ export async function GET(request: Request) {
     ),
     mode: (url.searchParams.get("mode") as ConversationListFilters["mode"]) ?? "all",
   };
-  const dashboard = await listConversationDashboard(filters);
+  let dashboard: Awaited<ReturnType<typeof listConversationDashboard>>;
+  try {
+    dashboard = await listConversationDashboard(filters);
+  } catch (error) {
+    console.error("api_conversations_dashboard_load_failed", safeDashboardError(error));
+    return NextResponse.json(
+      { ok: false, error: "No se pudo cargar el panel de conversaciones." },
+      { status: 503 },
+    );
+  }
 
   return NextResponse.json({ ok: true, ...dashboard });
 }

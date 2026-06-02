@@ -3,9 +3,34 @@ import { SiteShell } from "@/components/site-shell";
 import { verifyPanelPageAccess } from "@/lib/hotel/conversations/auth";
 import { listConversationDashboard } from "@/lib/hotel/conversations/service";
 import { readTwilioWhatsAppConfig } from "@/lib/hotel/twilio/client";
+import type { ConversationDashboard } from "@/lib/hotel/conversations/types";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+function emptyConversationDashboard(): ConversationDashboard {
+  return {
+    conversations: [],
+    stats: {
+      total: 0,
+      unread: 0,
+      pending: 0,
+      human: 0,
+      read: 0,
+      archived: 0,
+    },
+  };
+}
+
+function safeDashboardError(error: unknown) {
+  return {
+    errorName: error instanceof Error ? error.name : "UnknownError",
+    safeErrorCode:
+      error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code).slice(0, 80)
+        : undefined,
+  };
+}
 
 export default async function ConversationsAdminPage() {
   const auth = await verifyPanelPageAccess();
@@ -25,7 +50,10 @@ export default async function ConversationsAdminPage() {
     );
   }
 
-  const dashboard = await listConversationDashboard();
+  const dashboard = await listConversationDashboard().catch((error) => {
+    console.error("admin_conversations_dashboard_load_failed", safeDashboardError(error));
+    return emptyConversationDashboard();
+  });
   const twilioConfig = readTwilioWhatsAppConfig();
 
   return (
