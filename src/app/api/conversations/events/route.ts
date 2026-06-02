@@ -4,6 +4,12 @@ import { listConversationDashboard } from "@/lib/hotel/conversations/service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+const NO_STORE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate",
+  Pragma: "no-cache",
+};
 
 function parseLimit(value: string | null): number | undefined {
   if (!value) {
@@ -33,5 +39,5 @@ export async function GET(request: Request) {
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
     .slice(0, limit);
 
-  return NextResponse.json({ ok: true, events });
+  return NextResponse.json({ ok: true, events }, { headers: NO_STORE_HEADERS });
 }

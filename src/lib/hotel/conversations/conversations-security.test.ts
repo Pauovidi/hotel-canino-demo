@@ -222,8 +222,23 @@ describe("conversations security", () => {
 
     expect(archive.status).toBe(200);
     expect(archive.headers.get("Content-Type")).toContain("application/json");
+    expect(archive.headers.get("Cache-Control")).toContain("no-store");
+    expect(archive.headers.get("Pragma")).toBe("no-cache");
     expect(archiveJson.ok).toBe(true);
     expect(archiveJson.conversation.archivedAt).toBeDefined();
+
+    const archivedList = await getConversationsApi(
+      new Request("https://example.test/api/conversations?mode=archived", {
+        method: "GET",
+        headers: { authorization },
+      }),
+    );
+    const archivedListJson = await archivedList.json();
+
+    expect(archivedList.status).toBe(200);
+    expect(archivedList.headers.get("Cache-Control")).toContain("no-store");
+    expect(archivedListJson.conversations).toHaveLength(1);
+    expect(archivedListJson.conversations[0].archivedAt).toBeDefined();
 
     const unarchive = await deleteConversationArchive(
       new Request("https://example.test/api/conversations/id/archive", {
@@ -236,8 +251,23 @@ describe("conversations security", () => {
 
     expect(unarchive.status).toBe(200);
     expect(unarchive.headers.get("Content-Type")).toContain("application/json");
+    expect(unarchive.headers.get("Cache-Control")).toContain("no-store");
+    expect(unarchive.headers.get("Pragma")).toBe("no-cache");
     expect(unarchiveJson.ok).toBe(true);
     expect(unarchiveJson.conversation.archivedAt).toBeUndefined();
+
+    const activeList = await getConversationsApi(
+      new Request("https://example.test/api/conversations?mode=all", {
+        method: "GET",
+        headers: { authorization },
+      }),
+    );
+    const activeListJson = await activeList.json();
+
+    expect(activeList.status).toBe(200);
+    expect(activeList.headers.get("Cache-Control")).toContain("no-store");
+    expect(activeListJson.conversations).toHaveLength(1);
+    expect(activeListJson.conversations[0].archivedAt).toBeUndefined();
   });
 
   it("returns controlled JSON when the conversations dashboard store fails", async () => {
@@ -258,6 +288,7 @@ describe("conversations security", () => {
 
     expect(response.status).toBe(503);
     expect(response.headers.get("Content-Type")).toContain("application/json");
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
     expect(json).toEqual({
       ok: false,
       error: "No se pudo cargar el panel de conversaciones.",

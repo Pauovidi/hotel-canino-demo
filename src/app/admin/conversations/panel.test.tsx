@@ -127,7 +127,9 @@ describe("conversation panel operational UI", () => {
     expect(html).toContain("Actualizado");
     expect(source).toContain("CONVERSATION_PANEL_POLL_INTERVAL_MS = 3000");
     expect(source).toContain("refreshPromiseRef");
+    expect(source).toContain("refreshSequenceRef");
     expect(source).toContain("AbortController");
+    expect(source).toContain("cache: \"no-store\"");
     expect(source).toContain("visibilitychange");
     expect(source).toContain("setReply(\"\")");
     expect(source).toContain("requestAnimationFrame");
@@ -148,6 +150,10 @@ describe("conversation panel operational UI", () => {
     expect(source).toContain("isOperationalCommandBody");
     expect(source).toContain("setMode(\"all\")");
     expect(source).toContain("readJsonOrEmpty(response)");
+    expect(source).toContain("reconcileConversationMutation");
+    expect(source).toContain("conversationMatchesMode");
+    expect(source).toContain("suppressPollError");
+    expect(source).toContain("refreshAbortRef.current?.abort()");
     expect(source).toContain("timeline.scrollHeight <= timeline.clientHeight");
     expect(source).toContain("left.createdAt.localeCompare(right.createdAt)");
   });

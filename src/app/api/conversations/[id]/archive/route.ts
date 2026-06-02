@@ -7,6 +7,12 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+const NO_STORE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate",
+  Pragma: "no-cache",
+};
 
 export async function POST(
   request: Request,
@@ -22,12 +28,12 @@ export async function POST(
 
   try {
     const conversation = await archiveConversation(id, auth.agent, body.reason);
-    return NextResponse.json({ ok: true, conversation });
+    return NextResponse.json({ ok: true, conversation }, { headers: NO_STORE_HEADERS });
   } catch (error) {
     if (error instanceof Error && error.message === "Conversation not found") {
       return NextResponse.json(
         { ok: false, error: "Conversation not found" },
-        { status: 404 },
+        { status: 404, headers: NO_STORE_HEADERS },
       );
     }
 
@@ -48,12 +54,12 @@ export async function DELETE(
 
   try {
     const conversation = await unarchiveConversation(id, auth.agent);
-    return NextResponse.json({ ok: true, conversation });
+    return NextResponse.json({ ok: true, conversation }, { headers: NO_STORE_HEADERS });
   } catch (error) {
     if (error instanceof Error && error.message === "Conversation not found") {
       return NextResponse.json(
         { ok: false, error: "Conversation not found" },
-        { status: 404 },
+        { status: 404, headers: NO_STORE_HEADERS },
       );
     }
 

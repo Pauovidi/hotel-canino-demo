@@ -30,7 +30,7 @@ interface ConversationsPanelProps {
 type FilterMode = NonNullable<ConversationListFilters["mode"]>;
 export const CONVERSATION_PANEL_POLL_INTERVAL_MS = 3000;
 
-type ActionResponsePayload = { ok?: boolean; error?: string };
+type ActionResponsePayload = { ok?: boolean; error?: string; conversation?: ConversationRecord };
 
 const filters: Array<{ label: string; value: FilterMode }> = [
   { label: "Todas", value: "all" },
@@ -249,6 +249,106 @@ function conversationPreview(conversation: ConversationRecord) {
   return visibleMessage?.body ?? "Sin mensajes visibles todavía.";
 }
 
+function conversationMatchesQuery(conversation: ConversationRecord, value: string) {
+  const query = value.trim().toLowerCase();
+  if (!query) {
+    return true;
+  }
+
+  const haystack = [
+    conversation.phoneE164,
+    conversation.phoneNormalized,
+    conversation.displayName,
+    conversation.customerName,
+    conversation.clientName,
+    conversation.clientStatus,
+    conversation.clientSource,
+    ...(conversation.clientWarnings ?? []),
+    conversation.petName,
+    conversation.channel,
+    conversation.status,
+    ...(conversation.tags ?? []),
+    conversation.lastMessagePreview,
+    ...conversation.messages.map((message) => message.body),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return haystack.includes(query);
+}
+
+function conversationMatchesMode(conversation: ConversationRecord, mode: FilterMode) {
+  if (mode === "archived") {
+    return Boolean(conversation.archivedAt);
+  }
+
+  if (conversation.archivedAt) {
+    return false;
+  }
+
+  if (mode === "bot" || mode === "human") {
+    return conversation.mode === mode;
+  }
+
+  if (mode === "pending") {
+    return conversation.humanRequested || conversation.unreadCount > 0;
+  }
+
+  if (mode === "read") {
+    return conversation.unreadCount === 0 && !conversation.humanRequested;
+  }
+
+  return true;
+}
+
+function activeStatsContribution(conversation: ConversationRecord) {
+  if (conversation.archivedAt) {
+    return {
+      total: 0,
+      unread: 0,
+      pending: 0,
+      human: 0,
+      read: 0,
+    };
+  }
+
+  return {
+    total: 1,
+    unread: conversation.unreadCount > 0 ? 1 : 0,
+    pending: conversation.humanRequested || conversation.unreadCount > 0 ? 1 : 0,
+    human: conversation.mode === "human" ? 1 : 0,
+    read: conversation.unreadCount === 0 && !conversation.humanRequested ? 1 : 0,
+  };
+}
+
+function reconcileStats(
+  stats: ConversationDashboard["stats"],
+  previous: ConversationRecord,
+  next: ConversationRecord,
+): ConversationDashboard["stats"] {
+  const before = activeStatsContribution(previous);
+  const after = activeStatsContribution(next);
+  const archivedDelta = (next.archivedAt ? 1 : 0) - (previous.archivedAt ? 1 : 0);
+
+  return {
+    total: Math.max(0, stats.total - before.total + after.total),
+    unread: Math.max(0, stats.unread - before.unread + after.unread),
+    pending: Math.max(0, stats.pending - before.pending + after.pending),
+    human: Math.max(0, stats.human - before.human + after.human),
+    read: Math.max(0, stats.read - before.read + after.read),
+    archived: Math.max(0, stats.archived + archivedDelta),
+  };
+}
+
+function sortConversations(conversations: ConversationRecord[]) {
+  return [...conversations].sort((left, right) => {
+    const leftTime = left.updatedAt ?? left.createdAt;
+    const rightTime = right.updatedAt ?? right.createdAt;
+    return rightTime.localeCompare(leftTime);
+  });
+}
+
 export function ConversationsPanel({
   initialDashboard,
   twilioProviderMode,
@@ -267,6 +367,7 @@ export function ConversationsPanel({
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const refreshPromiseRef = useRef<Promise<void> | null>(null);
   const refreshAbortRef = useRef<AbortController | null>(null);
+  const refreshSequenceRef = useRef(0);
   const modeRef = useRef(mode);
   const queryRef = useRef(query);
 
@@ -315,7 +416,7 @@ export function ConversationsPanel({
   const refresh = useCallback(async (
     nextMode?: FilterMode,
     nextQuery?: string,
-    options: { force?: boolean; silent?: boolean } = {},
+    options: { force?: boolean; silent?: boolean; suppressPollError?: boolean } = {},
   ) => {
     const requestedMode = nextMode ?? modeRef.current;
     const requestedQuery = nextQuery ?? queryRef.current;
@@ -329,6 +430,7 @@ export function ConversationsPanel({
     }
 
     const controller = new AbortController();
+    const refreshSequence = ++refreshSequenceRef.current;
     const shouldAutoScroll = isTimelineNearBottom();
     const params = new URLSearchParams();
     if (requestedMode !== "all") {
@@ -340,6 +442,7 @@ export function ConversationsPanel({
 
     const promise = (async () => {
       const response = await fetch(`/api/conversations?${params.toString()}`, {
+        cache: "no-store",
         credentials: "same-origin",
         signal: controller.signal,
       });
@@ -350,6 +453,10 @@ export function ConversationsPanel({
 
       if (!response.ok || data.ok === false) {
         throw new Error(data.error ?? "No se pudo cargar el panel.");
+      }
+
+      if (refreshSequence !== refreshSequenceRef.current) {
+        return;
       }
 
       setDashboard(data);
@@ -370,7 +477,9 @@ export function ConversationsPanel({
         }
 
         if (options.silent) {
-          setPollError("No se pudo actualizar en segundo plano.");
+          if (!options.suppressPollError) {
+            setPollError("No se pudo actualizar en segundo plano.");
+          }
           return;
         }
 
@@ -438,8 +547,10 @@ export function ConversationsPanel({
   async function postAction(path: string, body?: unknown, method = "POST") {
     const response = await fetch(path, {
       method,
+      cache: "no-store",
       headers: {
         "Content-Type": "application/json",
+        "Cache-Control": "no-store",
       },
       credentials: "same-origin",
       body: body ? JSON.stringify(body) : method === "DELETE" ? undefined : "{}",
@@ -449,6 +560,47 @@ export function ConversationsPanel({
     if (!response.ok || data.ok === false) {
       throw new Error(data.error ?? "La acción no se pudo completar.");
     }
+
+    return data;
+  }
+
+  function reconcileConversationMutation(
+    previous: ConversationRecord,
+    next: ConversationRecord,
+    nextMode = modeRef.current,
+    nextQuery = queryRef.current,
+  ) {
+    refreshAbortRef.current?.abort();
+    refreshSequenceRef.current += 1;
+
+    let preferredSelectedId: string | undefined;
+    setDashboard((currentDashboard) => {
+      const existing = currentDashboard.conversations.find(
+        (conversation) => conversation.id === next.id,
+      );
+      const previousForStats = existing ?? previous;
+      const withoutMutated = currentDashboard.conversations.filter(
+        (conversation) => conversation.id !== next.id,
+      );
+      const shouldShow =
+        conversationMatchesMode(next, nextMode) && conversationMatchesQuery(next, nextQuery);
+      const conversations = sortConversations(
+        shouldShow ? [...withoutMutated, next] : withoutMutated,
+      );
+
+      preferredSelectedId = conversations[0]?.id ?? "";
+
+      return {
+        ...currentDashboard,
+        conversations,
+        stats: reconcileStats(currentDashboard.stats, previousForStats, next),
+      };
+    });
+    setSelectedId((current) =>
+      current === next.id ? preferredSelectedId ?? "" : current,
+    );
+    setPollError("");
+    setLastUpdatedAt(new Date());
   }
 
   function setConversationMode(conversation: ConversationRecord, nextMode: ConversationMode) {
@@ -507,23 +659,37 @@ export function ConversationsPanel({
 
   function archiveSelectedConversation(conversation: ConversationRecord) {
     run(async () => {
-      await postAction(
+      const result = await postAction(
         `/api/conversations/${encodeURIComponent(conversation.id)}/archive`,
         { reason: "inbox_cleanup" },
       );
-      await refresh(undefined, undefined, { force: true });
+      if (result.conversation) {
+        reconcileConversationMutation(conversation, result.conversation);
+      }
+      await refresh(undefined, undefined, {
+        force: true,
+        silent: true,
+        suppressPollError: true,
+      });
     });
   }
 
   function unarchiveSelectedConversation(conversation: ConversationRecord) {
     run(async () => {
-      await postAction(
+      const result = await postAction(
         `/api/conversations/${encodeURIComponent(conversation.id)}/archive`,
         undefined,
         "DELETE",
       );
       setMode("all");
-      await refresh("all", undefined, { force: true });
+      if (result.conversation) {
+        reconcileConversationMutation(conversation, result.conversation, "all");
+      }
+      await refresh("all", undefined, {
+        force: true,
+        silent: true,
+        suppressPollError: true,
+      });
     });
   }
 

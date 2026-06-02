@@ -9,6 +9,12 @@ import type { ConversationListFilters } from "@/lib/hotel/conversations/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+const NO_STORE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate",
+  Pragma: "no-cache",
+};
 
 function safeDashboardError(error: unknown) {
   return {
@@ -60,11 +66,11 @@ export async function GET(request: Request) {
     console.error("api_conversations_dashboard_load_failed", safeDashboardError(error));
     return NextResponse.json(
       { ok: false, error: "No se pudo cargar el panel de conversaciones." },
-      { status: 503 },
+      { status: 503, headers: NO_STORE_HEADERS },
     );
   }
 
-  return NextResponse.json({ ok: true, ...dashboard });
+  return NextResponse.json({ ok: true, ...dashboard }, { headers: NO_STORE_HEADERS });
 }
 
 export async function POST(request: Request) {
@@ -95,5 +101,5 @@ export async function POST(request: Request) {
     rawPayload: sanitizeDemoInboundPayload(body),
   });
 
-  return NextResponse.json({ ok: true, ...result });
+  return NextResponse.json({ ok: true, ...result }, { headers: NO_STORE_HEADERS });
 }
