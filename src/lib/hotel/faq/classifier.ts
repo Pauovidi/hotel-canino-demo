@@ -187,10 +187,45 @@ const BEHAVIOR_PHRASES = [
 ] as const;
 const FOOD_PHRASES = ["comida", "pienso", "alimentacion", "alimentación", "barf"] as const;
 const PHOTOS_PHRASES = ["fotos", "videos", "vídeos", "video", "vídeo", "mandais", "mandáis"] as const;
-const PELUQUERIA_PHRASES = ["peluqueria", "peluquería", "baño", "bano", "corte", "grooming"] as const;
+const PELUQUERIA_PHRASES = [
+  "peluqueria",
+  "peluquería",
+  "baño",
+  "bano",
+  "corte",
+  "grooming",
+  "servicios",
+  "adiestramiento",
+  "guarderia",
+  "guardería",
+] as const;
 const VETERINARY_PHRASES = ["veterinario", "veterinaria", "urgencia", "emergencia", "24 horas"] as const;
-const PAYMENT_PHRASES = ["pago", "pagar", "señal", "senal", "efectivo", "bizum", "tarjeta"] as const;
-const CANCELLATION_PHRASES = ["cancelacion", "cancelación", "cancelar", "anular", "cambiar fechas", "modificar reserva"] as const;
+const PAYMENT_PHRASES = [
+  "pago",
+  "pagar",
+  "señal",
+  "senal",
+  "efectivo",
+  "bizum",
+  "transferencia",
+  "tarjeta",
+  "anticipo",
+  "fianza",
+  "cuando se paga",
+  "cuándo se paga",
+] as const;
+const CANCELLATION_PHRASES = [
+  "cancelacion",
+  "cancelación",
+  "cancelar",
+  "anular",
+  "cambiar la fecha",
+  "cambiar fechas",
+  "cambiar la reserva",
+  "cambiar reserva",
+  "modificar reserva",
+  "no puedo ir",
+] as const;
 const LOCATION_PHRASES = ["donde estais", "dónde estáis", "direccion", "dirección", "ubicacion", "ubicación", "como llegar", "murcia", "sangonera"] as const;
 const CONTACT_PHRASES = ["telefono", "teléfono", "email", "correo", "contacto", "llamaros", "llamar"] as const;
 const VISIT_PHRASES = ["visitar", "visita", "ver las instalaciones", "conocer el hotel", "ver el hotel"] as const;

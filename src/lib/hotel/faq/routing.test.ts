@@ -17,7 +17,7 @@ describe("FAQ routing", () => {
     ).toBe(true);
     expect(
       FAQ_ROUTING_RULES.some((rule) =>
-        rule.intents.includes("faq_peluqueria"),
+        rule.intents.includes("handoff_humano"),
       ),
     ).toBe(true);
   });
@@ -61,14 +61,15 @@ describe("FAQ routing", () => {
     expect(result.actions.some((action) => action.label.includes("formulario"))).toBe(true);
   });
 
-  it("deriva a humano peluquería y casos especiales", () => {
+  it("responde servicios como FAQ y deriva a humano solo casos especiales", () => {
     const peluqueria = resolveFaqQuery("¿tenéis peluquería?");
     const especial = resolveFaqQuery(
       "mi perro es muy especial te puedo llamar y contarte",
     );
 
     expect(peluqueria.intent).toBe("faq_peluqueria");
-    expect(peluqueria.outputType).toBe("handoff");
+    expect(peluqueria.outputType).toBe("faq");
+    expect(peluqueria.reply).toContain("servicios complementarios");
     expect(especial.intent).toBe("handoff_humano");
     expect(especial.outputType).toBe("handoff");
   });

@@ -16,6 +16,7 @@ import {
   confirmPendingReservationProposal,
   type WhatsAppReservationBridgeDeps,
 } from "./reservation-bridge";
+import { isConcreteKnowledgeQuestion } from "@/lib/hotel/knowledge/faq";
 import {
   advanceReservationFlow,
   isReservationFlowActive,
@@ -327,6 +328,62 @@ function shouldTreatAsReservationSlotFill(
     replyPlan.slots.petName || replyPlan.slots.checkIn || replyPlan.slots.checkOut,
   );
   return hasUsefulSlots || /\b(?:del|desde)\s+\d{1,2}\s+(?:al|hasta)\s+\d{1,2}\b/i.test(message);
+}
+
+function buildReservationFlowResumePrompt(record: ConversationRecord): string | undefined {
+  const status = record.reservationFlow?.status;
+  if (!status || !isReservationFlowActive(record)) {
+    return undefined;
+  }
+
+  switch (status) {
+    case "asking_client_kind":
+      return "Seguimos con la reserva. ¿Ya eres cliente de Somos Muy Perros? Responde sí o no.";
+    case "asking_existing_email":
+      return "Seguimos con la reserva. Me falta el email para localizar tu ficha de cliente.";
+    case "collecting_owner":
+      return "Seguimos con la reserva. Me falta tu nombre y apellidos.";
+    case "collecting_pet":
+      return "Seguimos con la reserva. Me falta el nombre o los nombres de tu mascota/s.";
+    case "collecting_dates":
+      return "Seguimos con la reserva. Me faltan la fecha de entrada y la fecha de salida.";
+    case "collecting_notes":
+      return "Seguimos con la reserva. Me falta saber si hay alimentación, medicación u observaciones importantes.";
+    case "collecting_visit":
+      return "Seguimos con la reserva. ¿Quieres visitar el hotel antes de confirmar?";
+    case "pending_availability":
+      return "Seguimos con la reserva. Estoy revisando disponibilidad para poder proponértela con seguridad.";
+    case "pending_confirmation":
+      return "Seguimos con la reserva. Si quieres dejarla anotada, responde “sí, confirma”.";
+    case "confirmed":
+    case "rejected":
+    case "no_availability":
+      return undefined;
+  }
+}
+
+function appendReservationResume(reply: string, record: ConversationRecord): string {
+  const resume = buildReservationFlowResumePrompt(record);
+  return resume ? `${reply}\n\n${resume}` : reply;
+}
+
+function shouldInterruptReservationFlowWithFaq(
+  record: ConversationRecord,
+  message: string,
+  replyPlan: ReturnType<typeof buildConversationReplyPlan>,
+): boolean {
+  if (replyPlan.source !== "faq_public_chat" || !isConcreteKnowledgeQuestion(message)) {
+    return false;
+  }
+
+  const isUncoveredFallback =
+    replyPlan.intent === "human_handoff" &&
+    replyPlan.matchedSignals.includes("concrete_question_uncovered");
+  if (isUncoveredFallback && !/[¿?]/.test(message)) {
+    return false;
+  }
+
+  return isReservationFlowActive(record);
 }
 
 function applyClientIdentity(
@@ -795,6 +852,68 @@ export async function handleInboundWhatsApp(
 
   const latestBeforeFlow = (await store.getById(freshWithClient.id)) ?? freshWithClient;
   if (isReservationFlowActive(latestBeforeFlow)) {
+    const flowInterruptionPlan = buildConversationReplyPlan(safeBody);
+    if (shouldInterruptReservationFlowWithFaq(latestBeforeFlow, safeBody, flowInterruptionPlan)) {
+      await store.addEvent(
+        createEvent(latestBeforeFlow.id, "nlu_classified", {
+          intent: flowInterruptionPlan.intent,
+          confidence: flowInterruptionPlan.confidence,
+          matchedSignals: flowInterruptionPlan.matchedSignals,
+          slots: flowInterruptionPlan.slots,
+          source: flowInterruptionPlan.source,
+          handoff: flowInterruptionPlan.handoff,
+          interruptedReservationFlow: latestBeforeFlow.reservationFlow?.status,
+        }),
+      );
+
+      const latestForFaq = (await store.getById(latestBeforeFlow.id)) ?? latestBeforeFlow;
+      const replyBody = flowInterruptionPlan.handoff
+        ? flowInterruptionPlan.reply
+        : appendReservationResume(flowInterruptionPlan.reply, latestForFaq);
+      const nextConversation: ConversationRecord = flowInterruptionPlan.handoff
+        ? {
+            ...latestForFaq,
+            mode: "human",
+            humanRequested: true,
+            requiresManualReview: true,
+            updatedAt: nowIso(),
+          }
+        : latestForFaq;
+
+      if (flowInterruptionPlan.handoff) {
+        await store.replaceConversation(nextConversation);
+        await store.addEvent(
+          createEvent(latestForFaq.id, "human_requested", {
+            matchedFrom: "faq_public_chat",
+            intent: flowInterruptionPlan.intent,
+          }),
+        );
+      }
+
+      const botReply = await store.addMessage(
+        createMessage({
+          conversationId: latestForFaq.id,
+          direction: "outbound",
+          senderType: "bot",
+          body: replyBody,
+        }),
+      );
+      await store.addEvent(
+        createEvent(latestForFaq.id, "bot_reply_sent", {
+          source: flowInterruptionPlan.source,
+          intent: flowInterruptionPlan.intent,
+          resumedReservationFlow: !flowInterruptionPlan.handoff,
+        }),
+      );
+
+      return {
+        conversation: (await store.getById(latestForFaq.id)) ?? nextConversation,
+        inbound,
+        botReply,
+        twiml: buildTwilioMessageResponse(replyBody),
+      };
+    }
+
     if (
       latestBeforeFlow.reservationFlow?.status === "pending_confirmation" &&
       isAffirmativeConfirmationUtterance(safeBody)

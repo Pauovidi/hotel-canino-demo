@@ -139,6 +139,41 @@ describe("conversation NLU", () => {
     expect(plan.reply).not.toContain("información general");
   });
 
+  it.each([
+    ["¿y el pago?", "faq_payment", "El pago se hace a la llegada"],
+    ["¿cómo se paga?", "faq_payment", "Bizum"],
+    ["¿puedo pagar por bizum?", "faq_payment", "transferencia"],
+    ["¿hay que dejar señal?", "faq_payment", "La señal no es obligatoria"],
+    ["¿cuándo puedo dejar al perro?", "faq_hours", "El horario de recepción"],
+    ["¿puedo visitar el hotel?", "faq_visits", "lunes a jueves"],
+    ["¿cuánto cuesta?", "faq_prices", "Las tarifas 2026"],
+    ["¿me mandáis vídeos?", "faq_photos_videos", "Durante la estancia"],
+    ["¿puedo llevar su comida?", "faq_food", "alimentación especial"],
+    ["¿qué vacunas necesita?", "faq_vaccines", "requisitos de alojamiento"],
+    ["¿dónde estáis?", "faq_location", "Camino de Santiago, 58"],
+    ["¿hay peluquería?", "faq_services", "servicios complementarios"],
+    ["quiero cambiar la reserva", "faq_cancellation", "cambios o cancelaciones"],
+  ] as const)("answers shared WhatsApp FAQ %s", (message, intent, expectedCopy) => {
+    const plan = buildConversationReplyPlan(message);
+
+    expect(plan.intent).toBe(intent);
+    expect(plan.source).toBe("faq_public_chat");
+    expect(plan.handoff).toBe(false);
+    expect(plan.reply).toContain(expectedCopy);
+    expect(plan.reply).not.toContain("Perdona, no te he entendido bien");
+  });
+
+  it("uses the covered-question fallback for concrete unknown questions", () => {
+    const plan = buildConversationReplyPlan("¿y el unicornio?");
+
+    expect(plan.intent).toBe("human_handoff");
+    expect(plan.source).toBe("faq_public_chat");
+    expect(plan.handoff).toBe(true);
+    expect(plan.reply).toBe(
+      "Disculpa, para esta información un miembro de nuestro equipo se pondrá en contacto contigo para aclarar esta cuestión.",
+    );
+  });
+
   it("extracts pet name from explicit name phrasing without keeping connector words", () => {
     const result = classifyConversationIntent(
       "El nombre de mi mascota es YUYU, y quiero del 30 al 31 de Diciembre",

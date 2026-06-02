@@ -142,7 +142,7 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
     label: "Horario de recepción",
     question: "¿Cuál es el horario?",
     answer:
-      "El horario de recepción es de 08:00 a 11:00 y de 16:30 a 19:30 para entradas y recogidas.",
+      "El horario de recepción es de 8:00 a 11:00 y de 16:30 a 19:30. Para la reserva indicamos hora de entrada y salida para organizar la estancia.",
     examples: [
       "¿qué horario tenéis?",
       "¿a qué hora puedo dejarlo?",
@@ -154,6 +154,10 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
       "recepción",
       "hora de entrada",
       "hora de recogida",
+      "dejar perro",
+      "recoger",
+      "cuando puedo dejar",
+      "a que hora puedo llevarlo",
       "mañana",
       "tarde",
     ],
@@ -187,7 +191,7 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
     label: "Precio hotel",
     question: "¿Cuánto cuesta el hotel canino?",
     answer:
-      "Las tarifas publicadas para 2026 son 30 € por noche para 1 perro, 45 € para 2, 50 € para 3 y 55 € para 4. Una reserva de 1 día incluye entrada y salida por la mañana; si no se recoge por la mañana en la franja marcada, se cobra suplemento equivalente a medio día.",
+      "Las tarifas 2026 son: 1 perro 30 €/noche, 2 perros 45 €/noche, 3 perros 50 €/noche y 4 perros 55 €/noche. Si me indicas fechas y mascotas, puedo calcular el precio de la estancia.",
     examples: [
       "¿cuánto cuesta 2 perros?",
       "¿cuánto vale el hotel?",
@@ -258,7 +262,7 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
     label: "Vacunas y requisitos",
     question: "¿Qué vacunas pedís?",
     answer:
-      "Pedimos microchip y cartilla sanitaria, rabia anual obligatoria y desparasitación interna y externa para la recepción. La vacuna de la tos de las perreras es recomendable y aconsejada.",
+      "Para los requisitos de alojamiento, vacunas y documentación, lo revisa el equipo antes de la estancia. Si tienes dudas concretas, un miembro del equipo te lo aclarará.",
     examples: [
       "¿qué vacunas pedís?",
       "¿qué necesita para entrar?",
@@ -272,6 +276,12 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
       "tos perrera",
       "microchip",
       "cartilla",
+      "documentacion",
+      "documentación",
+      "requisitos",
+      "contrato",
+      "admision",
+      "admisión",
       "pasaporte",
       "desparasitacion",
       "desparasitación",
@@ -359,7 +369,7 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
     label: "Comida",
     question: "¿La comida está incluida?",
     answer:
-      "Sí, la comida está incluida. Si prefieres traer su comida habitual, cama o juguetes, puedes hacerlo y lo dejamos indicado. Si usa comida húmeda o BARF, lo revisa el equipo y se informa el coste adicional cuando aplique.",
+      "Tenemos en cuenta las particularidades de alimentación de cada perro. Si necesita comida propia, alimentación especial o medicación, indícalo en la reserva para que el equipo lo revise.",
     examples: [
       "¿la comida está incluida?",
       "¿tengo que llevar su pienso?",
@@ -371,6 +381,9 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
       "alimentacion",
       "alimentación",
       "barf",
+      "medicacion",
+      "medicación",
+      "puede llevar su comida",
       "comida incluida",
     ],
   },
@@ -381,7 +394,7 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
     label: "Fotos y vídeos",
     question: "¿Mandáis fotos o vídeos?",
     answer:
-      "Sí. Durante la estancia enviamos vídeos al móvil y, si procede, también fotos o información para que estéis tranquilos.",
+      "Durante la estancia se pueden enviar vídeos o información para que sepas cómo está tu perro.",
     examples: [
       "¿mandáis fotos?",
       "¿enviáis vídeos?",
@@ -395,6 +408,10 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
       "vídeo",
       "mandais",
       "mandáis",
+      "como se como esta",
+      "cómo sé cómo está",
+      "informacion durante estancia",
+      "información durante estancia",
       "informacion diaria",
       "información diaria",
     ],
@@ -402,11 +419,11 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
   {
     intent: "faq_peluqueria",
     category: "peluqueria",
-    outputType: "handoff",
+    outputType: "faq",
     label: "Peluquería",
     question: "¿Tenéis peluquería?",
     answer:
-      "Ok, anotado. El baño o peluquería a la salida queda como intención para revisar con la peluquera; no confirmamos disponibilidad hasta que el equipo lo valide.",
+      "El hotel cuenta con servicios complementarios como alimentación premium/BARF, asistencia veterinaria, peluquería previa contratación y adiestramiento. Si solo necesitas dejarlo unas horas, también existe la opción de guardería canina.",
     examples: [
       "¿tenéis peluquería?",
       "¿podéis bañarlo antes de salir?",
@@ -419,6 +436,10 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
       "bano",
       "corte",
       "grooming",
+      "servicios",
+      "adiestramiento",
+      "guarderia",
+      "guardería",
     ],
     actionPresets: ["whatsapp_contact", "contact_page"],
   },
@@ -429,7 +450,7 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
     label: "Atención veterinaria",
     question: "¿Tenéis veterinario?",
     answer:
-      "Sí. El centro indica atención veterinaria 24 horas para cualquier emergencia. Si tu perro tiene antecedentes o tratamiento, avísanos antes.",
+      "El hotel cuenta con servicios complementarios como alimentación premium/BARF, asistencia veterinaria, peluquería previa contratación y adiestramiento. Si solo necesitas dejarlo unas horas, también existe la opción de guardería canina.",
     examples: [
       "¿tenéis veterinario?",
       "¿qué pasa si tiene una urgencia?",
@@ -451,9 +472,10 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
     label: "Pagos y señal",
     question: "¿Cómo se paga? ¿Hay señal?",
     answer:
-      "El pago se hace a la llegada en efectivo, Bizum o transferencia; si se paga por transferencia, el justificante debe enviarse antes cuando aplique. La señal no es obligatoria, aunque se acepta por Bizum o transferencia.",
+      "El pago se hace a la llegada. Se puede pagar en efectivo, Bizum o transferencia. La señal no es obligatoria, aunque si se paga por transferencia el justificante debe enviarse antes cuando corresponda.",
     examples: [
       "¿cómo se paga?",
+      "¿cuándo se paga?",
       "¿hay que dejar señal?",
       "¿aceptáis tarjeta o bizum?",
     ],
@@ -465,6 +487,11 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
       "efectivo",
       "bizum",
       "tarjeta",
+      "transferencia",
+      "anticipo",
+      "fianza",
+      "cuando se paga",
+      "cuándo se paga",
     ],
     actionPresets: ["whatsapp_contact"],
   },
@@ -475,7 +502,7 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
     label: "Cancelaciones",
     question: "¿Qué pasa si cancelo?",
     answer:
-      "La reserva puede cancelarse sin coste adicional. Si tenemos la referencia de reserva, podemos localizarla por reservationId, anularla en el cuadrante y retirar sus recordatorios; si faltan datos, lo dejamos en revisión segura para no cancelar a ciegas.",
+      "Podemos revisar cambios o cancelaciones de reserva. Dime qué necesitas cambiar y el equipo revisará disponibilidad o condiciones.",
     examples: [
       "¿qué pasa si cancelo?",
       "¿puedo cambiar fechas?",
@@ -486,7 +513,11 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
       "cancelación",
       "cancelar",
       "anular",
+      "no puedo ir",
+      "cambiar la fecha",
       "cambiar fechas",
+      "cambiar la reserva",
+      "cambiar reserva",
       "modificar reserva",
     ],
     actionPresets: ["whatsapp_contact"],
@@ -497,7 +528,8 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
     outputType: "faq",
     label: "Ubicación",
     question: "¿Dónde estáis?",
-    answer: "Estamos en Camino de Santiago, 58, Sangonera La Verde, Murcia.",
+    answer:
+      "Estamos en Camino de Santiago, 58, 30833 Sangonera La Verde, Murcia. También puedes contactar por WhatsApp o en info@somosmuyperros.com.",
     examples: [
       "¿dónde estáis?",
       "pasadme la dirección",
@@ -546,7 +578,7 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
     label: "Visitas al hotel",
     question: "¿Puedo visitar el hotel?",
     answer:
-      "Sí, puedes visitar las instalaciones. Lo mejor es coordinarlo con el equipo para respetar la organización del centro y el horario de recepción.",
+      "Sí, puedes visitar el hotel antes de confirmar. Las visitas se coordinan de lunes a jueves de 10:00 a 18:00.",
     examples: [
       "quiero visitar el hotel",
       "¿puedo ver las instalaciones?",
@@ -557,6 +589,8 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
       "ver instalaciones",
       "visita al centro",
       "conocer el hotel",
+      "puedo ir antes",
+      "visita hotel",
     ],
     actionPresets: ["whatsapp_contact"],
   },
@@ -857,10 +891,10 @@ export const FAQ_ROUTING_RULES = [
     intents: ["workflow_disponibilidad", "workflow_reserva"] as const,
   },
   {
-    id: "peluqueria_y_casos_especiales_humano",
-    description: "Peluquería y casos especiales fuera de lo normal pasan a humano.",
+    id: "servicios_y_casos_especiales",
+    description: "Servicios complementarios se responden como FAQ; los casos especiales fuera de lo normal pasan a humano.",
     outputType: "handoff",
-    intents: ["faq_peluqueria", "handoff_humano"] as const,
+    intents: ["handoff_humano"] as const,
   },
 ] as const;
 
@@ -924,7 +958,7 @@ function scoreFaqIntent(entry: FaqKnowledgeEntry, normalized: string) {
 }
 
 function resolveWidgetRoute(entry: FaqKnowledgeEntry): FaqWidgetRoute {
-  if (entry.outputType === "handoff" || entry.intent === "faq_peluqueria" || entry.intent === "handoff_humano") {
+  if (entry.outputType === "handoff" || entry.intent === "handoff_humano") {
     return "humano";
   }
 

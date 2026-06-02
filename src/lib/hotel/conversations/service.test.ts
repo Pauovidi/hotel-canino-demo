@@ -507,6 +507,66 @@ describe("conversation service", () => {
     expect(result.conversation.events.some((event) => event.eventType === "human_requested")).toBe(false);
   });
 
+  it("answers a payment FAQ during an active reservation flow and resumes the missing field", async () => {
+    const store = new MemoryConversationStore();
+
+    const start = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "quiero reservar" },
+      store,
+      createStaticClientDirectory([]),
+    );
+    const payment = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "¿y el pago?" },
+      store,
+      createStaticClientDirectory([]),
+    );
+
+    expect(start.conversation.reservationFlow?.status).toBe("asking_client_kind");
+    expect(payment.botReply?.body).toContain("El pago se hace a la llegada");
+    expect(payment.botReply?.body).toContain("Seguimos con la reserva");
+    expect(payment.botReply?.body).toContain("¿Ya eres cliente");
+    expect(payment.botReply?.body).not.toContain("Perdona, no te he entendido bien");
+    expect(payment.conversation.reservationFlow?.status).toBe("asking_client_kind");
+    expect(
+      payment.conversation.events.some(
+        (event) =>
+          event.eventType === "nlu_classified" &&
+          (event.payload as { source?: string }).source === "faq_public_chat",
+      ),
+    ).toBe(true);
+  });
+
+  it("answers a payment FAQ after a confirmed reservation flow without trying to resume it", async () => {
+    const store = new MemoryConversationStore();
+    const created = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "Hola" },
+      store,
+      createStaticClientDirectory([]),
+    );
+    const now = new Date().toISOString();
+    await store.replaceConversation({
+      ...created.conversation,
+      reservationFlow: {
+        flowId: "reservation_flow_test_confirmed",
+        status: "confirmed",
+        clientKind: "new",
+        createdAt: now,
+        updatedAt: now,
+      },
+      reservationId: "res_test_confirmed",
+    });
+
+    const payment = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "¿y el pago?" },
+      store,
+      createStaticClientDirectory([]),
+    );
+
+    expect(payment.botReply?.body).toContain("El pago se hace a la llegada");
+    expect(payment.botReply?.body).not.toContain("Seguimos con la reserva");
+    expect(payment.botReply?.body).not.toContain("Perdona, no te he entendido bien");
+  });
+
   it("redacts DNI/NIF-like identifiers from stored inbound text and raw payload", async () => {
     const store = new MemoryConversationStore();
 
@@ -584,8 +644,8 @@ describe("conversation service", () => {
       store,
     );
 
-    expect(result.conversation.mode).toBe("human");
-    expect(result.botReply?.body).toContain("localizarla");
+    expect(result.conversation.mode).toBe("bot");
+    expect(result.botReply?.body).toContain("cambios o cancelaciones");
     expect(result.botReply?.body).not.toContain("cancelada correctamente");
   });
 

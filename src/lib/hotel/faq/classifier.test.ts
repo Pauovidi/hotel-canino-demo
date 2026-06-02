@@ -33,6 +33,12 @@ describe("FAQ intent classification", () => {
     expect(classifyFaqIntent("¿tenéis peluquería?").intent).toBe(
       "faq_peluqueria",
     );
+    expect(classifyFaqIntent("¿y el pago?").intent).toBe("faq_pago_senal");
+    expect(classifyFaqIntent("¿puedo pagar por bizum?").intent).toBe("faq_pago_senal");
+    expect(classifyFaqIntent("¿cuándo se paga?").intent).toBe("faq_pago_senal");
+    expect(classifyFaqIntent("quiero cambiar la reserva").intent).toBe(
+      "faq_cancelacion",
+    );
     expect(classifyFaqIntent("¿tenéis sitio del 14 al 18 de abril?").intent).toBe(
       "workflow_disponibilidad",
     );
@@ -69,9 +75,7 @@ describe("FAQ intent classification", () => {
     expect(
       classifyFaqIntent("¿mi perro estará bien en una residencia?").outputType,
     ).toBe("faq");
-    expect(classifyFaqIntent("¿tenéis peluquería?").outputType).toBe(
-      "handoff",
-    );
+    expect(classifyFaqIntent("¿tenéis peluquería?").outputType).toBe("faq");
   });
 
   it("cubre variantes de confianza y seguridad como FAQ", () => {

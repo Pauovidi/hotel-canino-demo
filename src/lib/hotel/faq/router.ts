@@ -19,29 +19,8 @@ const DEFAULT_RUNTIME_LINKS: FaqRuntimeLinks = {
   contactPhone: HOTEL_DEMO_CONFIG.whatsappPhone,
 };
 
-function extractPetCount(text: string) {
-  const match = text.match(/\b([1-4])\s*perros?\b/);
-  return match ? Number(match[1]) : null;
-}
-
-function formatHotelPriceReply(text: string) {
-  const petCount = extractPetCount(text);
-  const suffix =
-    " Una reserva de 1 día incluye entrada y salida por la mañana; si no se recoge por la mañana en la franja marcada, se cobra suplemento equivalente a medio día.";
-  if (petCount === 1) {
-    return `La tarifa publicada para 2026 es 30 € por noche para 1 perro.${suffix}`;
-  }
-  if (petCount === 2) {
-    return `La tarifa publicada para 2026 es 45 € por noche para 2 perros.${suffix}`;
-  }
-  if (petCount === 3) {
-    return `La tarifa publicada para 2026 es 50 € por noche para 3 perros.${suffix}`;
-  }
-  if (petCount === 4) {
-    return `La tarifa publicada para 2026 es 55 € por noche para 4 perros.${suffix}`;
-  }
-
-  return `Las tarifas publicadas para 2026 son 30 € por noche para 1 perro, 45 € para 2, 50 € para 3 y 55 € para 4.${suffix}`;
+function formatHotelPriceReply() {
+  return "Las tarifas 2026 son: 1 perro 30 €/noche, 2 perros 45 €/noche, 3 perros 50 €/noche y 4 perros 55 €/noche. Si me indicas fechas y mascotas, puedo calcular el precio de la estancia.";
 }
 
 function buildActionFromPreset(
@@ -97,14 +76,14 @@ function buildActions(intent: FaqIntentId, runtime: FaqRuntimeLinks) {
     .filter((action): action is FaqAction => action !== null);
 }
 
-function buildReply(intent: FaqIntentId, text: string) {
+function buildReply(intent: FaqIntentId) {
   const entry = getFaqEntry(intent);
   if (!entry) {
     return "No estoy seguro de haberlo entendido del todo. ¿Quieres información general, consultar disponibilidad o hablar con una persona del equipo?";
   }
 
   if (intent === "faq_precio_hotel") {
-    return formatHotelPriceReply(text);
+    return formatHotelPriceReply();
   }
 
   if (intent === "workflow_disponibilidad") {
@@ -142,7 +121,7 @@ export function resolveFaqQuery(
     category: classification.category,
     outputType: classification.outputType,
     label: entry.label,
-    reply: buildReply(classification.intent, text),
+    reply: buildReply(classification.intent),
     actions: buildActions(classification.intent, runtime),
     score: classification.score,
     matchedSignals: classification.matchedSignals,

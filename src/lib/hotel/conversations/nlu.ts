@@ -1,4 +1,5 @@
-import { resolvePublicChatReply } from "@/lib/hotel/faq/public-chat";
+import type { FaqIntentId } from "@/lib/hotel/faq";
+import { matchFaqIntent } from "@/lib/hotel/knowledge/faq";
 
 export type ConversationIntent =
   | "greeting"
@@ -10,6 +11,11 @@ export type ConversationIntent =
   | "faq_food"
   | "faq_what_to_bring"
   | "faq_photos_videos"
+  | "faq_payment"
+  | "faq_location"
+  | "faq_services"
+  | "faq_cancellation"
+  | "faq_contact"
   | "availability_request"
   | "reservation_start"
   | "reservation_confirm"
@@ -72,6 +78,15 @@ const RESERVATION_MODIFY_REPLY =
   "Para cambiar fechas o datos de una reserva, envíame el identificador de reserva o el nombre del perro y las nuevas fechas. Lo revisa una persona del equipo antes de confirmar nada.";
 
 const CONVERSATION_RESET_REPLY = "Reiniciado.";
+
+const SHARED_FAQ_BYPASS_INTENTS: ConversationIntent[] = [
+  "conversation_reset",
+  "human_handoff",
+  "stay_status_question",
+  "reservation_start",
+  "availability_request",
+  "reservation_confirm",
+];
 
 function normalizeText(value: string): string {
   return value
@@ -422,12 +437,79 @@ export function classifyConversationIntent(message: string): ConversationNluResu
   return result("unknown", "low");
 }
 
-function faqReply(message: string) {
-  return resolvePublicChatReply(message).text;
+function mapFaqIntent(intent: FaqIntentId): ConversationIntent {
+  switch (intent) {
+    case "faq_horario":
+    case "faq_fuera_de_horario":
+      return "faq_hours";
+    case "faq_precio_hotel":
+    case "faq_precio_guarderia":
+    case "faq_bono_guarderia":
+      return "faq_prices";
+    case "faq_visitas_hotel":
+    case "faq_recogida_familiar":
+      return "faq_visits";
+    case "faq_vacunas":
+    case "faq_que_llevar":
+      return intent === "faq_que_llevar" ? "faq_what_to_bring" : "faq_vaccines";
+    case "faq_comida":
+      return "faq_food";
+    case "faq_fotos":
+    case "faq_seguimiento_estancia":
+      return "faq_photos_videos";
+    case "faq_pago_senal":
+      return "faq_payment";
+    case "faq_ubicacion":
+      return "faq_location";
+    case "faq_contacto":
+      return "faq_contact";
+    case "faq_cancelacion":
+      return "faq_cancellation";
+    case "faq_peluqueria":
+    case "faq_veterinario":
+    case "faq_medicacion":
+    case "faq_comportamiento":
+    case "faq_confianza_residencia":
+    case "faq_climatizacion":
+    case "faq_tiempo_aire_libre":
+    case "faq_recomendacion_otro_sitio":
+    case "faq_reserva_formulario":
+    case "faq_confirmacion_whatsapp":
+      return "faq_services";
+    case "workflow_disponibilidad":
+      return "availability_request";
+    case "workflow_reserva":
+      return "reservation_start";
+    case "handoff_humano":
+      return "human_handoff";
+  }
 }
 
 export function buildConversationReplyPlan(message: string): ConversationReplyPlan {
   const nlu = classifyConversationIntent(message);
+
+  if (!SHARED_FAQ_BYPASS_INTENTS.includes(nlu.intent)) {
+    const faqMatch = matchFaqIntent(message);
+
+    if (faqMatch) {
+      return {
+        ...nlu,
+        intent: mapFaqIntent(faqMatch.intent),
+        confidence: faqMatch.isFallback ? "medium" : "high",
+        matchedSignals: Array.from(
+          new Set([
+            ...nlu.matchedSignals,
+            ...faqMatch.resolution.matchedSignals,
+            faqMatch.intent,
+            faqMatch.isFallback ? "concrete_question_uncovered" : "shared_faq_match",
+          ]),
+        ),
+        reply: faqMatch.reply,
+        handoff: faqMatch.isFallback || faqMatch.resolution.outputType === "handoff",
+        source: "faq_public_chat",
+      };
+    }
+  }
 
   switch (nlu.intent) {
     case "greeting":
@@ -471,20 +553,26 @@ export function buildConversationReplyPlan(message: string): ConversationReplyPl
     case "conversation_reset":
       return { ...nlu, reply: CONVERSATION_RESET_REPLY, handoff: false, source: "conversation_nlu" };
     case "faq_hours":
-      return { ...nlu, reply: faqReply("¿Cuál es vuestro horario?"), handoff: false, source: "faq_public_chat" };
     case "faq_prices":
-      return { ...nlu, reply: faqReply("¿Cuánto cuesta el hotel?"), handoff: false, source: "faq_public_chat" };
     case "faq_visits":
-      return { ...nlu, reply: faqReply("¿Puedo visitar el hotel?"), handoff: false, source: "faq_public_chat" };
     case "faq_vaccines":
-      return { ...nlu, reply: faqReply("¿Qué vacunas necesita?"), handoff: false, source: "faq_public_chat" };
     case "faq_food":
-      return { ...nlu, reply: faqReply("¿Tengo que llevar comida?"), handoff: false, source: "faq_public_chat" };
     case "faq_what_to_bring":
-      return { ...nlu, reply: faqReply("¿Qué tengo que llevar?"), handoff: false, source: "faq_public_chat" };
     case "faq_photos_videos":
     case "media_request":
-      return { ...nlu, reply: faqReply("¿Mandáis fotos o vídeos?"), handoff: false, source: "faq_public_chat" };
+    case "faq_payment":
+    case "faq_location":
+    case "faq_services":
+    case "faq_cancellation":
+    case "faq_contact": {
+      const faqMatch = matchFaqIntent(message);
+      return {
+        ...nlu,
+        reply: faqMatch?.reply ?? UNKNOWN_REPLY,
+        handoff: Boolean(faqMatch?.isFallback || faqMatch?.resolution.outputType === "handoff"),
+        source: faqMatch ? "faq_public_chat" : "conversation_nlu",
+      };
+    }
     case "unknown":
       return { ...nlu, reply: UNKNOWN_REPLY, handoff: false, source: "conversation_nlu" };
   }
