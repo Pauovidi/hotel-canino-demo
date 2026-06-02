@@ -3,7 +3,10 @@ import { NextResponse } from "next/server";
 import { readHotelPersistenceConfig } from "@/lib/hotel/persistence/runtime";
 import { readTwilioWhatsAppConfig } from "@/lib/hotel/twilio/client";
 import { readGoogleSheetsConversationStoreHealth } from "@/lib/hotel/conversations/google-sheets-store";
-import { readGoogleSheetsClientDirectoryHealth } from "@/lib/hotel/clients/google-sheets-client-directory";
+import {
+  readGoogleSheetsClientDirectoryHealth,
+  readGoogleSheetsClientDirectoryLiveHealth,
+} from "@/lib/hotel/clients/google-sheets-client-directory";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,11 +22,25 @@ function readPersistenceHealth() {
   };
 }
 
-export async function GET() {
+function shouldCheckClientsLive(request?: Request): boolean {
+  if (!request) {
+    return false;
+  }
+
+  return new URL(request.url).searchParams.get("clientsLive") === "1";
+}
+
+export async function GET(request?: Request) {
   const twilio = readTwilioWhatsAppConfig();
   const persistence = readPersistenceHealth();
   const conversationStore = readGoogleSheetsConversationStoreHealth();
-  const clients = readGoogleSheetsClientDirectoryHealth();
+  const clientDirectory = readGoogleSheetsClientDirectoryHealth();
+  const clients = shouldCheckClientsLive(request)
+    ? {
+        ...clientDirectory,
+        live: await readGoogleSheetsClientDirectoryLiveHealth(clientDirectory.sheetName),
+      }
+    : clientDirectory;
 
   return NextResponse.json({
     ok: true,

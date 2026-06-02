@@ -40,6 +40,52 @@ export function readGoogleSheetsClientDirectoryHealth() {
   };
 }
 
+function safeDirectoryErrorCode(error: unknown): string {
+  if (typeof error === "object" && error && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "number" || typeof code === "string") {
+      return `google_sheets_${code}`;
+    }
+  }
+
+  if (error instanceof Error) {
+    return error.name || "Error";
+  }
+
+  return "unknown_error";
+}
+
+export async function readGoogleSheetsClientDirectoryLiveHealth(
+  sheetName = getClientsSheetName(),
+) {
+  try {
+    const { client, spreadsheetId } = await createSheetsClient();
+    const response = await client.spreadsheets.values.get({
+      spreadsheetId,
+      range: quoteSheetRange(sheetName, "A1:M1"),
+      majorDimension: "ROWS",
+      valueRenderOption: "FORMATTED_VALUE",
+    });
+    const headerRow = response.data.values?.[0] ?? [];
+    const warnings = validateHeaders(headerRow);
+
+    return {
+      checked: true,
+      sheetAvailable: headerRow.length > 0,
+      headersOk: headerRow.length > 0 && warnings.length === 0,
+      headerWarningCount: warnings.length,
+    };
+  } catch (error) {
+    return {
+      checked: true,
+      sheetAvailable: false,
+      headersOk: false,
+      headerWarningCount: undefined,
+      errorCode: safeDirectoryErrorCode(error),
+    };
+  }
+}
+
 export async function createSheetsClient(): Promise<{ client: sheets_v4.Sheets; spreadsheetId: string }> {
   const context = getSheetsAdapterContextFromEnv("real");
   if (!context.spreadsheetId) {
