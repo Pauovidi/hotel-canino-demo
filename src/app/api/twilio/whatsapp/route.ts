@@ -57,12 +57,26 @@ function sanitizeTwilioPayload(raw: Record<string, string>): Record<string, stri
   );
 }
 
+export function resolveTwilioWebhookTwiml(
+  result?: { botReply?: { body?: string } | null; twiml?: string },
+): string {
+  if (result?.twiml) {
+    return result.twiml;
+  }
+
+  return buildTwilioMessageResponse(result?.botReply?.body);
+}
+
+function twilioXmlResponse(twiml?: string, status = 200): NextResponse {
+  return new NextResponse(twiml ?? buildTwilioMessageResponse(), {
+    status,
+    headers: { "Content-Type": "text/xml; charset=utf-8" },
+  });
+}
+
 export async function POST(request: Request) {
   if (!validateWebhookToken(request)) {
-    return new NextResponse(buildTwilioMessageResponse(), {
-      status: 401,
-      headers: { "Content-Type": "text/xml; charset=utf-8" },
-    });
+    return twilioXmlResponse(undefined, 401);
   }
 
   const contentType = request.headers.get("content-type") ?? "";
@@ -85,9 +99,7 @@ export async function POST(request: Request) {
   const messageSid = String(raw.MessageSid ?? raw.messageSid ?? "");
 
   if (!from || !body) {
-    return new NextResponse(buildTwilioMessageResponse(), {
-      headers: { "Content-Type": "text/xml; charset=utf-8" },
-    });
+    return twilioXmlResponse();
   }
 
   const result = await handleInboundWhatsApp({
@@ -99,7 +111,5 @@ export async function POST(request: Request) {
     rawPayload: sanitizeTwilioPayload(raw),
   });
 
-  return new NextResponse(result.twiml ?? buildTwilioMessageResponse(), {
-    headers: { "Content-Type": "text/xml; charset=utf-8" },
-  });
+  return twilioXmlResponse(resolveTwilioWebhookTwiml(result));
 }

@@ -4,7 +4,10 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { POST as postTwilioWebhook } from "../../../app/api/twilio/whatsapp/route";
+import {
+  POST as postTwilioWebhook,
+  resolveTwilioWebhookTwiml,
+} from "../../../app/api/twilio/whatsapp/route";
 import { POST as postConversationsReset } from "../../../app/api/conversations/reset/route";
 
 import { createStaticClientDirectory } from "@/lib/hotel/clients";
@@ -75,6 +78,28 @@ describe("conversations security", () => {
 
     expect(twiml).toContain("Hola &lt;admin&gt; &amp; gracias");
     expect(twiml).not.toContain("Hola <admin> & gracias");
+  });
+
+  it("builds Twilio delivery XML from a persisted bot reply when twiml is missing", () => {
+    const twiml = resolveTwilioWebhookTwiml({
+      botReply: {
+        body: "Buenos días. ¿En qué podemos ayudarte?",
+      },
+    });
+
+    expect(twiml).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?><Response><Message>Buenos días. ¿En qué podemos ayudarte?</Message></Response>',
+    );
+    expect(twiml).not.toMatch(/^\s*\{/);
+  });
+
+  it("returns empty valid TwiML when no auto-reply is available", () => {
+    expect(resolveTwilioWebhookTwiml()).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+    );
+    expect(resolveTwilioWebhookTwiml({})).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+    );
   });
 
   it("keeps all panel conversation API routes behind panel auth", () => {
