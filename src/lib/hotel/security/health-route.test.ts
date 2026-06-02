@@ -19,6 +19,8 @@ describe("health route", () => {
     process.env.HOTEL_PERSISTENCE_PROVIDER = "postgres";
     process.env.HOTEL_CONVERSATIONS_STORE_PROVIDER = "google_sheets";
     process.env.HOTEL_CONVERSATIONS_SHEET_NAME = "CONVERSATIONS";
+    process.env.HOTEL_CLIENTS_SHEET_NAME = "CLIENTES";
+    process.env.HOTEL_CLIENTS_CACHE_TTL_MS = "12345";
     process.env.HOTEL_GOOGLE_SHEETS_SPREADSHEET_ID = "sheet_secret_like_id";
     process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL = "service@example.test";
     process.env.GOOGLE_PRIVATE_KEY = "private-secret-key";
@@ -46,6 +48,17 @@ describe("health route", () => {
         googleSheetsConfigured: true,
         hasSpreadsheetId: true,
         hasCredentialSource: true,
+      }),
+    );
+    expect(json.clients).toEqual(
+      expect.objectContaining({
+        provider: "google_sheets_client_directory",
+        sheetName: "CLIENTES",
+        configured: true,
+        googleSheetsConfigured: true,
+        hasSpreadsheetId: true,
+        hasCredentialSource: true,
+        cacheTtlMs: 12345,
       }),
     );
     expect(serialized).not.toContain("super-secret-token");

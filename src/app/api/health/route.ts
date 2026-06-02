@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { readHotelPersistenceConfig } from "@/lib/hotel/persistence/runtime";
 import { readTwilioWhatsAppConfig } from "@/lib/hotel/twilio/client";
 import { readGoogleSheetsConversationStoreHealth } from "@/lib/hotel/conversations/google-sheets-store";
+import { readGoogleSheetsClientDirectoryHealth } from "@/lib/hotel/clients/google-sheets-client-directory";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +23,7 @@ export async function GET() {
   const twilio = readTwilioWhatsAppConfig();
   const persistence = readPersistenceHealth();
   const conversationStore = readGoogleSheetsConversationStoreHealth();
+  const clients = readGoogleSheetsClientDirectoryHealth();
 
   return NextResponse.json({
     ok: true,
@@ -56,5 +58,6 @@ export async function GET() {
       hasSpreadsheetId: conversationStore.hasSpreadsheetId,
       hasCredentialSource: conversationStore.hasCredentialSource,
     },
+    clients,
   });
 }

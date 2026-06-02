@@ -101,11 +101,12 @@ function safeErrorCode(error: unknown): string {
 }
 
 function logReservationDiagnostic(
-  level: "warn" | "error",
+  level: "info" | "warn" | "error",
   event: string,
   payload: Record<string, unknown>,
 ): void {
-  const logger = level === "error" ? console.error : console.warn;
+  const logger =
+    level === "error" ? console.error : level === "warn" ? console.warn : console.log;
   logger(
     JSON.stringify({
       event,
@@ -868,6 +869,26 @@ export async function confirmPendingReservationProposal(input: {
     } catch (error) {
       clientDirectoryUpsert = buildFailedClientUpsertResult(error);
     }
+    logReservationDiagnostic(
+      clientDirectoryUpsert.kind === "failed" || clientDirectoryUpsert.kind.startsWith("skipped_")
+        ? "warn"
+        : "info",
+      "client_directory_upsert_result",
+      {
+        hasProposal: true,
+        proposalStatus: proposal.status,
+        availabilityRevalidated: true,
+        sheetWriteAttempted: true,
+        sheetWriteSuccess: true,
+        reservationRecordCreated: true,
+        kind: clientDirectoryUpsert.kind,
+        clientStatus: clientDirectoryUpsert.clientStatus,
+        rowNumber: clientDirectoryUpsert.rowNumber,
+        sheetName: clientDirectoryUpsert.sheetName,
+        matchCount: clientDirectoryUpsert.matchCount,
+        warning: clientDirectoryUpsert.warning,
+      },
+    );
   }
   const reservationWithClientDirectory = withClientDirectoryUpsert(
     reservation,

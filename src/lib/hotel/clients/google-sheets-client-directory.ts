@@ -22,6 +22,24 @@ function getCacheTtlMs() {
   return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_CACHE_TTL_MS;
 }
 
+export function readGoogleSheetsClientDirectoryHealth() {
+  const context = getSheetsAdapterContextFromEnv("real");
+  const hasSpreadsheetId = Boolean(context.spreadsheetId?.trim());
+  const hasCredentialSource = Boolean(
+    context.accessToken?.trim() || context.serviceAccountJson?.trim(),
+  );
+
+  return {
+    provider: "google_sheets_client_directory",
+    sheetName: getClientsSheetName(),
+    configured: hasSpreadsheetId && hasCredentialSource,
+    googleSheetsConfigured: hasSpreadsheetId && hasCredentialSource,
+    hasSpreadsheetId,
+    hasCredentialSource,
+    cacheTtlMs: getCacheTtlMs(),
+  };
+}
+
 export async function createSheetsClient(): Promise<{ client: sheets_v4.Sheets; spreadsheetId: string }> {
   const context = getSheetsAdapterContextFromEnv("real");
   if (!context.spreadsheetId) {

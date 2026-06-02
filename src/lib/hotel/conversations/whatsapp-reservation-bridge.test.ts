@@ -1890,6 +1890,10 @@ describe("WhatsApp reservation bridge", () => {
     expect(confirmed.conversation.pendingReservationProposal?.status).toBe("confirmed");
     expect(confirmed.conversation.reservationId).toBe(counters.reservations[0].reservationId);
     expect(confirmed.conversation.clientStatus).toBe("known");
+    expect(confirmed.conversation.clientDirectoryUpsertKind).toBe("created_pending_name");
+    expect(confirmed.conversation.clientDirectoryUpsertStatus).toBe("created");
+    expect(confirmed.conversation.tags).toContain("cliente_creado_desde_reserva");
+    expect(confirmed.conversation.tags).not.toContain("cliente_habitual");
     expect(confirmed.botReply?.body).toContain("queda anotada");
     expect(confirmed.conversation.events.some((event) => event.eventType === "reservation_confirmed_from_whatsapp")).toBe(true);
     expect(confirmed.conversation.events.some((event) => event.eventType === "client_directory_created_pending_name")).toBe(true);

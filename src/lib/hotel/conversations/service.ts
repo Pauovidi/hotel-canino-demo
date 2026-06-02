@@ -286,7 +286,10 @@ function applyClientReservationUpsert(
     tags: Array.from(
       new Set([
         ...(record.tags ?? []),
-        isDirectoryMatch ? "cliente_habitual" : undefined,
+        result.kind === "existing" ? "cliente_habitual" : undefined,
+        result.kind === "created" || result.kind === "created_pending_name"
+          ? "cliente_creado_desde_reserva"
+          : undefined,
         !isDirectoryMatch ? "revision_manual" : undefined,
       ].filter((tag): tag is string => Boolean(tag))),
     ),
