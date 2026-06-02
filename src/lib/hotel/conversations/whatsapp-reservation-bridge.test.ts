@@ -1222,6 +1222,7 @@ describe("WhatsApp reservation bridge", () => {
 
   it.each([
     "me da igual",
+    "la hora me da igual",
     "lo que vosotros me digáis",
     "cuando mejor os venga",
     "me adapto",
@@ -1320,6 +1321,9 @@ describe("WhatsApp reservation bridge", () => {
     ["10 y 18", "10:00", "18:00"],
     ["10 de la mañana y 6 de la tarde", "10:00", "18:00"],
     ["entrada a las 10 y salida a las 18", "10:00", "18:00"],
+    ["Entrada y salida a las 11", "11:00", "11:00"],
+    ["las dos a las 11", "11:00", "11:00"],
+    ["ambas a las 11", "11:00", "11:00"],
     ["por la mañana y por la tarde", "08:00", "16:30"],
   ] as const)("extracts contextual time pairs while awaiting hours: %s", async (message, checkInTime, checkOutTime) => {
     const store = new MemoryConversationStore();
@@ -1352,6 +1356,79 @@ describe("WhatsApp reservation bridge", () => {
       checkOutTime,
     });
     expect(result.botReply?.body).not.toContain("no te he entendido");
+    expect(counters.checks).toBe(0);
+  });
+
+  it("asks whether a single loose time should apply to entry and exit", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-06-01T10:00:00.000Z"),
+    };
+
+    await collectNewClientDatesWithoutTimes({
+      store,
+      deps: timedDeps,
+      prefix: "SM_BRIDGE_SINGLE_TIME_CONTEXT",
+    });
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "A las 11",
+        messageSid: "SM_BRIDGE_SINGLE_TIME_CONTEXT_RESULT",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_dates",
+      petName: "YUYU",
+      checkInDate: "2026-12-29",
+      checkOutDate: "2026-12-30",
+      timePreferencePrompted: true,
+    });
+    expect(result.conversation.reservationFlow?.checkInTime).toBeUndefined();
+    expect(result.conversation.reservationFlow?.checkOutTime).toBeUndefined();
+    expect(result.botReply?.body).toContain("tanto para la entrada como para la salida");
+    expect(counters.checks).toBe(0);
+  });
+
+  it.each([
+    ["Entrada a las 11", "checkInTime", "11:00", "Tengo la hora de entrada"],
+    ["Salida a las 11", "checkOutTime", "11:00", "Tengo la hora de salida"],
+  ] as const)("sets only the contextual %s value", async (message, field, expectedTime, expectedReply) => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-06-01T10:00:00.000Z"),
+    };
+
+    await collectNewClientDatesWithoutTimes({
+      store,
+      deps: timedDeps,
+      prefix: `SM_BRIDGE_SINGLE_LABELED_TIME_${field}`,
+    });
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: message,
+        messageSid: `SM_BRIDGE_SINGLE_LABELED_TIME_${field}_RESULT`,
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_dates",
+      petName: "YUYU",
+      [field]: expectedTime,
+    });
+    expect(result.botReply?.body).toContain(expectedReply);
     expect(counters.checks).toBe(0);
   });
 

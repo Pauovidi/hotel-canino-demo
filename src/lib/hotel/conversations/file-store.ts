@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { readHotelPersistenceConfig, resolveJsonStorePath } from "@/lib/hotel/persistence/runtime";
+import { GoogleSheetsConversationStore } from "./google-sheets-store";
 import { PostgresConversationStore } from "./postgres-store";
 import type {
   Conversation,
@@ -163,6 +164,28 @@ function normalizeRecord(value: unknown): ConversationRecord | undefined {
     clientSheetRow:
       typeof record.clientSheetRow === "number" && Number.isFinite(record.clientSheetRow)
         ? record.clientSheetRow
+        : undefined,
+    clientDirectoryUpsertKind:
+      record.clientDirectoryUpsertKind === "created" ||
+      record.clientDirectoryUpsertKind === "created_pending_name" ||
+      record.clientDirectoryUpsertKind === "existing" ||
+      record.clientDirectoryUpsertKind === "skipped_ambiguous" ||
+      record.clientDirectoryUpsertKind === "skipped_blocked" ||
+      record.clientDirectoryUpsertKind === "skipped_invalid_phone" ||
+      record.clientDirectoryUpsertKind === "failed"
+        ? record.clientDirectoryUpsertKind
+        : undefined,
+    clientDirectoryUpsertStatus:
+      record.clientDirectoryUpsertStatus === "created" ||
+      record.clientDirectoryUpsertStatus === "existing" ||
+      record.clientDirectoryUpsertStatus === "pending" ||
+      record.clientDirectoryUpsertStatus === "skipped" ||
+      record.clientDirectoryUpsertStatus === "failed"
+        ? record.clientDirectoryUpsertStatus
+        : undefined,
+    clientDirectoryUpsertWarning:
+      typeof record.clientDirectoryUpsertWarning === "string"
+        ? record.clientDirectoryUpsertWarning
         : undefined,
     pendingReservationProposal,
     pendingReservationContext,
@@ -370,10 +393,13 @@ let storeSingleton: ConversationStore | undefined;
 export function getConversationStore(): ConversationStore {
   if (!storeSingleton) {
     const persistence = readHotelPersistenceConfig();
-    storeSingleton =
-      persistence.provider === "postgres"
-        ? new PostgresConversationStore()
-        : new FileConversationStore();
+    if (persistence.conversationStoreProvider === "postgres") {
+      storeSingleton = new PostgresConversationStore();
+    } else if (persistence.conversationStoreProvider === "google_sheets") {
+      storeSingleton = new GoogleSheetsConversationStore();
+    } else {
+      storeSingleton = new FileConversationStore();
+    }
   }
 
   return storeSingleton;

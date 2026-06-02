@@ -505,3 +505,12 @@ Resultado:
 - Registro de entrada ya no marca `cliente habitual` solo porque la reserva tenga escritura en la hoja mensual.
 - Las acciones del Registro de entrada están cubiertas por tests de aislamiento contra el store de conversaciones y el store de dominio.
 - Documento operativo: `docs/CLIENTES_UPSERT_ENTRYLOG_HARDENING_V0.md`.
+
+## Hotfix P0 persistencia conversaciones / CLIENTES / horas
+
+- Rama: `codex/smp-prod-conversation-persistence-clients-hours-p0-v0`.
+- Production anterior reportaba `persistence.provider=file-tmp`; en Vercel esto es efimero y explica desapariciones del panel entre navegaciones/refrescos/instancias.
+- Se añade `GoogleSheetsConversationStore` activable con `HOTEL_CONVERSATIONS_STORE_PROVIDER=google_sheets` y pestaña dedicada `CONVERSATIONS`.
+- `/api/health` expone `persistence.conversationStoreProvider` para verificar si el inbox usa una capa durable.
+- La lógica de horas acepta frases naturales como `la hora me da igual`, `Entrada y salida a las 11`, `A las 11`, `Entrada a las 11` y `Salida a las 11`.
+- Documento operativo: `docs/CONVERSATION_PERSISTENCE_CLIENTS_HOURS_P0.md`.

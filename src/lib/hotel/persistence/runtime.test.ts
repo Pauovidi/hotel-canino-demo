@@ -68,6 +68,18 @@ describe("production persistence runtime", () => {
     expect(normalized).not.toBe("/data/hotel-canino-domain.json");
   });
 
+  it("can select a durable Google Sheets conversation store on Vercel production", () => {
+    const config = readHotelPersistenceConfig({
+      NODE_ENV: "production",
+      VERCEL: "1",
+      VERCEL_ENV: "production",
+      HOTEL_CONVERSATIONS_STORE_PROVIDER: "google_sheets",
+    } as NodeJS.ProcessEnv);
+
+    expect(config.provider).toBe("file-tmp");
+    expect(config.conversationStoreProvider).toBe("google_sheets");
+  });
+
   it("redirects /data file overrides to tmp on Vercel Preview", () => {
     const byDir = resolveJsonStorePath({
       fileName: "hotel-conversations.json",

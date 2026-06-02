@@ -11,6 +11,7 @@ function readPersistenceHealth() {
 
   return {
     provider: config.provider,
+    conversationStoreProvider: config.conversationStoreProvider,
     databaseUrlConfigured: config.databaseUrlConfigured,
     durableFileBaseDir: config.durableFileBaseDir,
   };
@@ -38,6 +39,7 @@ export async function GET() {
     },
     persistence: {
       provider: persistence.provider,
+      conversationStoreProvider: persistence.conversationStoreProvider,
       databaseUrlConfigured: persistence.databaseUrlConfigured,
       durableFileBaseDir: persistence.durableFileBaseDir,
     },

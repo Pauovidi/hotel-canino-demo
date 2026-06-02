@@ -1,11 +1,18 @@
 import os from "node:os";
 import path from "node:path";
 
-export type HotelPersistenceProvider = "postgres" | "file-volume" | "file-local" | "file-tmp";
+export type HotelPersistenceProvider =
+  | "postgres"
+  | "google_sheets"
+  | "file-volume"
+  | "file-local"
+  | "file-tmp";
 
 export interface HotelPersistenceConfig {
   provider: HotelPersistenceProvider;
   configuredProvider?: string;
+  conversationStoreProvider: HotelPersistenceProvider;
+  configuredConversationStoreProvider?: string;
   databaseUrlConfigured: boolean;
   durableFileBaseDir?: string;
   isProduction: boolean;
@@ -18,6 +25,10 @@ function normalizeProvider(value: string | undefined): HotelPersistenceProvider 
   const normalized = value?.trim().toLowerCase();
   if (normalized === "postgres") {
     return "postgres";
+  }
+
+  if (normalized === "google_sheets" || normalized === "google-sheets" || normalized === "sheets") {
+    return "google_sheets";
   }
 
   if (normalized === "file" || normalized === "file-volume" || normalized === "volume") {
@@ -40,6 +51,8 @@ export function readHotelPersistenceConfig(
 ): HotelPersistenceConfig {
   const configuredProvider = env.HOTEL_PERSISTENCE_PROVIDER?.trim();
   const explicitProvider = normalizeProvider(configuredProvider);
+  const configuredConversationStoreProvider = env.HOTEL_CONVERSATIONS_STORE_PROVIDER?.trim();
+  const explicitConversationStoreProvider = normalizeProvider(configuredConversationStoreProvider);
   const isProduction = env.NODE_ENV === "production";
   const isVercelPreview = env.VERCEL_ENV === "preview";
   const isVercelRuntime = Boolean(env.VERCEL);
@@ -52,9 +65,8 @@ export function readHotelPersistenceConfig(
     env.HOTEL_STORE_DIR?.trim() ||
     (isProduction && !isVercelPreview ? PRODUCTION_DATA_DIR : undefined);
 
-  return {
-    provider:
-      explicitProvider ??
+  const provider =
+    explicitProvider ??
       (databaseUrlConfigured && isProduction
         ? "postgres"
         : isVercelRuntime && !explicitDurableFileBaseDir
@@ -63,8 +75,13 @@ export function readHotelPersistenceConfig(
           ? "file-tmp"
           : isProduction
             ? "file-volume"
-            : "file-local"),
+            : "file-local");
+
+  return {
+    provider,
     configuredProvider,
+    conversationStoreProvider: explicitConversationStoreProvider ?? provider,
+    configuredConversationStoreProvider,
     databaseUrlConfigured,
     durableFileBaseDir,
     isProduction,

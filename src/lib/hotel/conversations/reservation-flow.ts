@@ -277,7 +277,7 @@ function hasDatesAndNeedsTimes(flow: ConversationReservationFlow): boolean {
 
 function isIndifferentTimePreference(message: string): boolean {
   const normalized = normalizeText(message);
-  return /^(me da igual|me es indiferente|lo que vosotros me digais|lo que me digais|lo que digais|cuando mejor os venga|cuando os vaya bien|me adapto|cualquiera|la que sea|poned vosotros|como querais|lo que querais)$/.test(normalized);
+  return /\b(?:la hora me da igual|me da igual|me es indiferente|lo que vosotros me digais|lo que me digais|lo que digais|cuando mejor os venga|cuando os vaya bien|me adapto|cualquiera|la que sea|poned vosotros|como querais|lo que querais)\b/.test(normalized);
 }
 
 function isMorningPreference(message: string): boolean {
@@ -342,6 +342,23 @@ function buildTimePatch(
   };
 }
 
+function extractSharedEntryExitTime(message: string): string | undefined {
+  const normalized = normalizeDateTimeText(message);
+  if (
+    !/\b(?:entrada\s+y\s+salida|salida\s+y\s+entrada|las\s+dos|ambas|ambos)\b/.test(
+      normalized,
+    )
+  ) {
+    return undefined;
+  }
+
+  const explicit =
+    normalized.match(/\b(?:a\s+las?|a\s+la|sobre\s+las?|hacia\s+las?|las?)\s+(\d{1,2}(?:(?::|\.)\d{2})?h?(?:\s*(?:am|pm|a\s*m|p\s*m))?(?:\s+de\s+la\s+(?:manana|tarde|noche))?)\b/)?.[1] ??
+    normalized.match(/\b(\d{1,2}(?:(?::|\.)\d{2})?h?(?:\s*(?:am|pm|a\s*m|p\s*m))?(?:\s+de\s+la\s+(?:manana|tarde|noche))?)\b/)?.[1];
+
+  return parseTime(explicit);
+}
+
 function resolveAwaitingTimeInput(
   flow: ConversationReservationFlow,
   message: string,
@@ -393,6 +410,63 @@ function resolveAwaitingTimeInput(
     };
   }
 
+  const sharedTime = extractSharedEntryExitTime(message);
+  if (sharedTime) {
+    const outOfRange = [sharedTime].filter(isOutsideReceptionDay);
+    if (outOfRange.length > 0) {
+      return {
+        patch: { timePreferencePrompted: true },
+        reply: buildTimeOutOfRangeReply(outOfRange),
+        eventType: "reservation_flow_time_out_of_range",
+        eventPayload: { outOfRangeTimes: outOfRange },
+      };
+    }
+    return {
+      patch: buildTimePatch(sharedTime, sharedTime),
+      eventPayload: { source: "shared_entry_exit_time", checkInTime: sharedTime, checkOutTime: sharedTime },
+    };
+  }
+
+  if (explicit.checkInTime && !explicit.checkOutTime) {
+    const outOfRange = [explicit.checkInTime].filter(isOutsideReceptionDay);
+    if (outOfRange.length > 0) {
+      return {
+        patch: { timePreferencePrompted: true },
+        reply: buildTimeOutOfRangeReply(outOfRange),
+        eventType: "reservation_flow_time_out_of_range",
+        eventPayload: { outOfRangeTimes: outOfRange },
+      };
+    }
+    return {
+      patch: {
+        checkInTime: explicit.checkInTime,
+        checkInSlot: explicit.checkInSlot,
+        timePreferencePrompted: undefined,
+      },
+      eventPayload: { source: "explicit_entry_time", checkInTime: explicit.checkInTime },
+    };
+  }
+
+  if (explicit.checkOutTime && !explicit.checkInTime) {
+    const outOfRange = [explicit.checkOutTime].filter(isOutsideReceptionDay);
+    if (outOfRange.length > 0) {
+      return {
+        patch: { timePreferencePrompted: true },
+        reply: buildTimeOutOfRangeReply(outOfRange),
+        eventType: "reservation_flow_time_out_of_range",
+        eventPayload: { outOfRangeTimes: outOfRange },
+      };
+    }
+    return {
+      patch: {
+        checkOutTime: explicit.checkOutTime,
+        checkOutSlot: explicit.checkOutSlot,
+        timePreferencePrompted: undefined,
+      },
+      eventPayload: { source: "explicit_exit_time", checkOutTime: explicit.checkOutTime },
+    };
+  }
+
   const looseTimes = extractLooseTimeMentions(message);
   if (looseTimes.length >= 2) {
     const [checkInTime, checkOutTime] = looseTimes;
@@ -408,6 +482,15 @@ function resolveAwaitingTimeInput(
     return {
       patch: buildTimePatch(checkInTime, checkOutTime),
       eventPayload: { source: "loose_time_pair", checkInTime, checkOutTime },
+    };
+  }
+
+  if (looseTimes.length === 1) {
+    return {
+      patch: { timePreferencePrompted: true },
+      reply: `¿Ponemos las ${looseTimes[0]} tanto para la entrada como para la salida?`,
+      eventType: "reservation_flow_waiting_shared_time_confirmation",
+      eventPayload: { time: looseTimes[0] },
     };
   }
 
@@ -943,6 +1026,12 @@ function nextCollectionReply(flow: ConversationReservationFlow): string {
     return PET_NAMES_PROMPT;
   }
   if (flow.status === "collecting_dates") {
+    if (flow.checkInDate && flow.checkOutDate && flow.checkInTime && !flow.checkOutTime) {
+      return "Tengo la hora de entrada. ¿A qué hora sería la salida?";
+    }
+    if (flow.checkInDate && flow.checkOutDate && flow.checkOutTime && !flow.checkInTime) {
+      return "Tengo la hora de salida. ¿A qué hora sería la entrada?";
+    }
     if (flow.checkInDate && flow.checkInTime && (!flow.checkOutDate || !flow.checkOutTime)) {
       return "Tengo la entrada. ¿Qué día y a qué hora sería la salida?";
     }
