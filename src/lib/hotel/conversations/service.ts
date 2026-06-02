@@ -23,7 +23,7 @@ import {
   startReservationFlow,
 } from "./reservation-flow";
 import { getConversationStore } from "./file-store";
-import type { ConversationStore } from "./store";
+import { filterConversationRecords, type ConversationStore } from "./store";
 import type {
   Conversation,
   ConversationDashboard,
@@ -489,23 +489,24 @@ export async function listConversationDashboard(
   store: ConversationStore = getConversationStore(),
 ): Promise<ConversationDashboard> {
   await ensureDemoConversationSeed(store);
-  const conversations = await store.list(filters);
-  const all = await store.list();
   const snapshot = await store.load();
+  const conversations = filterConversationRecords(snapshot.conversations, filters);
+  const active = filterConversationRecords(snapshot.conversations);
+  const archived = filterConversationRecords(snapshot.conversations, { mode: "archived" });
 
   return {
     conversations,
     stats: {
-      total: all.length,
-      unread: all.filter((conversation) => conversation.unreadCount > 0).length,
-      pending: all.filter(
+      total: active.length,
+      unread: active.filter((conversation) => conversation.unreadCount > 0).length,
+      pending: active.filter(
         (conversation) => conversation.humanRequested || conversation.unreadCount > 0,
       ).length,
-      human: all.filter((conversation) => conversation.mode === "human").length,
-      read: all.filter(
+      human: active.filter((conversation) => conversation.mode === "human").length,
+      read: active.filter(
         (conversation) => conversation.unreadCount === 0 && !conversation.humanRequested,
       ).length,
-      archived: snapshot.conversations.filter((conversation) => conversation.archivedAt).length,
+      archived: archived.length,
     },
   };
 }

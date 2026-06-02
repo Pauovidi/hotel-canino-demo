@@ -24,6 +24,7 @@ const CONVERSATION_HEADERS = [
   "archived_at",
   "snapshot_json",
 ] as const;
+const DEFAULT_CACHE_TTL_MS = 4500;
 
 interface SheetsContext {
   client: sheets_v4.Sheets;
@@ -77,17 +78,68 @@ function readCell(row: unknown[], index: number): string {
   return String(row[index] ?? "").trim();
 }
 
-function parseRecord(row: unknown[]): ConversationRecord | undefined {
+function safeErrorCode(error: unknown): string | undefined {
+  return error && typeof error === "object" && "code" in error
+    ? String((error as { code?: unknown }).code).slice(0, 80)
+    : undefined;
+}
+
+function safeConversationId(value: string): string {
+  return value ? `${value.slice(0, 18)}${value.length > 18 ? "…" : ""}` : "";
+}
+
+function parseRecord(row: unknown[], rowNumber: number): ConversationRecord | undefined {
+  const rowId = readCell(row, 0);
+  const rowPhoneNormalized = readCell(row, 1);
+  const rowUpdatedAt = readCell(row, 2);
+  const rowArchivedAt = readCell(row, 3);
   const rawJson = readCell(row, 4);
   if (!rawJson) {
+    console.warn("conversation_store_row_skipped", {
+      provider: "google_sheets",
+      rowNumber,
+      reason: "missing_snapshot_json",
+      conversationId: safeConversationId(rowId),
+    });
     return undefined;
   }
 
   try {
-    return normalizeGoogleSheetsRecord(JSON.parse(rawJson));
+    const parsed = JSON.parse(rawJson);
+    const normalizedInput =
+      parsed && typeof parsed === "object"
+        ? {
+            ...(parsed as Record<string, unknown>),
+            id: (parsed as Record<string, unknown>).id ?? rowId,
+            phoneNormalized:
+              (parsed as Record<string, unknown>).phoneNormalized ?? rowPhoneNormalized,
+            updatedAt: (parsed as Record<string, unknown>).updatedAt ?? rowUpdatedAt,
+            archivedAt: (parsed as Record<string, unknown>).archivedAt ?? rowArchivedAt,
+          }
+        : parsed;
+    const record = normalizeGoogleSheetsRecord(normalizedInput);
+    if (!record) {
+      console.warn("conversation_store_row_skipped", {
+        provider: "google_sheets",
+        rowNumber,
+        reason: "invalid_snapshot_shape",
+        conversationId: safeConversationId(rowId),
+      });
+      return undefined;
+    }
+
+    return {
+      ...record,
+      id: record.id || rowId,
+      phoneNormalized: record.phoneNormalized || rowPhoneNormalized || record.id,
+      updatedAt: record.updatedAt || rowUpdatedAt,
+      archivedAt: record.archivedAt || rowArchivedAt || undefined,
+    };
   } catch (error) {
     console.warn("conversation_store_corrupt_row_skipped", {
       provider: "google_sheets",
+      rowNumber,
+      conversationId: safeConversationId(rowId),
       errorName: error instanceof Error ? error.name : "UnknownError",
     });
     return undefined;
@@ -234,7 +286,81 @@ function isRecord(value: ConversationRecord | undefined): value is ConversationR
   return Boolean(value);
 }
 
+function conversationSortTime(record: ConversationRecord): number {
+  const updated = Date.parse(record.updatedAt ?? "");
+  if (Number.isFinite(updated)) {
+    return updated;
+  }
+
+  const created = Date.parse(record.createdAt ?? "");
+  return Number.isFinite(created) ? created : 0;
+}
+
+function dedupeConversationRecords(records: ConversationRecord[]): ConversationRecord[] {
+  const byId = new Map<string, ConversationRecord>();
+
+  for (const record of records) {
+    const existing = byId.get(record.id);
+    if (!existing) {
+      byId.set(record.id, record);
+      continue;
+    }
+
+    const winner =
+      conversationSortTime(record) >= conversationSortTime(existing) ? record : existing;
+    byId.set(record.id, winner);
+    console.warn("conversation_store_duplicate_row_skipped", {
+      provider: "google_sheets",
+      conversationId: safeConversationId(record.id),
+      keptUpdatedAt: winner.updatedAt,
+    });
+  }
+
+  const byPhone = new Map<string, ConversationRecord>();
+  for (const record of byId.values()) {
+    const phoneKey = record.phoneNormalized?.trim();
+    if (!phoneKey) {
+      byPhone.set(record.id, record);
+      continue;
+    }
+
+    const existing = byPhone.get(phoneKey);
+    if (!existing) {
+      byPhone.set(phoneKey, record);
+      continue;
+    }
+
+    const winner =
+      conversationSortTime(record) >= conversationSortTime(existing) ? record : existing;
+    byPhone.set(phoneKey, winner);
+    console.warn("conversation_store_duplicate_phone_row_skipped", {
+      provider: "google_sheets",
+      conversationId: safeConversationId(record.id),
+      keptConversationId: safeConversationId(winner.id),
+      keptUpdatedAt: winner.updatedAt,
+    });
+  }
+
+  return Array.from(byPhone.values());
+}
+
+function readCacheTtlMs(): number {
+  const parsed = Number.parseInt(
+    process.env.HOTEL_CONVERSATIONS_SHEETS_CACHE_TTL_MS ?? "",
+    10,
+  );
+  if (Number.isFinite(parsed) && parsed >= 0) {
+    return Math.min(parsed, 30_000);
+  }
+
+  return DEFAULT_CACHE_TTL_MS;
+}
+
 export class GoogleSheetsConversationStore implements ConversationStore {
+  private sheetReady = false;
+  private cachedSnapshot: ConversationSnapshot | undefined;
+  private cachedSnapshotExpiresAt = 0;
+
   constructor(
     private readonly sheetName = getConversationsSheetName(),
     private readonly deps: GoogleSheetsConversationStoreDeps = {},
@@ -248,8 +374,21 @@ export class GoogleSheetsConversationStore implements ConversationStore {
     return (this.deps.now?.() ?? new Date()).toISOString();
   }
 
+  private nowMs(): number {
+    return this.deps.now?.().getTime() ?? Date.now();
+  }
+
+  private setCachedSnapshot(snapshot: ConversationSnapshot) {
+    this.cachedSnapshot = snapshot;
+    this.cachedSnapshotExpiresAt = this.nowMs() + readCacheTtlMs();
+  }
+
   private async ensureSheet(): Promise<SheetsContext> {
     const context = await this.context();
+    if (this.sheetReady) {
+      return context;
+    }
+
     const response = await context.client.spreadsheets.get({
       spreadsheetId: context.spreadsheetId,
       fields: "sheets.properties",
@@ -285,29 +424,59 @@ export class GoogleSheetsConversationStore implements ConversationStore {
       });
     }
 
+    this.sheetReady = true;
     return context;
   }
 
   async load(): Promise<ConversationSnapshot> {
-    const context = await this.ensureSheet();
-    const response = await context.client.spreadsheets.values.get({
-      spreadsheetId: context.spreadsheetId,
-      range: quoteSheetRange(this.sheetName, "A:E"),
-      majorDimension: "ROWS",
-      valueRenderOption: "UNFORMATTED_VALUE",
-    });
-    const rows = response.data.values ?? [];
-    const records = rows.slice(1).map(parseRecord).filter(isRecord);
+    if (this.cachedSnapshot && this.cachedSnapshotExpiresAt > this.nowMs()) {
+      return this.cachedSnapshot;
+    }
 
-    return {
-      conversations: records,
-      updatedAt: this.nowIso(),
-    };
+    const context = await this.ensureSheet();
+    try {
+      const response = await context.client.spreadsheets.values.get({
+        spreadsheetId: context.spreadsheetId,
+        range: quoteSheetRange(this.sheetName, "A:E"),
+        majorDimension: "ROWS",
+        valueRenderOption: "UNFORMATTED_VALUE",
+      });
+      const rows = response.data.values ?? [];
+      const records = dedupeConversationRecords(
+        rows
+          .slice(1)
+          .map((row, index) => parseRecord(row, index + 2))
+          .filter(isRecord),
+      );
+      const snapshot = {
+        conversations: records,
+        updatedAt: this.nowIso(),
+      };
+
+      this.setCachedSnapshot(snapshot);
+      return snapshot;
+    } catch (error) {
+      if (this.cachedSnapshot) {
+        console.warn("conversation_store_load_failed_using_stale_cache", {
+          provider: "google_sheets",
+          errorName: error instanceof Error ? error.name : "UnknownError",
+          safeErrorCode: safeErrorCode(error),
+        });
+        return this.cachedSnapshot;
+      }
+
+      throw error;
+    }
   }
 
   async save(snapshot: ConversationSnapshot): Promise<void> {
     const context = await this.ensureSheet();
-    const rows = snapshot.conversations.map((record) => [
+    const normalizedSnapshot = {
+      ...snapshot,
+      conversations: dedupeConversationRecords(snapshot.conversations),
+      updatedAt: this.nowIso(),
+    };
+    const rows = normalizedSnapshot.conversations.map((record) => [
       record.id,
       record.phoneNormalized,
       record.updatedAt,
@@ -327,6 +496,7 @@ export class GoogleSheetsConversationStore implements ConversationStore {
         values: [[...CONVERSATION_HEADERS], ...rows],
       },
     });
+    this.setCachedSnapshot(normalizedSnapshot);
   }
 
   async list(filters?: ConversationListFilters): Promise<ConversationRecord[]> {

@@ -11,15 +11,24 @@ import type { Conversation } from "./types";
 
 function createFakeSheetsContext() {
   const sheets = new Map<string, unknown[][]>();
+  const calls = {
+    spreadsheetsGet: 0,
+    valuesGet: 0,
+    valuesClear: 0,
+    valuesUpdate: 0,
+  };
   const client = {
     spreadsheets: {
-      get: async () => ({
-        data: {
-          sheets: Array.from(sheets.keys()).map((title, index) => ({
-            properties: { title, sheetId: index },
-          })),
-        },
-      }),
+      get: async () => {
+        calls.spreadsheetsGet += 1;
+        return {
+          data: {
+            sheets: Array.from(sheets.keys()).map((title, index) => ({
+              properties: { title, sheetId: index },
+            })),
+          },
+        };
+      },
       batchUpdate: async (request: { requestBody?: { requests?: Array<{ addSheet?: { properties?: { title?: string } } }> } }) => {
         for (const entry of request.requestBody?.requests ?? []) {
           const title = entry.addSheet?.properties?.title;
@@ -31,15 +40,18 @@ function createFakeSheetsContext() {
       },
       values: {
         get: async (request: { range: string }) => {
+          calls.valuesGet += 1;
           const sheetName = request.range.match(/^'(.+)'!/)?.[1]?.replace(/''/g, "'") ?? "CONVERSATIONS";
           return { data: { values: sheets.get(sheetName) ?? [] } };
         },
         clear: async (request: { range: string }) => {
+          calls.valuesClear += 1;
           const sheetName = request.range.match(/^'(.+)'!/)?.[1]?.replace(/''/g, "'") ?? "CONVERSATIONS";
           sheets.set(sheetName, []);
           return { data: {} };
         },
         update: async (request: { range: string; requestBody?: { values?: unknown[][] } }) => {
+          calls.valuesUpdate += 1;
           const sheetName = request.range.match(/^'(.+)'!/)?.[1]?.replace(/''/g, "'") ?? "CONVERSATIONS";
           sheets.set(sheetName, request.requestBody?.values ?? []);
           return { data: {} };
@@ -50,6 +62,7 @@ function createFakeSheetsContext() {
 
   return {
     sheets,
+    calls,
     createSheetsClient: async () => ({
       client: client as never,
       spreadsheetId: "spreadsheet_qa",
@@ -230,5 +243,120 @@ describe("GoogleSheetsConversationStore", () => {
       archived: 0,
     });
     await expect(store.list({ query: "34600000000" })).resolves.toHaveLength(1);
+  });
+
+  it("keeps archived stats and archived list aligned after corrupt and duplicate rows", async () => {
+    const fake = createFakeSheetsContext();
+    fake.sheets.set("CONVERSATIONS", [
+      ["id", "phone_normalized", "updated_at", "archived_at", "snapshot_json"],
+      [
+        "conv_archived_1",
+        "34600000001",
+        "2026-06-02T10:00:00.000Z",
+        "2026-06-02T10:10:00.000Z",
+        JSON.stringify({
+          ...conversation({
+            id: "conv_archived_1",
+            phoneNormalized: "34600000001",
+            archivedAt: "2026-06-02T10:10:00.000Z",
+          }),
+        }),
+      ],
+      [
+        "conv_archived_2",
+        "34600000002",
+        "2026-06-02T10:11:00.000Z",
+        "2026-06-02T10:12:00.000Z",
+        JSON.stringify({
+          ...conversation({
+            id: "conv_archived_2",
+            phoneNormalized: "34600000002",
+            archivedAt: "2026-06-02T10:12:00.000Z",
+          }),
+        }),
+      ],
+      [
+        "conv_archived_2",
+        "34600000002",
+        "2026-06-02T09:00:00.000Z",
+        "2026-06-02T09:05:00.000Z",
+        JSON.stringify({
+          ...conversation({
+            id: "conv_archived_2",
+            phoneNormalized: "34600000002",
+            updatedAt: "2026-06-02T09:00:00.000Z",
+            archivedAt: "2026-06-02T09:05:00.000Z",
+          }),
+        }),
+      ],
+      ["conv_corrupt_archived", "34600000003", "", "2026-06-02T09:05:00.000Z", "{not-json"],
+    ]);
+    const store = new GoogleSheetsConversationStore("CONVERSATIONS", {
+      createSheetsClient: fake.createSheetsClient,
+      now: () => new Date("2026-06-02T10:20:00.000Z"),
+    });
+
+    const archivedDashboard = await listConversationDashboard({ mode: "archived" }, store);
+
+    expect(archivedDashboard.conversations).toHaveLength(2);
+    expect(archivedDashboard.stats.archived).toBe(2);
+    expect(archivedDashboard.conversations.map((item) => item.id).sort()).toEqual([
+      "conv_archived_1",
+      "conv_archived_2",
+    ]);
+    expect(fake.calls.valuesGet).toBe(1);
+  });
+
+  it("uses the latest duplicate phone row as canonical for inbound and avoids fallback replies", async () => {
+    const fake = createFakeSheetsContext();
+    fake.sheets.set("CONVERSATIONS", [
+      ["id", "phone_normalized", "updated_at", "archived_at", "snapshot_json"],
+      [
+        "conv_old_duplicate",
+        "34600009991",
+        "2026-06-02T09:00:00.000Z",
+        "",
+        JSON.stringify({
+          ...conversation({
+            id: "conv_old_duplicate",
+            updatedAt: "2026-06-02T09:00:00.000Z",
+          }),
+        }),
+      ],
+      ["conv_corrupt_same_phone", "34600009991", "", "", "{not-json"],
+      [
+        "conv_latest_duplicate",
+        "34600009991",
+        "2026-06-02T10:00:00.000Z",
+        "",
+        JSON.stringify({
+          ...conversation({
+            id: "conv_latest_duplicate",
+            updatedAt: "2026-06-02T10:00:00.000Z",
+          }),
+        }),
+      ],
+    ]);
+    const store = new GoogleSheetsConversationStore("CONVERSATIONS", {
+      createSheetsClient: fake.createSheetsClient,
+      now: () => new Date("2026-06-02T10:20:00.000Z"),
+    });
+
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        to: "whatsapp:+14155238886",
+        body: "hola!",
+        messageSid: "SM_GOOGLE_DUPLICATE_PHONE",
+      },
+      store,
+      createStaticClientDirectory([]),
+    );
+
+    expect(result.conversation.id).toBe("conv_latest_duplicate");
+    expect(result.twiml).toContain("<Message>");
+    expect(result.twiml).toContain("ayudarte");
+    expect(result.twiml).not.toContain("hemos recibido tu mensaje");
+    expect(await store.list()).toHaveLength(1);
   });
 });
