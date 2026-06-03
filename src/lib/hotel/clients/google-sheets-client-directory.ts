@@ -252,6 +252,45 @@ export async function appendClientDirectoryRow(
   };
 }
 
+export async function updateClientDirectoryEmail(
+  input: {
+    rowNumber: number;
+    email: string;
+    updatedAt?: Date;
+  },
+  sheetName = getClientsSheetName(),
+): Promise<{ sheetName: string; rowNumber: number }> {
+  if (!Number.isInteger(input.rowNumber) || input.rowNumber < 2) {
+    throw new Error("CLIENTES email update requires a valid data row number.");
+  }
+
+  const email = normalizeEmail(input.email);
+  if (!email) {
+    throw new Error("CLIENTES email update requires a valid email.");
+  }
+
+  const { client, spreadsheetId } = await createSheetsClient();
+  await client.spreadsheets.values.update({
+    spreadsheetId,
+    range: quoteSheetRange(sheetName, `I${input.rowNumber}:I${input.rowNumber}`),
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+      values: [[email]],
+    },
+  });
+  await client.spreadsheets.values.update({
+    spreadsheetId,
+    range: quoteSheetRange(sheetName, `M${input.rowNumber}:M${input.rowNumber}`),
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+      values: [[(input.updatedAt ?? new Date()).toISOString()]],
+    },
+  });
+  invalidateClientDirectoryCache();
+
+  return { sheetName, rowNumber: input.rowNumber };
+}
+
 export async function clearClientDirectoryRow(
   rowNumber: number,
   sheetName = getClientsSheetName(),

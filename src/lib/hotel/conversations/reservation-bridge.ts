@@ -336,6 +336,14 @@ function formatDateRange(checkIn: string, checkOut: string): string {
   return `${fullFormatter.format(entry)} al ${fullFormatter.format(exit)}`;
 }
 
+function formatSingleDate(value: string): string {
+  return new Intl.DateTimeFormat("es-ES", {
+    day: "numeric",
+    month: "long",
+    timeZone: "UTC",
+  }).format(new Date(`${value}T00:00:00.000Z`));
+}
+
 function buildProposalReply(proposal: PendingReservationProposal): string {
   return `Tenemos disponibilidad para ${proposal.petName} del ${formatDateRange(
     proposal.checkIn,
@@ -344,17 +352,27 @@ function buildProposalReply(proposal: PendingReservationProposal): string {
 }
 
 function buildConfirmationReply(proposal: PendingReservationProposal): string {
-  if (proposal.checkInTime && proposal.checkOutTime && proposal.price !== undefined) {
-    return `Reserva confirmada. La reserva para ${proposal.petName} del ${formatDateRange(
+  if (proposal.checkInTime && proposal.price !== undefined) {
+    return `Reserva confirmada para ${proposal.petName}. Te esperamos el ${formatSingleDate(
       proposal.checkIn,
-      proposal.checkOut,
-    )} queda anotada, con entrada a las ${proposal.checkInTime} y salida a las ${proposal.checkOutTime}. El precio es ${proposal.price} €. El equipo revisará cualquier detalle adicional si hace falta.`;
+    )} a las ${proposal.checkInTime}. El precio es ${proposal.price} €. Si necesitas cambiar cualquier detalle, escríbenos por aquí y el equipo lo revisará.`;
   }
 
-  return `Perfecto, la reserva de ${proposal.petName} del ${formatDateRange(
-    proposal.checkIn,
-    proposal.checkOut,
-  )} queda anotada. El equipo la revisará y la incorporará a Gestet si corresponde.`;
+  if (proposal.petName && proposal.checkIn) {
+    return `Reserva confirmada para ${proposal.petName}. Te esperamos el ${formatSingleDate(
+      proposal.checkIn,
+    )}. Si necesitas cambiar cualquier detalle, escríbenos por aquí y el equipo lo revisará.`;
+  }
+
+  return "Reserva confirmada. Te esperamos pronto. Si necesitas cambiar cualquier detalle, escríbenos por aquí y el equipo lo revisará.";
+}
+
+function buildAlreadyConfirmedReply(proposal: PendingReservationProposal): string {
+  if (proposal.petName && proposal.checkIn) {
+    return `De acuerdo, te esperamos pronto. Si necesitas cambiar cualquier detalle, escríbenos por aquí.`;
+  }
+
+  return "De acuerdo, te esperamos pronto. Si necesitas cambiar cualquier detalle, escríbenos por aquí.";
 }
 
 function getDefaultBuildSheetAdapter() {
@@ -679,7 +697,7 @@ export async function confirmPendingReservationProposal(input: {
   if (proposal.status === "confirmed" && proposal.reservationId) {
     return {
       kind: "confirmed",
-      reply: buildConfirmationReply(proposal),
+      reply: buildAlreadyConfirmedReply(proposal),
       proposal,
       eventPayload: {
         proposalId: proposal.proposalId,
@@ -939,6 +957,19 @@ export async function confirmPendingReservationProposal(input: {
       sheetWriteSuccess: true,
       reservationRecordCreated: !recordWarning,
       postWriteWarning: recordWarning ?? clientDirectoryRecordWarning,
+      finalization: {
+        reservationIdSummary: summarizeSensitiveId(reservation.reservationId),
+        conversationId: input.conversation.id,
+        monthlySheetWrite: "ok",
+        clientUpsert: clientDirectoryUpsertStatus(clientDirectoryUpsert),
+        reservationRecordWrite: recordWarning ? "failed" : "ok",
+        entryLogWrite: "projected_from_reservation_record",
+        conversationUpdate: "pending_store_update",
+        userReply: "confirmed",
+        errors: [recordWarning, clientDirectoryRecordWarning, clientDirectoryUpsert.warning]
+          .filter(Boolean)
+          .map((entry) => (typeof entry === "string" ? entry : JSON.stringify(entry))),
+      },
       clientDirectoryUpsert: clientDirectoryUpsert
         ? {
             kind: clientDirectoryUpsert.kind,

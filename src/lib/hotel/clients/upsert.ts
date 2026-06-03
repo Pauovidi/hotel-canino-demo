@@ -2,6 +2,7 @@ import {
   appendClientDirectoryRow,
   getClientDirectory,
   getClientsSheetName,
+  updateClientDirectoryEmail,
 } from "./google-sheets-client-directory";
 import { normalizeEmail, normalizePhone } from "./normalize";
 import { ClientDirectoryService } from "./service";
@@ -44,6 +45,11 @@ export interface ClientUpsertFromConfirmedReservationResult {
 export interface ClientUpsertDeps {
   directory?: ClientDirectory;
   appendClientRow?: (row: string[]) => Promise<{ sheetName?: string; rowNumber?: number }>;
+  updateExistingClientEmail?: (input: {
+    rowNumber: number;
+    email: string;
+    sheetName?: string;
+  }) => Promise<{ sheetName?: string; rowNumber?: number }>;
   now?: () => Date;
 }
 
@@ -139,6 +145,31 @@ export async function upsertClientFromConfirmedReservation(
     phoneIdentity.status !== "unknown" ? phoneIdentity : emailIdentity ?? phoneIdentity;
 
   if (identity.status === "known") {
+    const normalizedInputEmail = normalizeEmail(input.email ?? "");
+    const existingEmail = normalizeEmail(identity.client?.email ?? "");
+    const canCompleteMissingEmail = Boolean(
+      normalizedInputEmail &&
+        !existingEmail &&
+        identity.client?.rowNumber &&
+        Number.isInteger(identity.client.rowNumber),
+    );
+    if (canCompleteMissingEmail) {
+      await (deps.updateExistingClientEmail ??
+        ((emailInput) =>
+          updateClientDirectoryEmail(
+            {
+              rowNumber: emailInput.rowNumber,
+              email: emailInput.email,
+              updatedAt: deps.now?.() ?? input.now ?? new Date(),
+            },
+            emailInput.sheetName,
+          )))({
+        rowNumber: identity.client!.rowNumber!,
+        email: normalizedInputEmail!,
+        sheetName: identity.client?.sheetName,
+      });
+    }
+
     return {
       kind: "existing",
       clientStatus: "known",
@@ -146,6 +177,12 @@ export async function upsertClientFromConfirmedReservation(
       rowNumber: identity.client?.rowNumber,
       sheetName: identity.client?.sheetName,
       matchCount: identity.matches?.length ?? 1,
+      warning:
+        canCompleteMissingEmail
+          ? "client_email_completed_from_reservation"
+          : normalizedInputEmail && existingEmail && normalizedInputEmail !== existingEmail
+            ? "client_email_differs_from_directory"
+            : undefined,
       source: CLIENT_DIRECTORY_SOURCE,
     };
   }

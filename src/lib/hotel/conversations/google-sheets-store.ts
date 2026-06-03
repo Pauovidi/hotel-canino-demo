@@ -476,26 +476,63 @@ export class GoogleSheetsConversationStore implements ConversationStore {
       conversations: dedupeConversationRecords(snapshot.conversations),
       updatedAt: this.nowIso(),
     };
-    const rows = normalizedSnapshot.conversations.map((record) => [
+    const values = [
+      [...CONVERSATION_HEADERS],
+      ...normalizedSnapshot.conversations.map((record) => [
       record.id,
       record.phoneNormalized,
       record.updatedAt,
       record.archivedAt ?? "",
       JSON.stringify(record),
-    ]);
+      ]),
+    ];
 
-    await context.client.spreadsheets.values.clear({
-      spreadsheetId: context.spreadsheetId,
-      range: quoteSheetRange(this.sheetName, "A:E"),
-    });
+    let previousRowCount = 0;
+    try {
+      const existing = await context.client.spreadsheets.values.get({
+        spreadsheetId: context.spreadsheetId,
+        range: quoteSheetRange(this.sheetName, "A:E"),
+        majorDimension: "ROWS",
+        valueRenderOption: "UNFORMATTED_VALUE",
+      });
+      previousRowCount = existing.data.values?.length ?? 0;
+    } catch (error) {
+      console.warn("conversation_store_existing_rows_count_failed", {
+        provider: "google_sheets",
+        errorName: error instanceof Error ? error.name : "UnknownError",
+        safeErrorCode: safeErrorCode(error),
+      });
+    }
+
     await context.client.spreadsheets.values.update({
       spreadsheetId: context.spreadsheetId,
       range: quoteSheetRange(this.sheetName, "A1:E"),
       valueInputOption: "RAW",
       requestBody: {
-        values: [[...CONVERSATION_HEADERS], ...rows],
+        values,
       },
     });
+
+    if (previousRowCount > values.length) {
+      try {
+        await context.client.spreadsheets.values.clear({
+          spreadsheetId: context.spreadsheetId,
+          range: quoteSheetRange(
+            this.sheetName,
+            `A${values.length + 1}:E${previousRowCount}`,
+          ),
+        });
+      } catch (error) {
+        console.warn("conversation_store_stale_rows_clear_failed", {
+          provider: "google_sheets",
+          keptRows: values.length,
+          previousRowCount,
+          errorName: error instanceof Error ? error.name : "UnknownError",
+          safeErrorCode: safeErrorCode(error),
+        });
+      }
+    }
+
     this.setCachedSnapshot(normalizedSnapshot);
   }
 

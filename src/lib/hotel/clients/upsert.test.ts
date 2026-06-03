@@ -67,6 +67,79 @@ describe("client upsert from confirmed reservation", () => {
     expect(appended).toHaveLength(0);
   });
 
+  it("completes a missing CLIENTES email for known phone contacts after confirmation", async () => {
+    const appended: string[][] = [];
+    const updatedEmails: Array<{ rowNumber: number; email: string; sheetName?: string }> = [];
+    const result = await upsertClientFromConfirmedReservation(
+      {
+        ...BASE_INPUT,
+        email: "pau.qa@example.test",
+      },
+      {
+        directory: createStaticClientDirectory([
+          {
+            nombre: "Pau QA",
+            telefonoNormalizado: "34600009991",
+            rowNumber: 4,
+            sheetName: "CLIENTES_QA",
+          },
+        ]),
+        appendClientRow: async (row) => {
+          appended.push(row);
+          return { sheetName: "CLIENTES_QA", rowNumber: 5 };
+        },
+        updateExistingClientEmail: async (input) => {
+          updatedEmails.push(input);
+          return { sheetName: input.sheetName, rowNumber: input.rowNumber };
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      kind: "existing",
+      clientStatus: "known",
+      rowNumber: 4,
+      sheetName: "CLIENTES_QA",
+      warning: "client_email_completed_from_reservation",
+    });
+    expect(appended).toHaveLength(0);
+    expect(updatedEmails).toEqual([
+      { rowNumber: 4, email: "pau.qa@example.test", sheetName: "CLIENTES_QA" },
+    ]);
+  });
+
+  it("does not overwrite a different CLIENTES email automatically", async () => {
+    const updatedEmails: Array<{ rowNumber: number; email: string; sheetName?: string }> = [];
+    const result = await upsertClientFromConfirmedReservation(
+      {
+        ...BASE_INPUT,
+        email: "nuevo-email@example.test",
+      },
+      {
+        directory: createStaticClientDirectory([
+          {
+            nombre: "Pau QA",
+            telefonoNormalizado: "34600009991",
+            email: "email-existente@example.test",
+            rowNumber: 4,
+            sheetName: "CLIENTES_QA",
+          },
+        ]),
+        updateExistingClientEmail: async (input) => {
+          updatedEmails.push(input);
+          return { sheetName: input.sheetName, rowNumber: input.rowNumber };
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      kind: "existing",
+      clientStatus: "known",
+      warning: "client_email_differs_from_directory",
+    });
+    expect(updatedEmails).toHaveLength(0);
+  });
+
   it("creates CLIENTES only for unknown contacts after a confirmed reservation", async () => {
     const appended: string[][] = [];
     const result = await upsertClientFromConfirmedReservation(

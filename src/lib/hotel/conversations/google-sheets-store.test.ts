@@ -9,7 +9,7 @@ import {
 } from "./service";
 import type { Conversation } from "./types";
 
-function createFakeSheetsContext() {
+function createFakeSheetsContext(options: { failNextUpdate?: boolean } = {}) {
   const sheets = new Map<string, unknown[][]>();
   const calls = {
     spreadsheetsGet: 0,
@@ -17,6 +17,20 @@ function createFakeSheetsContext() {
     valuesClear: 0,
     valuesUpdate: 0,
   };
+  let failNextUpdate = options.failNextUpdate ?? false;
+  function sheetNameFromRange(range: string) {
+    return range.match(/^'(.+)'!/)?.[1]?.replace(/''/g, "'") ?? "CONVERSATIONS";
+  }
+  function rowRangeFromA1(range: string): { start: number; end?: number } | undefined {
+    const match = range.match(/![A-Z]+(\d+)(?::[A-Z]+(\d+))?$/);
+    if (!match) {
+      return undefined;
+    }
+    return {
+      start: Number.parseInt(match[1], 10),
+      end: match[2] ? Number.parseInt(match[2], 10) : undefined,
+    };
+  }
   const client = {
     spreadsheets: {
       get: async () => {
@@ -41,19 +55,42 @@ function createFakeSheetsContext() {
       values: {
         get: async (request: { range: string }) => {
           calls.valuesGet += 1;
-          const sheetName = request.range.match(/^'(.+)'!/)?.[1]?.replace(/''/g, "'") ?? "CONVERSATIONS";
+          const sheetName = sheetNameFromRange(request.range);
           return { data: { values: sheets.get(sheetName) ?? [] } };
         },
         clear: async (request: { range: string }) => {
           calls.valuesClear += 1;
-          const sheetName = request.range.match(/^'(.+)'!/)?.[1]?.replace(/''/g, "'") ?? "CONVERSATIONS";
-          sheets.set(sheetName, []);
+          const sheetName = sheetNameFromRange(request.range);
+          const rows = sheets.get(sheetName) ?? [];
+          const rowRange = rowRangeFromA1(request.range);
+          if (!rowRange) {
+            sheets.set(sheetName, []);
+          } else {
+            const startIndex = Math.max(rowRange.start - 1, 0);
+            const endIndex = rowRange.end ? Math.max(rowRange.end - 1, startIndex) : rows.length - 1;
+            sheets.set(
+              sheetName,
+              rows.filter((_, index) => index < startIndex || index > endIndex),
+            );
+          }
           return { data: {} };
         },
         update: async (request: { range: string; requestBody?: { values?: unknown[][] } }) => {
           calls.valuesUpdate += 1;
-          const sheetName = request.range.match(/^'(.+)'!/)?.[1]?.replace(/''/g, "'") ?? "CONVERSATIONS";
-          sheets.set(sheetName, request.requestBody?.values ?? []);
+          if (failNextUpdate) {
+            failNextUpdate = false;
+            throw new Error("mock values.update failed");
+          }
+          const sheetName = sheetNameFromRange(request.range);
+          const rows = sheets.get(sheetName) ?? [];
+          const rowRange = rowRangeFromA1(request.range);
+          const startIndex = rowRange ? Math.max(rowRange.start - 1, 0) : 0;
+          const values = request.requestBody?.values ?? [];
+          const next = [...rows];
+          values.forEach((row, index) => {
+            next[startIndex + index] = row;
+          });
+          sheets.set(sheetName, next);
           return { data: {} };
         },
       },
@@ -67,6 +104,9 @@ function createFakeSheetsContext() {
       client: client as never,
       spreadsheetId: "spreadsheet_qa",
     }),
+    failNextUpdate() {
+      failNextUpdate = true;
+    },
   };
 }
 
@@ -125,6 +165,42 @@ describe("GoogleSheetsConversationStore", () => {
       "archived_at",
       "snapshot_json",
     ]);
+  });
+
+  it("does not clear CONVERSATIONS when a Google Sheets update fails", async () => {
+    const fake = createFakeSheetsContext();
+    const firstStore = new GoogleSheetsConversationStore("CONVERSATIONS", {
+      createSheetsClient: fake.createSheetsClient,
+      now: () => new Date("2026-06-02T10:00:00.000Z"),
+    });
+
+    await firstStore.upsertConversation(conversation());
+    const rowsBeforeFailure = structuredClone(fake.sheets.get("CONVERSATIONS"));
+    fake.failNextUpdate();
+
+    await expect(
+      firstStore.addMessage({
+        id: "msg_google_sheets_update_fail",
+        conversationId: "conv_google_sheets_qa",
+        direction: "inbound",
+        senderType: "user",
+        transport: "whatsapp",
+        body: "si",
+        createdAt: "2026-06-02T10:03:00.000Z",
+      }),
+    ).rejects.toThrow("mock values.update failed");
+
+    expect(fake.sheets.get("CONVERSATIONS")).toEqual(rowsBeforeFailure);
+
+    const reloadedStore = new GoogleSheetsConversationStore("CONVERSATIONS", {
+      createSheetsClient: fake.createSheetsClient,
+      now: () => new Date("2026-06-02T10:04:00.000Z"),
+    });
+    const conversations = await reloadedStore.list();
+
+    expect(conversations).toHaveLength(1);
+    expect(conversations[0].id).toBe("conv_google_sheets_qa");
+    expect(conversations[0].messages).toHaveLength(0);
   });
 
   it("persists archived state, restores history and reopens on new inbound", async () => {

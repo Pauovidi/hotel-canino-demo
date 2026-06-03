@@ -9,7 +9,7 @@ import {
   type ClientUpsertFromConfirmedReservationResult,
 } from "@/lib/hotel/clients";
 import type { SheetAdapter, SheetsWriteResult } from "@/lib/hotel/sheets/types";
-import { handleInboundWhatsApp } from "./service";
+import { handleInboundWhatsApp, listConversationDashboard } from "./service";
 import { buildConversationReplyPlan } from "./nlu";
 import {
   createEmptyConversationSnapshot,
@@ -126,7 +126,7 @@ class PostConfirmationStoreFailureConversationStore extends MemoryConversationSt
   }
 
   async addMessage(message: Message): Promise<Message> {
-    if (message.direction === "outbound" && message.body.includes("queda anotada")) {
+    if (message.direction === "outbound" && message.body.includes("Reserva confirmada")) {
       throw new Error("mock post confirmation bot message failed");
     }
 
@@ -1916,7 +1916,7 @@ describe("WhatsApp reservation bridge", () => {
     expect(confirmed.conversation.clientDirectoryUpsertStatus).toBe("created");
     expect(confirmed.conversation.tags).toContain("cliente_creado_desde_reserva");
     expect(confirmed.conversation.tags).not.toContain("cliente_habitual");
-    expect(confirmed.botReply?.body).toContain("queda anotada");
+    expect(confirmed.botReply?.body).toContain("Reserva confirmada");
     expect(confirmed.conversation.events.some((event) => event.eventType === "reservation_confirmed_from_whatsapp")).toBe(true);
     expect(confirmed.conversation.events.some((event) => event.eventType === "client_directory_created_pending_name")).toBe(true);
 
@@ -1983,7 +1983,7 @@ describe("WhatsApp reservation bridge", () => {
     expect(counters.reservations).toHaveLength(1);
     expect(counters.clientUpserts).toHaveLength(1);
     expect(confirmed.conversation.pendingReservationProposal?.status).toBe("confirmed");
-    expect(confirmed.botReply?.body).toContain("queda anotada");
+    expect(confirmed.botReply?.body).toContain("Reserva confirmada");
   });
 
   it("does not confirm without a pending proposal", async () => {
@@ -2181,7 +2181,7 @@ describe("WhatsApp reservation bridge", () => {
     expect(result.conversation.pendingReservationProposal?.status).toBe("confirmed");
     expect(result.conversation.clientDirectoryUpsertKind).toBe("created_pending_name");
     expect(result.conversation.reservationId).toBeDefined();
-    expect(result.botReply?.body).toContain("queda anotada");
+    expect(result.botReply?.body).toContain("Reserva confirmada");
     expect(result.botReply?.body).not.toContain("no la marco como confirmada");
     const confirmationEvent = result.conversation.events.findLast(
       (event) => event.eventType === "reservation_confirmation_checked",
@@ -2219,7 +2219,7 @@ describe("WhatsApp reservation bridge", () => {
     expect(counters.reservations).toHaveLength(1);
     expect(counters.clientUpserts).toHaveLength(1);
     expect(result.botReply).toBeUndefined();
-    expect(result.twiml).toContain("queda anotada");
+    expect(result.twiml).toContain("Reserva confirmada");
     expect(result.twiml).not.toContain("Gracias, hemos recibido tu mensaje");
   });
 
@@ -2251,7 +2251,7 @@ describe("WhatsApp reservation bridge", () => {
       clientDirectoryUpsertStatus: "failed",
     });
     expect(result.conversation.pendingReservationProposal?.status).toBe("confirmed");
-    expect(result.botReply?.body).toContain("queda anotada");
+    expect(result.botReply?.body).toContain("Reserva confirmada");
     expect(result.conversation.events.some((event) => event.eventType === "client_directory_upsert_failed")).toBe(true);
     expect(JSON.stringify(result.conversation.events)).not.toContain("mock client upsert failed");
   });
@@ -2389,6 +2389,153 @@ describe("WhatsApp reservation bridge", () => {
     );
 
     expect(repeated.conversation.pendingReservationProposal?.status).toBe("confirmed");
+    expect(counters.writes).toBe(1);
+    expect(counters.reservations).toHaveLength(1);
+    expect(counters.clientUpserts).toHaveLength(1);
+  });
+
+  it("confirms the real recognized-client PLAF flow with 'si' and keeps the conversation visible", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps({
+      clientUpsertResult: {
+        kind: "existing",
+        clientStatus: "known",
+        clientName: "Pau QA",
+        rowNumber: 12,
+        sheetName: "CLIENTES_QA",
+        matchCount: 1,
+        warning: "client_email_completed_from_reservation",
+        source: "google_sheets_client_directory",
+      },
+    });
+    const directory = createStaticClientDirectory([
+      {
+        nombre: "Pau QA",
+        telefonoNormalizado: "34600009991",
+        rowNumber: 12,
+        sheetName: "CLIENTES_QA",
+      },
+    ]);
+    const from = "whatsapp:+34600009991";
+
+    const reset = await handleInboundWhatsApp(
+      { from, body: "reiniciar", messageSid: "SM_PLAF_RESET" },
+      store,
+      directory,
+      deps,
+    );
+    const greeting = await handleInboundWhatsApp(
+      { from, body: "hola", messageSid: "SM_PLAF_HOLA" },
+      store,
+      directory,
+      deps,
+    );
+    const start = await handleInboundWhatsApp(
+      { from, body: "quiero hacer una reserva nueva", messageSid: "SM_PLAF_START" },
+      store,
+      directory,
+      deps,
+    );
+    const email = await handleInboundWhatsApp(
+      { from, body: "pau.qa@example.test", messageSid: "SM_PLAF_EMAIL" },
+      store,
+      directory,
+      deps,
+    );
+    const pet = await handleInboundWhatsApp(
+      { from, body: "PLAF", messageSid: "SM_PLAF_PET" },
+      store,
+      directory,
+      deps,
+    );
+    const dates = await handleInboundWhatsApp(
+      {
+        from,
+        body: "pues el 26 de diciembre a las 10 y el 28 a las 11",
+        messageSid: "SM_PLAF_DATES",
+      },
+      store,
+      directory,
+      deps,
+    );
+    const notes = await handleInboundWhatsApp(
+      { from, body: "no", messageSid: "SM_PLAF_NOTES" },
+      store,
+      directory,
+      deps,
+    );
+    const proposal = await handleInboundWhatsApp(
+      { from, body: "no", messageSid: "SM_PLAF_VISIT" },
+      store,
+      directory,
+      deps,
+    );
+    const confirmed = await handleInboundWhatsApp(
+      { from, body: "si", messageSid: "SM_PLAF_CONFIRM" },
+      store,
+      directory,
+      deps,
+    );
+
+    expect(reset.twiml).toContain("Reiniciado");
+    expect(greeting.botReply?.body).toContain("¡Hola, Pau!");
+    expect(start.botReply?.body).toContain("me confirmas el email");
+    expect(start.botReply?.body).not.toContain("¿Ya eres cliente");
+    expect(email.botReply?.body).toContain("Dime el nombre de tu mascota");
+    expect(pet.botReply?.body).toContain("fecha y hora de entrada");
+    expect(dates.botReply?.body).toContain("alimentación");
+    expect(notes.botReply?.body).toContain("Quieres visitar");
+    expect(proposal.botReply?.body).toContain("Tenemos disponibilidad para PLAF");
+    expect(proposal.conversation.pendingReservationProposal?.status).toBe("proposed");
+
+    expect(confirmed.botReply?.body).toContain("Reserva confirmada para PLAF");
+    expect(confirmed.botReply?.body).toContain("26 de diciembre");
+    expect(confirmed.botReply?.body).toContain("10:00");
+    expect(confirmed.botReply?.body).toContain("El precio es 60 €");
+    expect(confirmed.botReply?.body).not.toContain("Gracias, hemos recibido tu mensaje");
+    expect(confirmed.conversation.pendingReservationProposal?.status).toBe("confirmed");
+    expect(confirmed.conversation.reservationFlow?.status).toBe("confirmed");
+    expect(confirmed.conversation.reservationId).toBeDefined();
+    expect(counters.checks).toBeGreaterThanOrEqual(2);
+    expect(counters.writes).toBe(1);
+    expect(counters.clientUpserts).toHaveLength(1);
+    expect(counters.clientUpserts[0]).toMatchObject({
+      email: "pau.qa@example.test",
+      petName: "PLAF",
+    });
+    expect(counters.reservations).toHaveLength(1);
+    expect(counters.reservations[0]).toMatchObject({
+      petName: "PLAF",
+      clientKind: "habitual",
+      clientDirectoryUpsertKind: "existing",
+      clientDirectoryUpsertStatus: "existing",
+    });
+
+    const entry = buildEntryLogRecord(counters.reservations[0]);
+    expect(entry.petName).toBe("PLAF");
+    expect(entry.clientStatus).toBe("cliente existente actualizado");
+    expect(entry.action).toBe("confirmada");
+
+    const dashboard = await listConversationDashboard({}, store);
+    expect(dashboard.conversations.map((item) => item.id)).toContain(confirmed.conversation.id);
+
+    const reloadedStore = new MemoryConversationStore();
+    await reloadedStore.seed((await store.load()).conversations);
+    const reloadedDashboard = await listConversationDashboard({}, reloadedStore);
+    expect(reloadedDashboard.conversations.map((item) => item.id)).toContain(confirmed.conversation.id);
+    expect((await reloadedStore.getById(confirmed.conversation.id))?.pendingReservationProposal?.status).toBe(
+      "confirmed",
+    );
+
+    const repeated = await handleInboundWhatsApp(
+      { from, body: "si", messageSid: "SM_PLAF_CONFIRM_AGAIN" },
+      reloadedStore,
+      directory,
+      deps,
+    );
+    expect(repeated.botReply?.body).toBe(
+      "De acuerdo, te esperamos pronto. Si necesitas cambiar cualquier detalle, escríbenos por aquí.",
+    );
     expect(counters.writes).toBe(1);
     expect(counters.reservations).toHaveLength(1);
     expect(counters.clientUpserts).toHaveLength(1);
@@ -2567,6 +2714,6 @@ describe("WhatsApp reservation bridge", () => {
       deps,
     );
     expect(counters.writes).toBe(1);
-    expect(confirmed.botReply?.body).toContain("queda anotada");
+    expect(confirmed.botReply?.body).toContain("Reserva confirmada");
   });
 });
