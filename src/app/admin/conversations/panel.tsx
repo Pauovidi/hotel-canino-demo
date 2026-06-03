@@ -931,10 +931,15 @@ export function ConversationsPanel({
                   {selected.clientEmail ? <span>{selected.clientEmail}</span> : null}
                   {selected.reservationId ? <span>Reserva: {selected.reservationId}</span> : null}
                   {selected.assignedAgent ? <span>{selected.assignedAgent}</span> : null}
+                  {selected.clientName ? <span>Nombre CLIENTES: {selected.clientName}</span> : null}
+                  {selected.displayName ? <span>Nombre WhatsApp: {selected.displayName}</span> : null}
                   <span>Nombre visible: {visibleNameSource(selected)}</span>
                   <span>Match directorio: {matchTypeLabel(selected)}</span>
                   <span>Confianza: {selected.clientConfidence ?? "none"}</span>
                   <span>Cliente: {selected.clientStatus ?? "unknown"}</span>
+                  {isStrongDirectoryMatch(selected) && selected.clientMatchType === "phone" ? (
+                    <span>Cliente reconocido automáticamente por teléfono</span>
+                  ) : null}
                   {selected.clientDirectoryUpsertKind ? (
                     <span>
                       {clientDirectoryUpsertLabel(selected)}

@@ -223,6 +223,33 @@ describe("conversation panel operational UI", () => {
     expect(html).not.toContain("Directorio");
   });
 
+  it("shows CLIENTES and WhatsApp names for strong phone matches", () => {
+    const conversation = {
+      ...buildConversationSeed("2026-05-06T08:00:00.000Z").conversations[0],
+      displayName: "WhatsApp Pau",
+      customerName: "Pau QA",
+      clientName: "Pau QA",
+      clientStatus: "known",
+      clientConfidence: "strong",
+      clientMatchType: "phone",
+      clientSource: "google_sheets_client_directory",
+      clientSheetName: "CLIENTES",
+      clientSheetRow: 7,
+      tags: ["cliente_habitual"],
+    } satisfies ConversationRecord;
+
+    const html = renderToStaticMarkup(
+      <ConversationsPanel initialDashboard={dashboardWith(conversation)} twilioProviderMode="sandbox" />,
+    );
+
+    expect(html).toContain("Cliente habitual");
+    expect(html).toContain("Directorio");
+    expect(html).toContain("Nombre CLIENTES: Pau QA");
+    expect(html).toContain("Nombre WhatsApp: WhatsApp Pau");
+    expect(html).toContain("Match directorio: teléfono");
+    expect(html).toContain("Cliente reconocido automáticamente por teléfono");
+  });
+
   it("shows possible coincidence instead of recurring-client badges for name-only matches", () => {
     const conversation = {
       ...buildConversationSeed("2026-05-06T08:00:00.000Z").conversations[0],

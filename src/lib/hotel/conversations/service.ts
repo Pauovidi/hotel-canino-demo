@@ -19,6 +19,7 @@ import {
 import { isConcreteKnowledgeQuestion } from "@/lib/hotel/knowledge/faq";
 import {
   advanceReservationFlow,
+  isExplicitNotClientClaim,
   isReservationFlowActive,
   isReservationFlowRejection,
   startReservationFlow,
@@ -663,6 +664,44 @@ export async function listConversationDashboard(
   };
 }
 
+function isStrongDirectoryConversation(record: ConversationRecord): boolean {
+  return (
+    record.clientStatus === "known" &&
+    record.clientConfidence === "strong" &&
+    (record.clientMatchType === "phone" || record.clientMatchType === "email")
+  );
+}
+
+function knownClientFirstName(record: ConversationRecord): string | undefined {
+  return (record.clientName ?? record.customerName)?.trim().split(/\s+/)[0];
+}
+
+function personalizeGreetingReply(reply: string, record: ConversationRecord): string {
+  if (!isStrongDirectoryConversation(record)) {
+    return reply;
+  }
+
+  const name = knownClientFirstName(record);
+  if (!name) {
+    return reply;
+  }
+
+  if (reply.startsWith("Buenos días.")) {
+    return reply.replace("Buenos días.", `Buenos días, ${name}.`);
+  }
+  if (reply.startsWith("Buenas tardes.")) {
+    return reply.replace("Buenas tardes.", `Buenas tardes, ${name}.`);
+  }
+  if (reply.startsWith("Buenas noches.")) {
+    return reply.replace("Buenas noches.", `Buenas noches, ${name}.`);
+  }
+  if (reply.startsWith("¡Hola!")) {
+    return reply.replace("¡Hola!", `¡Hola, ${name}!`);
+  }
+
+  return reply;
+}
+
 export async function resetConversations(
   options: { dryRun?: boolean; confirm?: string } = {},
   store: ConversationStore = getConversationStore(),
@@ -1162,13 +1201,39 @@ export async function handleInboundWhatsApp(
     }),
   );
 
+  if (isStrongDirectoryConversation(latestBeforePlan) && isExplicitNotClientClaim(safeBody)) {
+    const replyBody =
+      "He encontrado una ficha con este teléfono, así que seguimos con tu reserva. Si quieres reservar, dime el nombre de tu mascota o mascotas y las fechas.";
+    await store.addEvent(
+      createEvent(freshWithClient.id, "client_directory_phone_match_overrode_declaration", {
+        matchType: latestBeforePlan.clientMatchType,
+        confidence: latestBeforePlan.clientConfidence,
+      }),
+    );
+    const botReply = await store.addMessage(
+      createMessage({
+        conversationId: freshWithClient.id,
+        direction: "outbound",
+        senderType: "bot",
+        body: replyBody,
+      }),
+    );
+
+    return {
+      conversation: (await store.getById(freshWithClient.id)) ?? latestBeforePlan,
+      inbound,
+      botReply,
+      twiml: buildTwilioMessageResponse(replyBody),
+    };
+  }
+
   if (
     replyPlan.intent === "availability_request" ||
     replyPlan.intent === "reservation_start"
   ) {
-    if (freshWithClient.clientStatus === "ambiguous") {
+    if (latestBeforePlan.clientStatus === "ambiguous") {
       const reviewRecord: ConversationRecord = {
-        ...((await store.getById(freshWithClient.id)) ?? freshWithClient),
+        ...((await store.getById(freshWithClient.id)) ?? latestBeforePlan),
         mode: "human",
         humanRequested: true,
         requiresManualReview: true,
@@ -1199,7 +1264,7 @@ export async function handleInboundWhatsApp(
     }
 
     const flow = startReservationFlow({
-      conversation: (await store.getById(freshWithClient.id)) ?? freshWithClient,
+      conversation: (await store.getById(freshWithClient.id)) ?? latestBeforePlan,
       inboundMessageId: inbound.id,
       now: reservationBridgeDeps?.now?.(),
     });
@@ -1284,7 +1349,10 @@ export async function handleInboundWhatsApp(
     };
   }
 
-  const reply = replyPlan.reply;
+  const reply = personalizeGreetingReply(
+    replyPlan.reply,
+    (await store.getById(freshWithClient.id)) ?? freshWithClient,
+  );
   const botReply = await store.addMessage(
     createMessage({
       conversationId: freshWithClient.id,

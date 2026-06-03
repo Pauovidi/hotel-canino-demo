@@ -285,6 +285,130 @@ describe("conversation service", () => {
     expect(serialized.toLowerCase()).not.toContain("nif");
   });
 
+  it("greets a strong phone match with the CLIENTES name", async () => {
+    const store = new MemoryConversationStore();
+    const directory = createStaticClientDirectory([
+      {
+        nombre: "Pau QA",
+        telefonoMovil: "+34 600 009 991",
+        telefonoNormalizado: "34600009991",
+        email: "pau.qa@example.test",
+        rowNumber: 7,
+        sheetName: "CLIENTES",
+      },
+    ]);
+
+    const result = await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "hola buenas tardes", displayName: "WhatsApp Pau" },
+      store,
+      directory,
+    );
+
+    expect(result.conversation.clientStatus).toBe("known");
+    expect(result.conversation.clientConfidence).toBe("strong");
+    expect(result.conversation.clientMatchType).toBe("phone");
+    expect(result.conversation.clientName).toBe("Pau QA");
+    expect(result.conversation.displayName).toBe("WhatsApp Pau");
+    expect(result.botReply?.body).toBe("Buenas tardes, Pau. ¿En qué podemos ayudarte?");
+  });
+
+  it("starts reservations for strong phone matches without asking whether they are clients", async () => {
+    const store = new MemoryConversationStore();
+    const directory = createStaticClientDirectory([
+      {
+        nombre: "Pau QA",
+        telefonoMovil: "+34 600 009 991",
+        telefonoNormalizado: "34600009991",
+        email: "pau.qa@example.test",
+        rowNumber: 7,
+        sheetName: "CLIENTES",
+      },
+    ]);
+
+    const result = await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "quiero reservar" },
+      store,
+      directory,
+    );
+
+    expect(result.conversation.clientStatus).toBe("known");
+    expect(result.conversation.reservationFlow?.clientKind).toBe("habitual");
+    expect(result.conversation.reservationFlow?.status).toBe("collecting_pet");
+    expect(result.botReply?.body).toContain("Genial, Pau. Te localizo en nuestra ficha.");
+    expect(result.botReply?.body).toContain("Dime el nombre de tu mascota");
+    expect(result.botReply?.body).not.toContain("¿Ya eres cliente");
+  });
+
+  it("asks for email when a strong phone match has no CLIENTES email", async () => {
+    const store = new MemoryConversationStore();
+    const directory = createStaticClientDirectory([
+      {
+        nombre: "Pau QA",
+        telefonoMovil: "+34 600 009 991",
+        telefonoNormalizado: "34600009991",
+        rowNumber: 7,
+        sheetName: "CLIENTES",
+      },
+    ]);
+
+    const start = await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "quiero reservar" },
+      store,
+      directory,
+    );
+    const email = await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "pau.qa@example.test" },
+      store,
+      directory,
+    );
+
+    expect(start.conversation.reservationFlow?.status).toBe("asking_existing_email");
+    expect(start.botReply?.body).toContain("me confirmas el email");
+    expect(start.botReply?.body).not.toContain("¿Ya eres cliente");
+    expect(email.conversation.clientEmail).toBe("pau.qa@example.test");
+    expect(email.conversation.reservationFlow?.status).toBe("collecting_pet");
+    expect(email.botReply?.body).toContain("Dime el nombre de tu mascota");
+  });
+
+  it("keeps a strong phone match when the user says they are not a client", async () => {
+    const store = new MemoryConversationStore();
+    const directory = createStaticClientDirectory([
+      {
+        nombre: "Pau QA",
+        telefonoMovil: "+34 600 009 991",
+        telefonoNormalizado: "34600009991",
+        email: "pau.qa@example.test",
+        rowNumber: 7,
+        sheetName: "CLIENTES",
+      },
+    ]);
+
+    const result = await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "no soy cliente" },
+      store,
+      directory,
+    );
+
+    expect(result.conversation.clientStatus).toBe("known");
+    expect(result.conversation.clientMatchType).toBe("phone");
+    expect(result.conversation.tags).toContain("cliente_habitual");
+    expect(result.botReply?.body).toContain("He encontrado una ficha con este teléfono");
+    expect(result.botReply?.body).not.toContain("nuevo contacto");
+  });
+
+  it("still asks unknown phone numbers whether they are clients", async () => {
+    const store = new MemoryConversationStore();
+    const result = await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009992", body: "quiero reservar" },
+      store,
+      createStaticClientDirectory([]),
+    );
+
+    expect(result.conversation.clientStatus).toBe("unknown");
+    expect(result.conversation.reservationFlow?.status).toBe("asking_client_kind");
+    expect(result.botReply?.body).toBe("Genial. ¿Ya eres cliente de Somos Muy Perros? Responde sí o no.");
+  });
+
   it("keeps WhatsApp display-name-only matches out of recurring-client status", async () => {
     const store = new MemoryConversationStore();
     const directory = createStaticClientDirectory([

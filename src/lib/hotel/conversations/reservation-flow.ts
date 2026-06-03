@@ -22,6 +22,8 @@ const TIME_PREFERENCE_PROMPT =
 const TIME_CONTEXT_FALLBACK =
   "Para poder calcular disponibilidad y precio necesito la hora de entrada y la hora de salida. Si te da igual, puedo proponerte primera hora de la mañana o primera hora de la tarde.";
 const PET_NAMES_PROMPT = "Genial. Dime el nombre o los nombres de tu mascota/s.";
+const CLIENT_RECORD_FOUND_REPLY =
+  "He encontrado una ficha con este teléfono, así que seguimos con tu reserva.";
 
 const MONTHS: Record<string, number> = {
   enero: 1,
@@ -97,6 +99,42 @@ function isYes(message: string): boolean {
 function isNo(message: string): boolean {
   const normalized = normalizeText(message);
   return /^(no|no soy cliente|primera vez|es la primera vez|nuevo|soy nuevo)\b/.test(normalized);
+}
+
+export function isExplicitNotClientClaim(message: string): boolean {
+  const normalized = normalizeText(message);
+  return /^(no soy cliente|no,?\s*soy cliente|primera vez|es la primera vez|soy nuevo|soy nueva)\b/.test(
+    normalized,
+  );
+}
+
+function isRecognizedDirectoryClient(conversation: ConversationRecord): boolean {
+  return (
+    conversation.clientStatus === "known" &&
+    conversation.clientConfidence === "strong" &&
+    (conversation.clientMatchType === "phone" || conversation.clientMatchType === "email")
+  );
+}
+
+function clientDisplayName(conversation: ConversationRecord): string | undefined {
+  return conversation.clientName ?? conversation.customerName;
+}
+
+function firstName(value?: string): string | undefined {
+  return value?.trim().split(/\s+/)[0];
+}
+
+function knownClientIntro(conversation: ConversationRecord): string {
+  const name = firstName(clientDisplayName(conversation));
+  return name ? `Genial, ${name}. Te localizo en nuestra ficha.` : "Genial. Te localizo en nuestra ficha.";
+}
+
+function knownClientPetPrompt(conversation: ConversationRecord): string {
+  return `${knownClientIntro(conversation)} Dime el nombre de tu mascota o mascotas y las fechas de la reserva.`;
+}
+
+function knownClientEmailPrompt(conversation: ConversationRecord): string {
+  return `${knownClientIntro(conversation)} Antes de seguir, ¿me confirmas el email que quieres asociar a esta reserva?`;
 }
 
 export function isReservationFlowRejection(message: string): boolean {
@@ -1186,10 +1224,17 @@ export function startReservationFlow(input: {
   now?: Date;
 }): ReservationFlowOutcome {
   const now = input.now ?? new Date();
+  const recognizedClient = isRecognizedDirectoryClient(input.conversation);
   const flow: ConversationReservationFlow = {
     flowId: `reservation_flow_${randomUUID()}`,
-    status: "asking_client_kind",
-    clientKind: "unknown",
+    status: recognizedClient
+      ? input.conversation.clientEmail
+        ? "collecting_pet"
+        : "asking_existing_email"
+      : "asking_client_kind",
+    clientKind: recognizedClient ? "habitual" : "unknown",
+    email: recognizedClient ? input.conversation.clientEmail : undefined,
+    ownerName: recognizedClient ? clientDisplayName(input.conversation) : undefined,
     availabilityStatus: "pending",
     createdAt: nowIso(now),
     updatedAt: nowIso(now),
@@ -1197,9 +1242,20 @@ export function startReservationFlow(input: {
 
   return {
     conversation: syncConversationFromFlow(input.conversation, flow),
-    reply: nextCollectionReply(flow),
-    eventType: "reservation_flow_started",
-    eventPayload: { status: flow.status },
+    reply: recognizedClient
+      ? input.conversation.clientEmail
+        ? knownClientPetPrompt(input.conversation)
+        : knownClientEmailPrompt(input.conversation)
+      : nextCollectionReply(flow),
+    eventType: recognizedClient
+      ? "reservation_flow_started_known_client"
+      : "reservation_flow_started",
+    eventPayload: {
+      status: flow.status,
+      clientKind: flow.clientKind,
+      matchType: input.conversation.clientMatchType,
+      needsEmail: recognizedClient && !input.conversation.clientEmail,
+    },
   };
 }
 
@@ -1217,6 +1273,39 @@ export async function advanceReservationFlow(input: {
 
   const now = input.deps?.now?.() ?? new Date();
   let flow: ConversationReservationFlow = { ...current, updatedAt: nowIso(now) };
+  const recognizedClient = isRecognizedDirectoryClient(input.conversation);
+
+  if (recognizedClient) {
+    flow = {
+      ...flow,
+      clientKind: "habitual",
+      ownerName: flow.ownerName ?? clientDisplayName(input.conversation),
+      email: flow.email ?? input.conversation.clientEmail,
+    };
+
+    if (flow.status === "asking_client_kind") {
+      const nextFlow: ConversationReservationFlow = {
+        ...flow,
+        status: input.conversation.clientEmail ? "collecting_pet" : "asking_existing_email",
+        updatedAt: nowIso(now),
+      };
+      const reply = input.conversation.clientEmail
+        ? knownClientPetPrompt(input.conversation)
+        : knownClientEmailPrompt(input.conversation);
+      return {
+        conversation: syncConversationFromFlow(input.conversation, nextFlow),
+        reply: isExplicitNotClientClaim(input.message)
+          ? `${CLIENT_RECORD_FOUND_REPLY} ${reply}`
+          : reply,
+        eventType: "reservation_flow_known_client_auto_resumed",
+        eventPayload: {
+          status: nextFlow.status,
+          matchType: input.conversation.clientMatchType,
+          correctedClientDeclaration: isExplicitNotClientClaim(input.message),
+        },
+      };
+    }
+  }
 
   if (flow.status === "asking_client_kind") {
     if (isYes(input.message)) {
@@ -1231,6 +1320,76 @@ export async function advanceReservationFlow(input: {
       };
     }
   } else if (flow.status === "asking_existing_email") {
+    if (recognizedClient) {
+      const email = extractEmail(input.message);
+      if (!email) {
+        return {
+          conversation: syncConversationFromFlow(input.conversation, flow),
+          reply: isExplicitNotClientClaim(input.message)
+            ? `${CLIENT_RECORD_FOUND_REPLY} ${knownClientEmailPrompt(input.conversation)}`
+            : knownClientEmailPrompt(input.conversation),
+          eventType: "reservation_flow_known_client_waiting_email",
+          eventPayload: {
+            matchType: input.conversation.clientMatchType,
+            correctedClientDeclaration: isExplicitNotClientClaim(input.message),
+          },
+        };
+      }
+
+      const normalizedEmail = normalizeEmail(email) ?? email.trim().toLowerCase();
+      const existingEmail = normalizeEmail(input.conversation.clientEmail ?? "");
+      if (existingEmail && normalizedEmail !== existingEmail) {
+        const nextConversation = syncConversationFromFlow(
+          {
+            ...input.conversation,
+            clientWarnings: Array.from(
+              new Set([
+                ...(input.conversation.clientWarnings ?? []),
+                "client_email_differs_from_directory",
+              ]),
+            ),
+            requiresManualReview: true,
+          },
+          {
+            ...flow,
+            email: normalizedEmail,
+            status: "collecting_pet",
+          },
+        );
+        return {
+          conversation: nextConversation,
+          reply:
+            "Gracias. He encontrado una ficha con este teléfono; dejamos ese email marcado para revisión y seguimos con la reserva. Dime el nombre de tu mascota o mascotas.",
+          eventType: "reservation_flow_known_client_email_review",
+          eventPayload: { matchType: input.conversation.clientMatchType },
+        };
+      }
+
+      const nextFlow: ConversationReservationFlow = {
+        ...flow,
+        email: normalizedEmail,
+        status: "collecting_pet",
+        updatedAt: nowIso(now),
+      };
+      const conversation = syncConversationFromFlow(
+        {
+          ...input.conversation,
+          clientEmail: normalizedEmail,
+          clientStatus: "known",
+          clientConfidence: "strong",
+          clientMatchType: input.conversation.clientMatchType ?? "phone",
+          tags: Array.from(new Set([...(input.conversation.tags ?? []), "cliente_habitual"])),
+        },
+        nextFlow,
+      );
+      return {
+        conversation,
+        reply: "Gracias. Dime el nombre de tu mascota o mascotas y las fechas de la reserva.",
+        eventType: "reservation_flow_known_client_email_collected",
+        eventPayload: { matchType: input.conversation.clientMatchType },
+      };
+    }
+
     const email = extractEmail(input.message);
     if (!email) {
       return {
