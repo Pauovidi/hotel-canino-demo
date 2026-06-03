@@ -81,6 +81,8 @@ const CONVERSATION_RESET_REPLY = "Reiniciado.";
 
 const SHARED_FAQ_BYPASS_INTENTS: ConversationIntent[] = [
   "conversation_reset",
+  "greeting",
+  "general_information",
   "human_handoff",
   "stay_status_question",
   "reservation_start",
@@ -136,8 +138,17 @@ function isGreetingLike(normalized: string): boolean {
     /^(en primer lugar|primero|antes de nada|perdona|gracias)?\s*(hola+\s+)?(buenas|buen dia|buenos dias|buenas tardes|buenas noches)\s*$/,
     /^(hola+|hey|buenas)$/,
     /^hola+\s+buenas$/,
+    /^(que tal|hola+\s+que tal)$/,
     /^(buenos dias|buen dia|buenas tardes|buenas noches)\s+(antes de nada|en primer lugar|primero)$/,
   ]);
+}
+
+export function isPureGreeting(message: string): boolean {
+  return isGreetingLike(normalizeText(message));
+}
+
+export function isGreetingWithIntent(message: string): boolean {
+  return Boolean(greetingPrefix(message)) && !isPureGreeting(message);
 }
 
 export function isAffirmativeConfirmationUtterance(message: string): boolean {
@@ -237,6 +248,21 @@ export function classifyConversationIntent(message: string): ConversationNluResu
   ) {
     matchedSignals.push("conversation_reset");
     return result("conversation_reset");
+  }
+
+  if (
+    matchAny(normalized, [
+      /\bhorarios?\b/,
+      /\bhorario de recepcion\b/,
+      /\ba que hora\b/,
+      /\bcuando puedo (dejar|recoger)\b/,
+      /\bhora de (entrada|salida|recogida)\b/,
+      /\bfranja de (entrada|salida)\b/,
+      /\b(?:recoger|dejar|entrada|salida)\b.*\b(?:por la )?(?:manana|tarde)\b/,
+    ])
+  ) {
+    matchedSignals.push("hours_explicit");
+    return result("faq_hours");
   }
 
   if (

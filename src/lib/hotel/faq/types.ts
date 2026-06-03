@@ -131,6 +131,7 @@ export interface FaqSignalSet {
   hasAvailabilitySignal: boolean;
   hasWhatsappSignal: boolean;
   hasConfirmationSignal: boolean;
+  hasReceptionScheduleSignal: boolean;
   hasOutsideHoursSignal: boolean;
   hasHotelPriceSignal: boolean;
   hasGuarderiaSignal: boolean;

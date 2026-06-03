@@ -21,6 +21,16 @@ function normalizeKnowledgeText(value: string): string {
     .trim();
 }
 
+function isPureGreeting(message: string): boolean {
+  const normalized = normalizeKnowledgeText(message);
+  return (
+    /^(hola+|hola+\s+buenas|buenas|buenos dias|buen dia|buenas tardes|buenas noches|que tal|hola+\s+que tal)$/.test(
+      normalized,
+    ) ||
+    /^hola+\s+(buenos dias|buen dia|buenas tardes|buenas noches)$/.test(normalized)
+  );
+}
+
 export function isConcreteKnowledgeQuestion(message: string): boolean {
   const normalized = normalizeKnowledgeText(message);
   if (!normalized) {
@@ -37,6 +47,10 @@ export function isConcreteKnowledgeQuestion(message: string): boolean {
 }
 
 export function matchFaqIntent(message: string): MatchedHotelFaq | undefined {
+  if (isPureGreeting(message)) {
+    return undefined;
+  }
+
   const resolution = resolveFaqQuery(message);
 
   if (resolution.outputType === "workflow") {

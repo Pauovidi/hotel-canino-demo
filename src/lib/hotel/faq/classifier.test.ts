@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { classifyFaqIntent } from "./classifier";
+import { matchFaqIntent } from "@/lib/hotel/knowledge/faq";
 
 describe("FAQ intent classification", () => {
   it("clasifica peticiones operativas y FAQ base", () => {
@@ -67,6 +68,29 @@ describe("FAQ intent classification", () => {
       classifyFaqIntent("mi perro es muy especial te puedo llamar y contarte")
         .intent,
     ).toBe("handoff_humano");
+  });
+
+  it.each([
+    "hola",
+    "hola!",
+    "buenos días",
+    "hola buenos días",
+    "buenas tardes",
+    "hola buenas tardes",
+    "buenas noches",
+    "hola buenas noches",
+    "hola, qué tal",
+  ])("does not match pure greeting %s as a shared FAQ", (message) => {
+    expect(matchFaqIntent(message)).toBeUndefined();
+  });
+
+  it.each([
+    "¿cuál es el horario?",
+    "¿a qué hora puedo dejar al perro?",
+    "¿puedo recogerlo por la tarde?",
+    "horario de recepción",
+  ])("keeps explicit reception schedule question %s as horario FAQ", (message) => {
+    expect(matchFaqIntent(message)?.intent).toBe("faq_horario");
   });
 
   it("marca la salida esperada por tipo de consulta", () => {

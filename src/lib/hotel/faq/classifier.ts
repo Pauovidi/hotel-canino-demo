@@ -118,6 +118,31 @@ const AVAILABILITY_PHRASES = [
 
 const WHATSAPP_PHRASES = ["whatsapp", "chat", "wasap", "wsp", "watsap"] as const;
 const CONFIRMATION_PHRASES = ["confirmais", "confirmáis", "confirmacion", "confirmación", "confirmar"] as const;
+const RECEPTION_SCHEDULE_PHRASES = [
+  "horario",
+  "horarios",
+  "horario de recepcion",
+  "horario de recepción",
+  "a que hora",
+  "a qué hora",
+  "cuando puedo dejar",
+  "cuándo puedo dejar",
+  "cuando puedo recoger",
+  "cuándo puedo recoger",
+  "hora de entrada",
+  "hora de salida",
+  "hora de recogida",
+  "franja de entrada",
+  "franja de salida",
+  "recepcion",
+  "recepción",
+] as const;
+const RECEPTION_SCHEDULE_CONTEXT_PATTERNS = [
+  /\b(?:recoger|recogida|dejar|llevar|traer|entrada|salida)\b.*\b(?:por la )?(?:manana|tarde)\b/,
+  /\b(?:por la )?(?:manana|tarde)\b.*\b(?:recoger|recogida|dejar|llevar|traer|entrada|salida)\b/,
+  /\bhorario de (?:manana|tarde)\b/,
+  /\b(?:entrada|salida) por la (?:manana|tarde)\b/,
+] as const;
 const OUTSIDE_HOURS_PHRASES = [
   "fuera de horario",
   "antes de las 8",
@@ -236,6 +261,14 @@ const TEMPERATURE_PHRASES = ["frio", "frío", "calor", "climatizada", "climatiza
 const OUTDOOR_TIME_PHRASES = ["aire libre", "patio", "jardin", "jardín", "cuanto tiempo fuera", "cuánto tiempo fuera", "salen fuera"] as const;
 const STAY_FOLLOWUP_PHRASES = ["pasado la noche", "ha comido", "le habeis dado", "le habéis dado", "ha llorado", "como esta mi perro", "cómo está mi perro"] as const;
 
+function hasReceptionScheduleSignal(normalizedText: string, askedTime: string | null, pickupDropTerms: boolean) {
+  return (
+    hasAnyPhrase(normalizedText, RECEPTION_SCHEDULE_PHRASES) ||
+    hasAnyPattern(normalizedText, RECEPTION_SCHEDULE_CONTEXT_PATTERNS) ||
+    Boolean(askedTime && pickupDropTerms)
+  );
+}
+
 function extractAskedTime(normalizedText: string): string | null {
   const match =
     normalizedText.match(/\ba las\s+(\d{1,2})(?::(\d{2}))?\b/) ??
@@ -288,6 +321,11 @@ function detectSignalSet(text: string): FaqSignalSet {
     hasAvailabilitySignal: hasAnyPhrase(normalizedText, AVAILABILITY_PHRASES),
     hasWhatsappSignal: hasAnyPhrase(normalizedText, WHATSAPP_PHRASES),
     hasConfirmationSignal: hasAnyPhrase(normalizedText, CONFIRMATION_PHRASES),
+    hasReceptionScheduleSignal: hasReceptionScheduleSignal(
+      normalizedText,
+      askedTime,
+      pickupDropTerms,
+    ),
     hasOutsideHoursSignal:
       explicitOutsideTime || hasAnyPhrase(normalizedText, OUTSIDE_HOURS_PHRASES),
     hasHotelPriceSignal: hasAnyPhrase(normalizedText, HOTEL_PRICE_PHRASES),
@@ -418,7 +456,7 @@ function buildDirectDecision(signals: FaqSignalSet): {
     };
   }
 
-  if (signals.hasTimeSignal || (signals.tokens.includes("horario") && !signals.hasHotelPriceSignal)) {
+  if (signals.hasReceptionScheduleSignal && !signals.hasHotelPriceSignal) {
     return {
       intent: "faq_horario",
       matchedSignals: ["reception_schedule"],

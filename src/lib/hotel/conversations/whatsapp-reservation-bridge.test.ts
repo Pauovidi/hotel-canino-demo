@@ -10,6 +10,7 @@ import {
 } from "@/lib/hotel/clients";
 import type { SheetAdapter, SheetsWriteResult } from "@/lib/hotel/sheets/types";
 import { handleInboundWhatsApp } from "./service";
+import { buildConversationReplyPlan } from "./nlu";
 import {
   createEmptyConversationSnapshot,
   filterConversationRecords,
@@ -2435,5 +2436,137 @@ describe("WhatsApp reservation bridge", () => {
     expect(counters.clientUpserts).toHaveLength(1);
     expect(result.conversation.clientName).toBe("Cliente QA Existente");
     expect(result.conversation.events.some((event) => event.eventType === "client_directory_existing_from_reservation")).toBe(true);
+  });
+
+  it("keeps the WhatsApp golden routing phrases stable", async () => {
+    expect(buildConversationReplyPlan("reiniciar")).toMatchObject({
+      intent: "conversation_reset",
+      reply: "Reiniciado.",
+    });
+    expect(buildConversationReplyPlan("hola")).toMatchObject({
+      intent: "greeting",
+      reply: "¡Hola! ¿En qué podemos ayudarte?",
+    });
+    const greeting = buildConversationReplyPlan("hola buenas tardes");
+    expect(greeting).toMatchObject({
+      intent: "greeting",
+      reply: "Buenas tardes. ¿En qué podemos ayudarte?",
+    });
+    expect(greeting.reply).not.toContain("horario de recepción");
+    expect(buildConversationReplyPlan("quiero reservar")).toMatchObject({
+      intent: "reservation_start",
+    });
+    expect(buildConversationReplyPlan("¿y el pago?")).toMatchObject({
+      intent: "faq_payment",
+    });
+    expect(buildConversationReplyPlan("¿cuánto cuesta?")).toMatchObject({
+      intent: "faq_prices",
+    });
+    expect(buildConversationReplyPlan("¿puedo visitar?")).toMatchObject({
+      intent: "faq_visits",
+    });
+
+    const noProposalStore = new MemoryConversationStore();
+    const { counters: noProposalCounters, deps: noProposalDeps } = makeBridgeDeps();
+    const noProposal = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "sí por favor",
+        messageSid: "SM_GOLDEN_NO_PROPOSAL",
+      },
+      noProposalStore,
+      createStaticClientDirectory([]),
+      noProposalDeps,
+    );
+    expect(noProposalCounters.writes).toBe(0);
+    expect(noProposal.botReply?.body).toContain("Para avanzar necesito");
+
+    const flowStore = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+    const start = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009992",
+        body: "quiero reservar",
+        messageSid: "SM_GOLDEN_FLOW_START",
+      },
+      flowStore,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    expect(start.botReply?.body).toContain("¿Ya eres cliente");
+    const newClient = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009992",
+        body: "no soy cliente",
+        messageSid: "SM_GOLDEN_FLOW_NEW",
+      },
+      flowStore,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    expect(newClient.conversation.reservationFlow?.clientKind).toBe("new");
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009992",
+        body: "Ana QA ana.qa@example.test",
+        messageSid: "SM_GOLDEN_FLOW_OWNER",
+      },
+      flowStore,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    const pets = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009992",
+        body: "YUYU y KIRA",
+        messageSid: "SM_GOLDEN_FLOW_PETS",
+      },
+      flowStore,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    expect(pets.botReply?.body).not.toContain("Perdona, no te he entendido bien");
+    const looseDates = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009992",
+        body: "entrada el 29 a las 10 y salida el 31 a las 16",
+        messageSid: "SM_GOLDEN_FLOW_LOOSE_DATES",
+      },
+      flowStore,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    expect(looseDates.botReply?.body).not.toContain("Perdona, no te he entendido bien");
+    const indifferent = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009992",
+        body: "me da igual",
+        messageSid: "SM_GOLDEN_FLOW_INDIFFERENT",
+      },
+      flowStore,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    expect(indifferent.botReply?.body).not.toContain("Perdona, no te he entendido bien");
+
+    await createNewClientPricedProposal({
+      store: flowStore,
+      deps,
+      from: "whatsapp:+34600009993",
+      petName: "Kira QA",
+      prefix: "SM_GOLDEN_PROPOSAL",
+    });
+    const confirmed = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009993",
+        body: "sí por favor",
+        messageSid: "SM_GOLDEN_CONFIRM",
+      },
+      flowStore,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    expect(counters.writes).toBe(1);
+    expect(confirmed.botReply?.body).toContain("queda anotada");
   });
 });

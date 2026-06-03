@@ -158,8 +158,6 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
       "recoger",
       "cuando puedo dejar",
       "a que hora puedo llevarlo",
-      "mañana",
-      "tarde",
     ],
   },
   {

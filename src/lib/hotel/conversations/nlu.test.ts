@@ -3,6 +3,7 @@ import {
   buildConversationReplyPlan,
   classifyConversationIntent,
   isAffirmativeConfirmationUtterance,
+  isPureGreeting,
 } from "./nlu";
 
 describe("conversation NLU", () => {
@@ -10,6 +11,11 @@ describe("conversation NLU", () => {
     ["Hola", "greeting"],
     ["hola buenos días", "greeting"],
     ["Hola, buenos días", "greeting"],
+    ["buenas tardes", "greeting"],
+    ["hola buenas tardes", "greeting"],
+    ["buenas noches", "greeting"],
+    ["hola buenas noches", "greeting"],
+    ["hola, qué tal", "greeting"],
     ["En primer lugar, buenos días", "greeting"],
     ["primero, buenos días", "greeting"],
     ["antes de nada, buenos días", "greeting"],
@@ -116,6 +122,38 @@ describe("conversation NLU", () => {
     expect(plan.reply).not.toContain("visitas");
   });
 
+  it.each([
+    ["hola", "¡Hola! ¿En qué podemos ayudarte?"],
+    ["hola!", "¡Hola! ¿En qué podemos ayudarte?"],
+    ["buenos días", "Buenos días. ¿En qué podemos ayudarte?"],
+    ["hola buenos días", "Buenos días. ¿En qué podemos ayudarte?"],
+    ["buenas tardes", "Buenas tardes. ¿En qué podemos ayudarte?"],
+    ["hola buenas tardes", "Buenas tardes. ¿En qué podemos ayudarte?"],
+    ["buenas noches", "Buenas noches. ¿En qué podemos ayudarte?"],
+    ["hola buenas noches", "Buenas noches. ¿En qué podemos ayudarte?"],
+    ["hola, qué tal", "¡Hola! ¿En qué podemos ayudarte?"],
+  ])("keeps pure greeting %s out of FAQ routing", (message, expectedReply) => {
+    const plan = buildConversationReplyPlan(message);
+
+    expect(isPureGreeting(message)).toBe(true);
+    expect(plan.intent).toBe("greeting");
+    expect(plan.source).toBe("conversation_nlu");
+    expect(plan.reply).toBe(expectedReply);
+    expect(plan.reply).not.toContain("horario de recepción");
+    expect(plan.reply).not.toContain("8:00");
+  });
+
+  it.each([
+    ["buenas tardes, quiero reservar", "reservation_start", "Buenas tardes. Te ayudo"],
+    ["hola buenas, quiero hacer una reserva", "reservation_start", "Buenas. Te ayudo"],
+    ["buenas tardes, ¿a qué hora puedo recogerlo?", "faq_hours", "El horario de recepción"],
+  ] as const)("keeps greeting prefixes but routes explicit intent: %s", (message, intent, expectedReply) => {
+    const plan = buildConversationReplyPlan(message);
+
+    expect(plan.intent).toBe(intent);
+    expect(plan.reply).toContain(expectedReply);
+  });
+
   it("keeps social greeting prefixes in routed replies", () => {
     expect(buildConversationReplyPlan("En primer lugar, buenos días").reply).toBe(
       "Buenos días. ¿En qué podemos ayudarte?",
@@ -145,6 +183,9 @@ describe("conversation NLU", () => {
     ["¿puedo pagar por bizum?", "faq_payment", "transferencia"],
     ["¿hay que dejar señal?", "faq_payment", "La señal no es obligatoria"],
     ["¿cuándo puedo dejar al perro?", "faq_hours", "El horario de recepción"],
+    ["¿cuál es el horario?", "faq_hours", "El horario de recepción"],
+    ["horario de recepción", "faq_hours", "El horario de recepción"],
+    ["¿puedo recogerlo por la tarde?", "faq_hours", "El horario de recepción"],
     ["¿puedo visitar el hotel?", "faq_visits", "lunes a jueves"],
     ["¿cuánto cuesta?", "faq_prices", "Las tarifas 2026"],
     ["¿me mandáis vídeos?", "faq_photos_videos", "Durante la estancia"],
