@@ -1,7 +1,15 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { resolveJsonStorePath } from "../persistence/runtime";
+import { readHotelPersistenceConfig, resolveJsonStorePath } from "../persistence/runtime";
+import {
+  readGoogleSheetsJsonState,
+  readGoogleSheetsJsonStateHealth,
+  writeGoogleSheetsJsonState,
+} from "./google-sheets-json-state";
+
+const ENTRY_LOG_STATE_KEY = "hotel_canino_entry_log_state";
+const DEFAULT_ENTRY_LOG_STATE_SHEET_NAME = "REGISTRO_ENTRADA_STATE";
 
 export type EntryLogOperationalStatus = "pending" | "managed" | "hidden";
 export type EntryLogManagedReason = "gestet" | "removed";
@@ -18,6 +26,70 @@ export interface EntryLogOperationalRecord {
 export interface EntryLogOperationalState {
   records: Record<string, EntryLogOperationalRecord>;
   updatedAt: string;
+}
+
+type OperationalStoreProvider = "google_sheets" | "file";
+
+function normalizeOperationalProvider(value?: string): OperationalStoreProvider | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "google_sheets" || normalized === "google-sheets" || normalized === "sheets") {
+    return "google_sheets";
+  }
+
+  if (
+    normalized === "file" ||
+    normalized === "file-local" ||
+    normalized === "file-volume" ||
+    normalized === "local" ||
+    normalized === "tmp"
+  ) {
+    return "file";
+  }
+
+  return undefined;
+}
+
+function getEntryLogStateSheetName(env: NodeJS.ProcessEnv = process.env): string {
+  return env.HOTEL_ENTRY_LOG_STATE_SHEET_NAME?.trim() || DEFAULT_ENTRY_LOG_STATE_SHEET_NAME;
+}
+
+function shouldUseGoogleSheetsEntryLogState(env: NodeJS.ProcessEnv = process.env): boolean {
+  const explicitProvider = normalizeOperationalProvider(env.HOTEL_ENTRY_LOG_STORE_PROVIDER);
+  if (explicitProvider === "google_sheets") {
+    return true;
+  }
+  if (explicitProvider === "file") {
+    return false;
+  }
+  if (env.NODE_ENV === "test") {
+    return false;
+  }
+
+  const persistence = readHotelPersistenceConfig(env);
+  const health = readGoogleSheetsJsonStateHealth(getEntryLogStateSheetName(env), env);
+  return Boolean(env.VERCEL || persistence.provider === "file-tmp") && health.configured;
+}
+
+export function readEntryLogStoreHealth(env: NodeJS.ProcessEnv = process.env) {
+  const sheetName = getEntryLogStateSheetName(env);
+  const googleSheets = readGoogleSheetsJsonStateHealth(sheetName, env);
+  const explicitProvider = normalizeOperationalProvider(env.HOTEL_ENTRY_LOG_STORE_PROVIDER);
+  const useGoogleSheets = shouldUseGoogleSheetsEntryLogState(env);
+
+  return {
+    provider:
+      explicitProvider === "google_sheets" || useGoogleSheets
+        ? "google_sheets"
+        : readHotelPersistenceConfig(env).provider,
+    sheetName,
+    configured:
+      explicitProvider === "google_sheets" || useGoogleSheets ? googleSheets.configured : true,
+    googleSheetsConfigured: googleSheets.configured,
+    hasSpreadsheetId: googleSheets.hasSpreadsheetId,
+    hasCredentialSource: googleSheets.hasCredentialSource,
+    filePath: explicitProvider === "google_sheets" || useGoogleSheets ? undefined : getStateFile(),
+    derivedFrom: "reservationStore",
+  };
 }
 
 function looksLikeReservedStorePayload(value: unknown): boolean {
@@ -88,6 +160,17 @@ async function ensureStateDirectory(): Promise<void> {
 }
 
 export async function loadEntryLogState(): Promise<EntryLogOperationalState> {
+  if (shouldUseGoogleSheetsEntryLogState()) {
+    return readGoogleSheetsJsonState({
+      sheetName: getEntryLogStateSheetName(),
+      key: ENTRY_LOG_STATE_KEY,
+      fallback: {
+        records: {},
+        updatedAt: new Date().toISOString(),
+      },
+    });
+  }
+
   await ensureStateDirectory();
 
   try {
@@ -112,6 +195,19 @@ export async function loadEntryLogState(): Promise<EntryLogOperationalState> {
 }
 
 async function saveEntryLogState(state: EntryLogOperationalState): Promise<void> {
+  if (shouldUseGoogleSheetsEntryLogState()) {
+    await writeGoogleSheetsJsonState({
+      sheetName: getEntryLogStateSheetName(),
+      key: ENTRY_LOG_STATE_KEY,
+      fallback: {
+        records: {},
+        updatedAt: new Date().toISOString(),
+      },
+      value: state,
+    });
+    return;
+  }
+
   await ensureStateDirectory();
   const payload = JSON.stringify(
     {

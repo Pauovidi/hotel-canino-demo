@@ -112,6 +112,27 @@ class MemoryConversationStore implements ConversationStore {
   }
 }
 
+class PostConfirmationStoreFailureConversationStore extends MemoryConversationStore {
+  async replaceConversation(record: ConversationRecord): Promise<ConversationRecord> {
+    if (
+      record.pendingReservationProposal?.status === "confirmed" ||
+      record.reservationFlow?.status === "confirmed"
+    ) {
+      throw new Error("mock post confirmation replace failed");
+    }
+
+    return super.replaceConversation(record);
+  }
+
+  async addMessage(message: Message): Promise<Message> {
+    if (message.direction === "outbound" && message.body.includes("queda anotada")) {
+      throw new Error("mock post confirmation bot message failed");
+    }
+
+    return super.addMessage(message);
+  }
+}
+
 function makeAvailability(available = true): SheetsAvailabilityResult {
   return {
     available,
@@ -2154,9 +2175,10 @@ describe("WhatsApp reservation bridge", () => {
 
     expect(counters.writes).toBe(1);
     expect(counters.reservations).toHaveLength(0);
-    expect(counters.clientUpserts).toHaveLength(0);
+    expect(counters.clientUpserts).toHaveLength(1);
     expect(result.conversation.mode).toBe("human");
     expect(result.conversation.pendingReservationProposal?.status).toBe("confirmed");
+    expect(result.conversation.clientDirectoryUpsertKind).toBe("created_pending_name");
     expect(result.conversation.reservationId).toBeDefined();
     expect(result.botReply?.body).toContain("queda anotada");
     expect(result.botReply?.body).not.toContain("no la marco como confirmada");
@@ -2170,6 +2192,34 @@ describe("WhatsApp reservation bridge", () => {
       },
     });
     expect(JSON.stringify(result.conversation.events)).not.toContain("mock reservation record upsert failed");
+  });
+
+  it("returns the confirmed TwiML even if conversation persistence fails after the sheet write", async () => {
+    const store = new PostConfirmationStoreFailureConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+
+    await createNewClientPricedProposal({
+      store,
+      deps,
+      prefix: "SM_BRIDGE_STORE_FAIL_1",
+    });
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "si",
+        messageSid: "SM_BRIDGE_STORE_FAIL_2",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(counters.writes).toBe(1);
+    expect(counters.reservations).toHaveLength(1);
+    expect(counters.clientUpserts).toHaveLength(1);
+    expect(result.botReply).toBeUndefined();
+    expect(result.twiml).toContain("queda anotada");
+    expect(result.twiml).not.toContain("Gracias, hemos recibido tu mensaje");
   });
 
   it("keeps the reservation confirmed if CLIENTES upsert fails after sheet write", async () => {

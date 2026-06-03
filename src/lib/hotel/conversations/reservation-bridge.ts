@@ -845,51 +845,50 @@ export async function confirmPendingReservationProposal(input: {
   }
 
   let clientDirectoryUpsert: ClientUpsertFromConfirmedReservationResult | undefined;
-  if (!recordWarning) {
-    try {
-      clientDirectoryUpsert = await (
-        input.deps?.upsertClientFromConfirmedReservation ??
-        upsertClientFromConfirmedReservation
-      )({
-        phoneE164: input.conversation.phoneE164,
-        phoneNormalized: input.conversation.phoneNormalized,
-        clientName:
-          proposal.ownerName ??
-          input.conversation.clientName ??
-          input.conversation.displayName ??
-          input.conversation.customerName,
-        email: proposal.ownerEmail ?? input.conversation.clientEmail,
-        reservationId: reservation.reservationId,
-        petName: proposal.petName,
-        checkIn: proposal.checkIn,
-        checkOut: proposal.checkOut,
-        source: "whatsapp_reservation",
-        now,
-      });
-    } catch (error) {
-      clientDirectoryUpsert = buildFailedClientUpsertResult(error);
-    }
-    logReservationDiagnostic(
-      clientDirectoryUpsert.kind === "failed" || clientDirectoryUpsert.kind.startsWith("skipped_")
-        ? "warn"
-        : "info",
-      "client_directory_upsert_result",
-      {
-        hasProposal: true,
-        proposalStatus: proposal.status,
-        availabilityRevalidated: true,
-        sheetWriteAttempted: true,
-        sheetWriteSuccess: true,
-        reservationRecordCreated: true,
-        kind: clientDirectoryUpsert.kind,
-        clientStatus: clientDirectoryUpsert.clientStatus,
-        rowNumber: clientDirectoryUpsert.rowNumber,
-        sheetName: clientDirectoryUpsert.sheetName,
-        matchCount: clientDirectoryUpsert.matchCount,
-        warning: clientDirectoryUpsert.warning,
-      },
-    );
+  try {
+    clientDirectoryUpsert = await (
+      input.deps?.upsertClientFromConfirmedReservation ??
+      upsertClientFromConfirmedReservation
+    )({
+      phoneE164: input.conversation.phoneE164,
+      phoneNormalized: input.conversation.phoneNormalized,
+      clientName:
+        proposal.ownerName ??
+        input.conversation.clientName ??
+        input.conversation.displayName ??
+        input.conversation.customerName,
+      email: proposal.ownerEmail ?? input.conversation.clientEmail,
+      reservationId: reservation.reservationId,
+      petName: proposal.petName,
+      checkIn: proposal.checkIn,
+      checkOut: proposal.checkOut,
+      source: "whatsapp_reservation",
+      now,
+    });
+  } catch (error) {
+    clientDirectoryUpsert = buildFailedClientUpsertResult(error);
   }
+
+  logReservationDiagnostic(
+    clientDirectoryUpsert.kind === "failed" || clientDirectoryUpsert.kind.startsWith("skipped_")
+      ? "warn"
+      : "info",
+    "client_directory_upsert_result",
+    {
+      hasProposal: true,
+      proposalStatus: proposal.status,
+      availabilityRevalidated: true,
+      sheetWriteAttempted: true,
+      sheetWriteSuccess: true,
+      reservationRecordCreated: !recordWarning,
+      kind: clientDirectoryUpsert.kind,
+      clientStatus: clientDirectoryUpsert.clientStatus,
+      rowNumber: clientDirectoryUpsert.rowNumber,
+      sheetName: clientDirectoryUpsert.sheetName,
+      matchCount: clientDirectoryUpsert.matchCount,
+      warning: clientDirectoryUpsert.warning,
+    },
+  );
   const reservationWithClientDirectory = withClientDirectoryUpsert(
     reservation,
     clientDirectoryUpsert,

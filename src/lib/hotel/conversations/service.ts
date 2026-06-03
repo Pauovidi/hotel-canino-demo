@@ -194,6 +194,98 @@ function createEvent(conversationId: string, eventType: string, payload?: unknow
   };
 }
 
+function safeConversationStoreError(error: unknown): Record<string, unknown> {
+  return {
+    errorName: error instanceof Error ? error.name : "UnknownError",
+    safeErrorCode:
+      error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code).slice(0, 80)
+        : undefined,
+  };
+}
+
+function safeConversationId(value: string): string {
+  return value ? `${value.slice(0, 12)}${value.length > 12 ? "…" : ""}` : "";
+}
+
+async function addEventBestEffort(
+  store: ConversationStore,
+  event: ConversationEvent,
+  operation: string,
+): Promise<ConversationEvent | undefined> {
+  try {
+    return await store.addEvent(event);
+  } catch (error) {
+    console.warn("conversation_store_post_confirmation_event_failed", {
+      operation,
+      conversationId: safeConversationId(event.conversationId),
+      eventType: event.eventType,
+      ...safeConversationStoreError(error),
+    });
+    return undefined;
+  }
+}
+
+async function replaceConversationBestEffort(
+  store: ConversationStore,
+  record: ConversationRecord,
+  operation: string,
+): Promise<ConversationRecord | undefined> {
+  try {
+    return await store.replaceConversation(record);
+  } catch (error) {
+    console.warn("conversation_store_post_confirmation_update_failed", {
+      operation,
+      conversationId: safeConversationId(record.id),
+      ...safeConversationStoreError(error),
+    });
+    return undefined;
+  }
+}
+
+async function getConversationByIdBestEffort(
+  store: ConversationStore,
+  conversationId: string,
+  fallback: ConversationRecord,
+  operation: string,
+): Promise<ConversationRecord> {
+  try {
+    return (await store.getById(conversationId)) ?? fallback;
+  } catch (error) {
+    console.warn("conversation_store_post_confirmation_read_failed", {
+      operation,
+      conversationId: safeConversationId(conversationId),
+      ...safeConversationStoreError(error),
+    });
+    return fallback;
+  }
+}
+
+async function addBotMessageBestEffort(
+  store: ConversationStore,
+  conversationId: string,
+  body: string,
+  operation: string,
+): Promise<Message | undefined> {
+  try {
+    return await store.addMessage(
+      createMessage({
+        conversationId,
+        direction: "outbound",
+        senderType: "bot",
+        body,
+      }),
+    );
+  } catch (error) {
+    console.warn("conversation_store_post_confirmation_message_failed", {
+      operation,
+      conversationId: safeConversationId(conversationId),
+      ...safeConversationStoreError(error),
+    });
+    return undefined;
+  }
+}
+
 function sanitizeClientIdentityPayload(identity: ClientIdentityResult): Record<string, unknown> {
   return {
     status: identity.status,
@@ -634,11 +726,13 @@ async function confirmConversationReservation(input: {
     conversation: latest,
     deps: input.deps,
   });
-  await input.store.addEvent(
+  await addEventBestEffort(
+    input.store,
     createEvent(latest.id, "reservation_confirmation_checked", {
       kind: confirmation.kind,
       ...confirmation.eventPayload,
     }),
+    "reservation_confirmation_checked",
   );
 
   const latestAfterEvent = (await input.store.getById(latest.id)) ?? latest;
@@ -671,40 +765,57 @@ async function confirmConversationReservation(input: {
       latestAfterEvent.requiresManualReview || Boolean(confirmation.handoff),
     updatedAt: nowIso(),
   };
-  await input.store.replaceConversation(
-    applyClientReservationUpsert(updatedRecord, confirmation.clientDirectoryUpsert),
+  const nextRecord = applyClientReservationUpsert(
+    updatedRecord,
+    confirmation.clientDirectoryUpsert,
+  );
+  await replaceConversationBestEffort(
+    input.store,
+    nextRecord,
+    "reservation_confirmation_update_conversation",
   );
 
   if (confirmation.kind === "confirmed" && confirmation.reservation) {
-    await input.store.addEvent(
+    await addEventBestEffort(
+      input.store,
       createEvent(latest.id, "reservation_confirmed_from_whatsapp", {
         reservationIdSummary: summarizeReservationId(confirmation.reservation.reservationId),
         proposalId: confirmation.proposal?.proposalId,
       }),
+      "reservation_confirmed_from_whatsapp",
     );
   }
 
   if (confirmation.clientDirectoryUpsert) {
-    await input.store.addEvent(
+    await addEventBestEffort(
+      input.store,
       createEvent(
         latest.id,
         clientUpsertEventType(confirmation.clientDirectoryUpsert),
         sanitizeClientUpsertPayload(confirmation.clientDirectoryUpsert),
       ),
+      "client_directory_upsert_result",
     );
   }
 
   if (confirmation.handoff) {
-    await input.store.addEvent(
+    await addEventBestEffort(
+      input.store,
       createEvent(latest.id, "human_requested", {
         matchedFrom: "reservation_bridge",
         reason: confirmation.kind,
       }),
+      "reservation_confirmation_handoff",
     );
   }
 
   return {
-    conversation: (await input.store.getById(latest.id)) ?? updatedRecord,
+    conversation: await getConversationByIdBestEffort(
+      input.store,
+      latest.id,
+      nextRecord,
+      "reservation_confirmation_final_read",
+    ),
     reply: confirmation.reply,
   };
 }
@@ -926,17 +1037,20 @@ export async function handleInboundWhatsApp(
         conversation: latestBeforeFlow,
         deps: reservationBridgeDeps,
       });
-      const botReply = await store.addMessage(
-        createMessage({
-          conversationId: latestBeforeFlow.id,
-          direction: "outbound",
-          senderType: "bot",
-          body: confirmed.reply,
-        }),
+      const botReply = await addBotMessageBestEffort(
+        store,
+        latestBeforeFlow.id,
+        confirmed.reply,
+        "reservation_flow_confirmation_reply",
       );
 
       return {
-        conversation: (await store.getById(latestBeforeFlow.id)) ?? confirmed.conversation,
+        conversation: await getConversationByIdBestEffort(
+          store,
+          latestBeforeFlow.id,
+          confirmed.conversation,
+          "reservation_flow_confirmation_return_read",
+        ),
         inbound,
         botReply,
         twiml: buildTwilioMessageResponse(confirmed.reply),
@@ -1117,17 +1231,20 @@ export async function handleInboundWhatsApp(
       deps: reservationBridgeDeps,
     });
 
-    const botReply = await store.addMessage(
-      createMessage({
-        conversationId: freshWithClient.id,
-        direction: "outbound",
-        senderType: "bot",
-        body: confirmation.reply,
-      }),
+    const botReply = await addBotMessageBestEffort(
+      store,
+      freshWithClient.id,
+      confirmation.reply,
+      "nlu_reservation_confirmation_reply",
     );
 
     return {
-      conversation: (await store.getById(freshWithClient.id)) ?? confirmation.conversation,
+      conversation: await getConversationByIdBestEffort(
+        store,
+        freshWithClient.id,
+        confirmation.conversation,
+        "nlu_reservation_confirmation_return_read",
+      ),
       inbound,
       botReply,
       twiml: buildTwilioMessageResponse(confirmation.reply),

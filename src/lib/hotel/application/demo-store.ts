@@ -7,8 +7,88 @@ import {
   DEMO_RESERVATION_RECORDS,
   DEMO_SHEET_SNAPSHOTS,
 } from "../mock-data";
+import {
+  readGoogleSheetsJsonState,
+  readGoogleSheetsJsonStateHealth,
+  writeGoogleSheetsJsonState,
+} from "./google-sheets-json-state";
+import { readHotelPersistenceConfig } from "../persistence/runtime";
 import type { ReminderJob, ReservationRecord } from "../domain/contracts";
 import type { DemoLogEntry, DemoStoreState } from "./types";
+
+const DOMAIN_STORE_KEY = "hotel_canino_domain_state";
+const DEFAULT_DOMAIN_STORE_SHEET_NAME = "RESERVATION_RECORDS";
+
+type OperationalStoreProvider = "google_sheets" | "file";
+
+function normalizeOperationalProvider(value?: string): OperationalStoreProvider | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "google_sheets" || normalized === "google-sheets" || normalized === "sheets") {
+    return "google_sheets";
+  }
+
+  if (
+    normalized === "file" ||
+    normalized === "file-local" ||
+    normalized === "file-volume" ||
+    normalized === "local" ||
+    normalized === "tmp"
+  ) {
+    return "file";
+  }
+
+  return undefined;
+}
+
+function getDomainStoreSheetName(env: NodeJS.ProcessEnv = process.env): string {
+  return (
+    env.HOTEL_DOMAIN_STORE_SHEET_NAME?.trim() ||
+    env.HOTEL_RESERVATION_STORE_SHEET_NAME?.trim() ||
+    DEFAULT_DOMAIN_STORE_SHEET_NAME
+  );
+}
+
+function shouldUseGoogleSheetsDomainStore(env: NodeJS.ProcessEnv = process.env): boolean {
+  const explicitProvider = normalizeOperationalProvider(
+    env.HOTEL_DOMAIN_STORE_PROVIDER ?? env.HOTEL_RESERVATION_STORE_PROVIDER,
+  );
+  if (explicitProvider === "google_sheets") {
+    return true;
+  }
+  if (explicitProvider === "file") {
+    return false;
+  }
+  if (env.NODE_ENV === "test") {
+    return false;
+  }
+
+  const persistence = readHotelPersistenceConfig(env);
+  const health = readGoogleSheetsJsonStateHealth(getDomainStoreSheetName(env), env);
+  return Boolean(env.VERCEL || persistence.provider === "file-tmp") && health.configured;
+}
+
+export function readReservationStoreHealth(env: NodeJS.ProcessEnv = process.env) {
+  const sheetName = getDomainStoreSheetName(env);
+  const googleSheets = readGoogleSheetsJsonStateHealth(sheetName, env);
+  const explicitProvider = normalizeOperationalProvider(
+    env.HOTEL_DOMAIN_STORE_PROVIDER ?? env.HOTEL_RESERVATION_STORE_PROVIDER,
+  );
+  const useGoogleSheets = shouldUseGoogleSheetsDomainStore(env);
+
+  return {
+    provider:
+      explicitProvider === "google_sheets" || useGoogleSheets
+        ? "google_sheets"
+        : readHotelPersistenceConfig(env).provider,
+    sheetName,
+    configured:
+      explicitProvider === "google_sheets" || useGoogleSheets ? googleSheets.configured : true,
+    googleSheetsConfigured: googleSheets.configured,
+    hasSpreadsheetId: googleSheets.hasSpreadsheetId,
+    hasCredentialSource: googleSheets.hasCredentialSource,
+    filePath: explicitProvider === "google_sheets" || useGoogleSheets ? undefined : getStoreFile(),
+  };
+}
 
 function getStoreDirectory(): string {
   return path.dirname(getStoreFile());
@@ -48,6 +128,10 @@ async function ensureStoreDirectory(): Promise<void> {
 }
 
 async function seedIfNeeded(): Promise<void> {
+  if (shouldUseGoogleSheetsDomainStore()) {
+    return;
+  }
+
   try {
     await readFile(getStoreFile(), "utf8");
   } catch {
@@ -56,6 +140,14 @@ async function seedIfNeeded(): Promise<void> {
 }
 
 export async function loadDemoState(): Promise<DemoStoreState> {
+  if (shouldUseGoogleSheetsDomainStore()) {
+    return readGoogleSheetsJsonState({
+      sheetName: getDomainStoreSheetName(),
+      key: DOMAIN_STORE_KEY,
+      fallback: initialState,
+    });
+  }
+
   await ensureStoreDirectory();
   await seedIfNeeded();
 
@@ -71,6 +163,16 @@ export async function loadDemoState(): Promise<DemoStoreState> {
 }
 
 export async function saveDemoState(state: DemoStoreState): Promise<void> {
+  if (shouldUseGoogleSheetsDomainStore()) {
+    await writeGoogleSheetsJsonState({
+      sheetName: getDomainStoreSheetName(),
+      key: DOMAIN_STORE_KEY,
+      fallback: initialState,
+      value: state,
+    });
+    return;
+  }
+
   await ensureStoreDirectory();
   const payload = JSON.stringify(
     {

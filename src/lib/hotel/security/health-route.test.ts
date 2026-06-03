@@ -61,6 +61,23 @@ describe("health route", () => {
         cacheTtlMs: 12345,
       }),
     );
+    expect(json.reservationStore).toEqual(
+      expect.objectContaining({
+        sheetName: "RESERVATION_RECORDS",
+        googleSheetsConfigured: true,
+        hasSpreadsheetId: true,
+        hasCredentialSource: true,
+      }),
+    );
+    expect(json.entryLogStore).toEqual(
+      expect.objectContaining({
+        sheetName: "REGISTRO_ENTRADA_STATE",
+        googleSheetsConfigured: true,
+        hasSpreadsheetId: true,
+        hasCredentialSource: true,
+        derivedFrom: "reservationStore",
+      }),
+    );
     expect(serialized).not.toContain("super-secret-token");
     expect(serialized).not.toContain("password@example");
     expect(serialized).not.toContain("sheet_secret_like_id");

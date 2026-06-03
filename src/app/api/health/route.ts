@@ -7,6 +7,8 @@ import {
   readGoogleSheetsClientDirectoryHealth,
   readGoogleSheetsClientDirectoryLiveHealth,
 } from "@/lib/hotel/clients/google-sheets-client-directory";
+import { readReservationStoreHealth } from "@/lib/hotel/application/demo-store";
+import { readEntryLogStoreHealth } from "@/lib/hotel/application/entry-log-state";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,6 +37,8 @@ export async function GET(request?: Request) {
   const persistence = readPersistenceHealth();
   const conversationStore = readGoogleSheetsConversationStoreHealth();
   const clientDirectory = readGoogleSheetsClientDirectoryHealth();
+  const reservationStore = readReservationStoreHealth();
+  const entryLogStore = readEntryLogStoreHealth();
   const clients = shouldCheckClientsLive(request)
     ? {
         ...clientDirectory,
@@ -75,6 +79,8 @@ export async function GET(request?: Request) {
       hasSpreadsheetId: conversationStore.hasSpreadsheetId,
       hasCredentialSource: conversationStore.hasCredentialSource,
     },
+    reservationStore,
+    entryLogStore,
     clients,
   });
 }
