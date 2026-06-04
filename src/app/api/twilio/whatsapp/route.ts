@@ -5,13 +5,35 @@ import {
   handleInboundWhatsApp,
   redactConversationSensitiveText,
 } from "@/lib/hotel/conversations/service";
-import { isConversationResetCommand } from "@/lib/hotel/conversations/nlu";
+import {
+  buildConversationReplyPlan,
+  isConversationResetCommand,
+  type ConversationIntent,
+} from "@/lib/hotel/conversations/nlu";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const STORE_FAILURE_REPLY =
-  "Gracias, hemos recibido tu mensaje. Si no te contestamos de inmediato, una persona del equipo lo revisará por aquí.";
+const STORE_DEGRADED_CRITICAL_REPLY =
+  "Ahora mismo no puedo consultar correctamente la conversación. Te contestamos por aquí en cuanto lo revisemos.";
+
+const STATELESS_SAFE_INTENTS = new Set<ConversationIntent>([
+  "greeting",
+  "general_information",
+  "faq_hours",
+  "faq_prices",
+  "faq_visits",
+  "faq_vaccines",
+  "faq_food",
+  "faq_what_to_bring",
+  "faq_photos_videos",
+  "faq_payment",
+  "faq_location",
+  "faq_services",
+  "faq_cancellation",
+  "faq_contact",
+  "media_request",
+]);
 
 function validateWebhookToken(request: Request): boolean {
   const expected = process.env.TWILIO_WEBHOOK_AUTH_TOKEN;
@@ -89,6 +111,29 @@ function safeErrorPayload(error: unknown) {
   };
 }
 
+function buildStoreFailureTwiml(body: string, error: unknown): string {
+  const plan = buildConversationReplyPlan(body);
+  const errorPayload = safeErrorPayload(error);
+
+  if (!plan.handoff && STATELESS_SAFE_INTENTS.has(plan.intent)) {
+    console.info("twilio_webhook_degraded_stateless_reply", {
+      intent: plan.intent,
+      source: plan.source,
+      hasTwimlMessage: true,
+      ...errorPayload,
+    });
+    return buildTwilioMessageResponse(plan.reply);
+  }
+
+  console.warn("twilio_webhook_store_failed_critical_flow", {
+    intent: plan.intent,
+    source: plan.source,
+    handoff: plan.handoff,
+    ...errorPayload,
+  });
+  return buildTwilioMessageResponse(STORE_DEGRADED_CRITICAL_REPLY);
+}
+
 export async function POST(request: Request) {
   if (!validateWebhookToken(request)) {
     return twilioXmlResponse(undefined, 401);
@@ -163,6 +208,6 @@ export async function POST(request: Request) {
     return twilioXmlResponse(twiml);
   } catch (error) {
     console.error("twilio_webhook_store_failed", safeErrorPayload(error));
-    return twilioXmlResponse(buildTwilioMessageResponse(STORE_FAILURE_REPLY));
+    return twilioXmlResponse(buildStoreFailureTwiml(body, error));
   }
 }

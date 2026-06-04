@@ -321,6 +321,42 @@ describe("GoogleSheetsConversationStore", () => {
     await expect(store.list({ query: "34600000000" })).resolves.toHaveLength(1);
   });
 
+  it("ignores empty and structurally incomplete rows without blocking valid conversations", async () => {
+    const fake = createFakeSheetsContext();
+    fake.sheets.set("CONVERSATIONS", [
+      ["id", "phone_normalized", "updated_at", "archived_at", "snapshot_json"],
+      [],
+      ["conv_without_snapshot"],
+      ["conv_blank_snapshot", "34600000004", "", "", ""],
+      [
+        "conv_valid_after_dirty_rows",
+        "34600000005",
+        "2026-06-02T10:04:00.000Z",
+        "",
+        JSON.stringify(
+          conversation({
+            id: "conv_valid_after_dirty_rows",
+            phoneNormalized: "34600000005",
+            updatedAt: "2026-06-02T10:04:00.000Z",
+          }),
+        ),
+      ],
+      ["conv_corrupt_after_valid", "34600000006", "", "", "{not-json"],
+    ]);
+    const store = new GoogleSheetsConversationStore("CONVERSATIONS", {
+      createSheetsClient: fake.createSheetsClient,
+      now: () => new Date("2026-06-02T10:05:00.000Z"),
+    });
+
+    const conversations = await store.list();
+
+    expect(conversations).toHaveLength(1);
+    expect(conversations[0]).toMatchObject({
+      id: "conv_valid_after_dirty_rows",
+      phoneNormalized: "34600000005",
+    });
+  });
+
   it("keeps archived stats and archived list aligned after corrupt and duplicate rows", async () => {
     const fake = createFakeSheetsContext();
     fake.sheets.set("CONVERSATIONS", [

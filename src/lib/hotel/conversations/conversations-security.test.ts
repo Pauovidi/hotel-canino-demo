@@ -677,7 +677,11 @@ describe("conversations security", () => {
     expect(text).not.toContain("hemos recibido tu mensaje");
   });
 
-  it("returns a controlled TwiML Message when the conversation store fails", async () => {
+  it.each([
+    ["buenos días", "Buenos días. ¿En qué podemos ayudarte?"],
+    ["hola buenas tardes", "Buenas tardes. ¿En qué podemos ayudarte?"],
+    ["¿y el pago?", "El pago se hace a la llegada"],
+  ])("returns a stateless safe TwiML Message for %s when the conversation store fails", async (body, expected) => {
     tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-twilio-store-failure-"));
     process.env.HOTEL_CONVERSATIONS_STORE_PATH = tempDir;
     process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
@@ -692,7 +696,7 @@ describe("conversations security", () => {
         body: new URLSearchParams({
           From: "whatsapp:+34600000005",
           To: "whatsapp:+14155238886",
-          Body: "hola, buenos días",
+          Body: body,
           MessageSid: "SM_STORE_FAILURE_TOKEN_001",
         }),
       }),
@@ -702,7 +706,39 @@ describe("conversations security", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("Content-Type")).toContain("text/xml");
     expect(text).toContain("<Response><Message>");
-    expect(text).toContain("hemos recibido tu mensaje");
+    expect(text).toContain(expected);
+    expect(text).not.toContain("hemos recibido tu mensaje");
+    expect(text.trim()).not.toMatch(/^\{/);
+  });
+
+  it("returns a safe incident TwiML Message for critical flows when the conversation store fails", async () => {
+    tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-twilio-critical-store-failure-"));
+    process.env.HOTEL_CONVERSATIONS_STORE_PATH = tempDir;
+    process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+    resetConversationStoreForTests();
+
+    const response = await postTwilioWebhook(
+      new Request("https://example.test/api/twilio/whatsapp?token=expected-token", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          From: "whatsapp:+34600000009",
+          To: "whatsapp:+14155238886",
+          Body: "quiero modificar una reserva",
+          MessageSid: "SM_STORE_FAILURE_CRITICAL_001",
+        }),
+      }),
+    );
+    const text = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("text/xml");
+    expect(text).toContain("<Response><Message>");
+    expect(text).toContain("Ahora mismo no puedo consultar correctamente la conversación");
+    expect(text).not.toContain("hemos recibido tu mensaje");
+    expect(text).not.toContain("Cambio confirmado");
     expect(text.trim()).not.toMatch(/^\{/);
   });
 
