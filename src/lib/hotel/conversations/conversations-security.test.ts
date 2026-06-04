@@ -2,11 +2,12 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   POST as postTwilioWebhook,
   resolveTwilioWebhookTwiml,
+  setTwilioClientDirectoryForTests,
 } from "../../../app/api/twilio/whatsapp/route";
 import { POST as postConversationsReset } from "../../../app/api/conversations/reset/route";
 import { GET as getConversationsApi } from "../../../app/api/conversations/route";
@@ -28,6 +29,8 @@ describe("conversations security", () => {
   let tempDir: string | undefined;
 
   afterEach(() => {
+    setTwilioClientDirectoryForTests(undefined);
+    vi.restoreAllMocks();
     resetConversationStoreForTests();
     delete process.env.TWILIO_WEBHOOK_AUTH_TOKEN;
     delete process.env.VERCEL_ENV;
@@ -651,6 +654,15 @@ describe("conversations security", () => {
     tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-twilio-reset-store-failure-"));
     process.env.HOTEL_CONVERSATIONS_STORE_PATH = tempDir;
     process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+    setTwilioClientDirectoryForTests(createStaticClientDirectory([
+      {
+        nombre: "Pau QA",
+        telefonoMovil: "+34 600 000 008",
+        telefonoNormalizado: "34600000008",
+        rowNumber: 8,
+        sheetName: "CLIENTES",
+      },
+    ]));
     resetConversationStoreForTests();
 
     const response = await postTwilioWebhook(
@@ -678,6 +690,181 @@ describe("conversations security", () => {
   });
 
   it.each([
+    ["buenas", "Buenas, Pau. ¿En qué podemos ayudarte?"],
+    ["buenos días", "Buenos días, Pau. ¿En qué podemos ayudarte?"],
+    ["hola buenas tardes", "Buenas tardes, Pau. ¿En qué podemos ayudarte?"],
+  ])("keeps CLIENTES identity for %s when the conversation store fails", async (body, expected) => {
+    tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-twilio-known-store-failure-"));
+    process.env.HOTEL_CONVERSATIONS_STORE_PATH = tempDir;
+    process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+    setTwilioClientDirectoryForTests(createStaticClientDirectory([
+      {
+        nombre: "Pau QA",
+        telefonoMovil: "+34 600 000 10",
+        telefonoNormalizado: "34600000010",
+        email: "pau.qa@example.test",
+        rowNumber: 10,
+        sheetName: "CLIENTES",
+      },
+    ]));
+    resetConversationStoreForTests();
+
+    const response = await postTwilioWebhook(
+      new Request("https://example.test/api/twilio/whatsapp?token=expected-token", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          From: "whatsapp:+34600000010",
+          To: "whatsapp:+14155238886",
+          Body: body,
+          MessageSid: `SM_KNOWN_STORE_FAILURE_${body.replace(/\s+/g, "_")}`,
+        }),
+      }),
+    );
+    const text = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("text/xml");
+    expect(text).toContain(expected);
+    expect(text).not.toContain("Buenas. ¿En qué podemos ayudarte?");
+    expect(text).not.toContain("hemos recibido tu mensaje");
+    expect(text).not.toContain("horario");
+  });
+
+  it("keeps CLIENTES identity in degraded FAQ replies when the conversation store fails", async () => {
+    tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-twilio-known-faq-store-failure-"));
+    process.env.HOTEL_CONVERSATIONS_STORE_PATH = tempDir;
+    process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+    setTwilioClientDirectoryForTests(createStaticClientDirectory([
+      {
+        nombre: "Pau QA",
+        telefonoMovil: "+34 600 000 11",
+        telefonoNormalizado: "34600000011",
+        email: "pau.qa@example.test",
+        rowNumber: 11,
+        sheetName: "CLIENTES",
+      },
+    ]));
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    resetConversationStoreForTests();
+
+    const response = await postTwilioWebhook(
+      new Request("https://example.test/api/twilio/whatsapp?token=expected-token", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          From: "whatsapp:+34600000011",
+          To: "whatsapp:+14155238886",
+          Body: "¿y el pago?",
+          MessageSid: "SM_KNOWN_PAYMENT_STORE_FAILURE",
+        }),
+      }),
+    );
+    const text = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(text).toContain("El pago se hace a la llegada");
+    expect(text).not.toContain("hemos recibido tu mensaje");
+    expect(infoSpy).toHaveBeenCalledWith(
+      "degraded_with_client_identity",
+      expect.objectContaining({
+        clientStatus: "known",
+        clientConfidence: "strong",
+        clientMatchType: "phone",
+        intent: "faq_payment",
+      }),
+    );
+  });
+
+  it.each([
+    ["quiero hacer una reserva", "SM_KNOWN_RESERVATION_STORE_FAILURE"],
+    ["quiero modificar una reserva", "SM_KNOWN_MODIFICATION_STORE_FAILURE"],
+  ])("keeps CLIENTES identity but blocks critical degraded flow for %s", async (body, sid) => {
+    tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-twilio-known-critical-store-failure-"));
+    process.env.HOTEL_CONVERSATIONS_STORE_PATH = tempDir;
+    process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+    setTwilioClientDirectoryForTests(createStaticClientDirectory([
+      {
+        nombre: "Pau QA",
+        telefonoMovil: "+34 600 000 12",
+        telefonoNormalizado: "34600000012",
+        email: "pau.qa@example.test",
+        rowNumber: 12,
+        sheetName: "CLIENTES",
+      },
+    ]));
+    resetConversationStoreForTests();
+
+    const response = await postTwilioWebhook(
+      new Request("https://example.test/api/twilio/whatsapp?token=expected-token", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          From: "whatsapp:+34600000012",
+          To: "whatsapp:+14155238886",
+          Body: body,
+          MessageSid: sid,
+        }),
+      }),
+    );
+    const text = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(text).toContain("Pau, ahora mismo no puedo consultar correctamente la conversación");
+    expect(text).not.toContain("¿Ya eres cliente");
+    expect(text).not.toContain("Cambio confirmado");
+    expect(text).not.toContain("Reserva confirmada");
+    expect(text).not.toContain("hemos recibido tu mensaje");
+  });
+
+  it("logs sanitized client lookup failures and falls back to generic degraded replies", async () => {
+    tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-twilio-client-lookup-failure-"));
+    process.env.HOTEL_CONVERSATIONS_STORE_PATH = tempDir;
+    process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+    setTwilioClientDirectoryForTests({
+      async listClients() {
+        throw Object.assign(new Error("mock client directory failed"), { code: 503 });
+      },
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    resetConversationStoreForTests();
+
+    const response = await postTwilioWebhook(
+      new Request("https://example.test/api/twilio/whatsapp?token=expected-token", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          From: "whatsapp:+34600000013",
+          To: "whatsapp:+14155238886",
+          Body: "buenas",
+          MessageSid: "SM_CLIENT_LOOKUP_FAILURE",
+        }),
+      }),
+    );
+    const text = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(text).toContain("Buenas. ¿En qué podemos ayudarte?");
+    expect(warnSpy).toHaveBeenCalledWith(
+      "client_directory_lookup_failed",
+      expect.objectContaining({ errorName: "Error", safeErrorCode: "503" }),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      "degraded_without_client_identity",
+      expect.objectContaining({ clientStatus: "lookup_failed", intent: "greeting" }),
+    );
+  });
+
+  it.each([
     ["buenos días", "Buenos días. ¿En qué podemos ayudarte?"],
     ["hola buenas tardes", "Buenas tardes. ¿En qué podemos ayudarte?"],
     ["¿y el pago?", "El pago se hace a la llegada"],
@@ -685,6 +872,7 @@ describe("conversations security", () => {
     tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-twilio-store-failure-"));
     process.env.HOTEL_CONVERSATIONS_STORE_PATH = tempDir;
     process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+    setTwilioClientDirectoryForTests(createStaticClientDirectory([]));
     resetConversationStoreForTests();
 
     const response = await postTwilioWebhook(
@@ -715,6 +903,7 @@ describe("conversations security", () => {
     tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-twilio-critical-store-failure-"));
     process.env.HOTEL_CONVERSATIONS_STORE_PATH = tempDir;
     process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+    setTwilioClientDirectoryForTests(createStaticClientDirectory([]));
     resetConversationStoreForTests();
 
     const response = await postTwilioWebhook(

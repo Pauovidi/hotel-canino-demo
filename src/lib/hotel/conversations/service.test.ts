@@ -318,6 +318,29 @@ describe("conversation service", () => {
     expect(result.botReply?.body).toBe("Buenas tardes, Pau. ¿En qué podemos ayudarte?");
   });
 
+  it("greets a strong phone match by name for a plain buenas greeting", async () => {
+    const store = new MemoryConversationStore();
+    const directory = createStaticClientDirectory([
+      {
+        nombre: "Pau QA",
+        telefonoMovil: "+34 600 009 991",
+        telefonoNormalizado: "34600009991",
+        email: "pau.qa@example.test",
+        rowNumber: 7,
+        sheetName: "CLIENTES",
+      },
+    ]);
+
+    const result = await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "buenas" },
+      store,
+      directory,
+    );
+
+    expect(result.conversation.clientStatus).toBe("known");
+    expect(result.botReply?.body).toBe("Buenas, Pau. ¿En qué podemos ayudarte?");
+  });
+
   it("starts reservations for strong phone matches without asking whether they are clients", async () => {
     const store = new MemoryConversationStore();
     const directory = createStaticClientDirectory([

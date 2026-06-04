@@ -3,8 +3,17 @@ import {
   buildTwilioMessageResponse,
   handleGlobalResetCommand,
   handleInboundWhatsApp,
+  isStrongClientIdentity,
+  knownClientFirstNameFromIdentity,
+  personalizeReplyWithClientIdentity,
   redactConversationSensitiveText,
 } from "@/lib/hotel/conversations/service";
+import {
+  ClientDirectoryService,
+  getClientDirectory,
+  type ClientDirectory,
+  type ClientIdentityResult,
+} from "@/lib/hotel/clients";
 import {
   buildConversationReplyPlan,
   isConversationResetCommand,
@@ -34,6 +43,16 @@ const STATELESS_SAFE_INTENTS = new Set<ConversationIntent>([
   "faq_contact",
   "media_request",
 ]);
+
+let clientDirectoryForTests: ClientDirectory | undefined;
+
+export function setTwilioClientDirectoryForTests(directory?: ClientDirectory): void {
+  clientDirectoryForTests = directory;
+}
+
+function resolveTwilioClientDirectory(): ClientDirectory {
+  return clientDirectoryForTests ?? getClientDirectory();
+}
 
 function validateWebhookToken(request: Request): boolean {
   const expected = process.env.TWILIO_WEBHOOK_AUTH_TOKEN;
@@ -111,27 +130,89 @@ function safeErrorPayload(error: unknown) {
   };
 }
 
-function buildStoreFailureTwiml(body: string, error: unknown): string {
+function sanitizeClientIdentityLog(identity?: ClientIdentityResult): Record<string, unknown> {
+  return {
+    clientStatus: identity?.status ?? "lookup_failed",
+    clientConfidence: identity?.confidence,
+    clientMatchType: identity?.matchType,
+    clientSource: identity?.source,
+    matchCount: identity?.matches?.length ?? (identity?.client ? 1 : 0),
+    sheetName: identity?.client?.sheetName,
+    rowNumber: identity?.client?.rowNumber,
+  };
+}
+
+async function resolveClientIdentitySafe(input: {
+  from: string;
+  displayName?: string;
+  clientDirectory: ClientDirectory;
+}): Promise<{ identity?: ClientIdentityResult; failed: boolean }> {
+  try {
+    const identity = await new ClientDirectoryService(input.clientDirectory).resolveClientIdentity({
+      phone: input.from,
+      name: input.displayName,
+    });
+
+    return { identity, failed: false };
+  } catch (error) {
+    console.warn("client_directory_lookup_failed", safeErrorPayload(error));
+    return { failed: true };
+  }
+}
+
+function buildCriticalStoreFailureReply(identity?: ClientIdentityResult): string {
+  const name = knownClientFirstNameFromIdentity(identity);
+  return name
+    ? `${name}, ${STORE_DEGRADED_CRITICAL_REPLY.charAt(0).toLowerCase()}${STORE_DEGRADED_CRITICAL_REPLY.slice(1)}`
+    : STORE_DEGRADED_CRITICAL_REPLY;
+}
+
+function buildStoreFailureTwiml(
+  body: string,
+  error: unknown,
+  clientIdentity?: ClientIdentityResult,
+): string {
   const plan = buildConversationReplyPlan(body);
   const errorPayload = safeErrorPayload(error);
+  const hasStrongClientIdentity = isStrongClientIdentity(clientIdentity);
+  const degradedLogName = hasStrongClientIdentity
+    ? "degraded_with_client_identity"
+    : "degraded_without_client_identity";
 
   if (!plan.handoff && STATELESS_SAFE_INTENTS.has(plan.intent)) {
+    const reply = personalizeReplyWithClientIdentity(plan.reply, clientIdentity);
+
+    console.info(degradedLogName, {
+      intent: plan.intent,
+      source: plan.source,
+      hasTwimlMessage: true,
+      ...sanitizeClientIdentityLog(clientIdentity),
+      ...errorPayload,
+    });
     console.info("twilio_webhook_degraded_stateless_reply", {
       intent: plan.intent,
       source: plan.source,
       hasTwimlMessage: true,
       ...errorPayload,
     });
-    return buildTwilioMessageResponse(plan.reply);
+    return buildTwilioMessageResponse(reply);
   }
 
+  console.info(degradedLogName, {
+    intent: plan.intent,
+    source: plan.source,
+    handoff: plan.handoff,
+    hasTwimlMessage: true,
+    ...sanitizeClientIdentityLog(clientIdentity),
+    ...errorPayload,
+  });
   console.warn("twilio_webhook_store_failed_critical_flow", {
     intent: plan.intent,
     source: plan.source,
     handoff: plan.handoff,
     ...errorPayload,
   });
-  return buildTwilioMessageResponse(STORE_DEGRADED_CRITICAL_REPLY);
+  return buildTwilioMessageResponse(buildCriticalStoreFailureReply(clientIdentity));
 }
 
 export async function POST(request: Request) {
@@ -185,15 +266,23 @@ export async function POST(request: Request) {
     hasMessageSid: Boolean(messageSid),
   });
 
+  const displayName = String(raw.ProfileName ?? raw.profileName ?? "");
+  const clientDirectory = resolveTwilioClientDirectory();
+  const clientIdentity = await resolveClientIdentitySafe({
+    from,
+    displayName,
+    clientDirectory,
+  });
+
   try {
     const result = await handleInboundWhatsApp({
       from,
       to,
       body,
       messageSid,
-      displayName: String(raw.ProfileName ?? raw.profileName ?? ""),
+      displayName,
       rawPayload: sanitizeTwilioPayload(raw),
-    });
+    }, undefined, clientDirectory);
     const twiml = resolveTwilioWebhookTwiml(result);
 
     console.info("twilio_webhook_reply_built", {
@@ -208,6 +297,6 @@ export async function POST(request: Request) {
     return twilioXmlResponse(twiml);
   } catch (error) {
     console.error("twilio_webhook_store_failed", safeErrorPayload(error));
-    return twilioXmlResponse(buildStoreFailureTwiml(body, error));
+    return twilioXmlResponse(buildStoreFailureTwiml(body, error, clientIdentity.identity));
   }
 }

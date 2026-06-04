@@ -832,16 +832,14 @@ function knownClientFirstName(record: ConversationRecord): string | undefined {
   return (record.clientName ?? record.customerName)?.trim().split(/\s+/)[0];
 }
 
-function personalizeGreetingReply(reply: string, record: ConversationRecord): string {
-  if (!isStrongDirectoryConversation(record)) {
-    return reply;
-  }
-
-  const name = knownClientFirstName(record);
+function personalizeReplyWithClientName(reply: string, name?: string): string {
   if (!name) {
     return reply;
   }
 
+  if (reply.startsWith("Buenas.")) {
+    return reply.replace("Buenas.", `Buenas, ${name}.`);
+  }
   if (reply.startsWith("Buenos días.")) {
     return reply.replace("Buenos días.", `Buenos días, ${name}.`);
   }
@@ -856,6 +854,40 @@ function personalizeGreetingReply(reply: string, record: ConversationRecord): st
   }
 
   return reply;
+}
+
+export function isStrongClientIdentity(identity?: ClientIdentityResult | null): boolean {
+  return Boolean(
+    identity &&
+      identity.status === "known" &&
+      identity.confidence === "strong" &&
+      (identity.matchType === "phone" || identity.matchType === "email"),
+  );
+}
+
+export function knownClientFirstNameFromIdentity(
+  identity?: ClientIdentityResult | null,
+): string | undefined {
+  if (!isStrongClientIdentity(identity)) {
+    return undefined;
+  }
+
+  return identity?.client?.nombre?.trim().split(/\s+/)[0];
+}
+
+export function personalizeReplyWithClientIdentity(
+  reply: string,
+  identity?: ClientIdentityResult | null,
+): string {
+  return personalizeReplyWithClientName(reply, knownClientFirstNameFromIdentity(identity));
+}
+
+function personalizeGreetingReply(reply: string, record: ConversationRecord): string {
+  if (!isStrongDirectoryConversation(record)) {
+    return reply;
+  }
+
+  return personalizeReplyWithClientName(reply, knownClientFirstName(record));
 }
 
 export async function resetConversations(
