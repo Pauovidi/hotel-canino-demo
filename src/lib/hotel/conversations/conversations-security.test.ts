@@ -507,6 +507,116 @@ describe("conversations security", () => {
     process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
     resetConversationStoreForTests();
 
+    for (const [body, sid] of [
+      ["reiniciar", "SM_RESET_TOKEN_001"],
+      [" reiniciar ", "SM_RESET_TOKEN_002"],
+      ["/reiniciar", "SM_RESET_TOKEN_003"],
+    ] as const) {
+      const response = await postTwilioWebhook(
+        new Request("https://example.test/api/twilio/whatsapp?token=expected-token", {
+          method: "POST",
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({
+            From: "whatsapp:+34600000006",
+            To: "whatsapp:+14155238886",
+            Body: body,
+            MessageSid: sid,
+          }),
+        }),
+      );
+      const text = await response.text();
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toContain("text/xml");
+      expect(text).toBe(
+        '<?xml version="1.0" encoding="UTF-8"?><Response><Message>Reiniciado.</Message></Response>',
+      );
+      expect(text).not.toContain("hemos recibido tu mensaje");
+    }
+  });
+
+  it.each([
+    ["human mode", { mode: "human" as const }],
+    ["human requested", { humanRequested: true }],
+    ["manual review", { requiresManualReview: true }],
+    [
+      "pending reservation flow",
+      {
+        reservationFlow: {
+          flowId: "reservation_flow_route_reset",
+          status: "asking_client_kind" as const,
+          clientKind: "unknown" as const,
+          availabilityStatus: "pending" as const,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    ],
+    [
+      "pending modification flow",
+      {
+        pendingReservationModificationFlow: {
+          flowId: "mod_route_reset",
+          conversationId: "patched-below",
+          phoneNormalized: "34600000007",
+          status: "collecting_change" as const,
+          source: "whatsapp" as const,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      },
+    ],
+    [
+      "pending cancellation flow",
+      {
+        pendingReservationCancellationFlow: {
+          flowId: "cancel_route_reset",
+          conversationId: "patched-below",
+          phoneNormalized: "34600000007",
+          status: "awaiting_confirmation" as const,
+          source: "whatsapp" as const,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      },
+    ],
+  ])("returns reset TwiML for route reset with previous %s", async (_label, patch) => {
+    tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-twilio-reset-state-"));
+    process.env.HOTEL_CONVERSATIONS_STORE_DIR = tempDir;
+    process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+    resetConversationStoreForTests();
+
+    const created = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600000007",
+        to: "whatsapp:+14155238886",
+        body: "Hola",
+        messageSid: `SM_RESET_STATE_SETUP_${_label.replace(/\s+/g, "_")}`,
+      },
+      getConversationStore(),
+      createStaticClientDirectory([]),
+    );
+    await getConversationStore().replaceConversation({
+      ...created.conversation,
+      ...patch,
+      pendingReservationModificationFlow: patch.pendingReservationModificationFlow
+        ? {
+            ...patch.pendingReservationModificationFlow,
+            conversationId: created.conversation.id,
+          }
+        : patch.pendingReservationModificationFlow,
+      pendingReservationCancellationFlow: patch.pendingReservationCancellationFlow
+        ? {
+            ...patch.pendingReservationCancellationFlow,
+            conversationId: created.conversation.id,
+          }
+        : patch.pendingReservationCancellationFlow,
+    });
+
     const response = await postTwilioWebhook(
       new Request("https://example.test/api/twilio/whatsapp?token=expected-token", {
         method: "POST",
@@ -514,10 +624,46 @@ describe("conversations security", () => {
           "content-type": "application/x-www-form-urlencoded",
         },
         body: new URLSearchParams({
-          From: "whatsapp:+34600000006",
+          From: "whatsapp:+34600000007",
           To: "whatsapp:+14155238886",
           Body: "reiniciar",
-          MessageSid: "SM_RESET_TOKEN_001",
+          MessageSid: `SM_RESET_STATE_${_label.replace(/\s+/g, "_")}`,
+        }),
+      }),
+    );
+    const text = await response.text();
+    const record = await getConversationStore().getById(created.conversation.id);
+
+    expect(response.status).toBe(200);
+    expect(text).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?><Response><Message>Reiniciado.</Message></Response>',
+    );
+    expect(record?.mode).toBe("bot");
+    expect(record?.humanRequested).toBe(false);
+    expect(record?.reservationFlow).toBeUndefined();
+    expect(record?.pendingReservationModificationFlow).toBeUndefined();
+    expect(record?.pendingReservationCancellationFlow).toBeUndefined();
+    expect(record?.requiresManualReview).toBe(false);
+    expect(record?.events.some((event) => event.eventType === "auto_reply_skipped_human_mode")).toBe(false);
+  });
+
+  it("returns reset TwiML instead of the generic fallback when the store fails", async () => {
+    tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-twilio-reset-store-failure-"));
+    process.env.HOTEL_CONVERSATIONS_STORE_PATH = tempDir;
+    process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+    resetConversationStoreForTests();
+
+    const response = await postTwilioWebhook(
+      new Request("https://example.test/api/twilio/whatsapp?token=expected-token", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          From: "whatsapp:+34600000008",
+          To: "whatsapp:+14155238886",
+          Body: "reiniciar",
+          MessageSid: "SM_RESET_STORE_FAILURE",
         }),
       }),
     );

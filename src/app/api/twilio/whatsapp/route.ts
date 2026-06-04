@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import {
   buildTwilioMessageResponse,
+  handleGlobalResetCommand,
   handleInboundWhatsApp,
   redactConversationSensitiveText,
 } from "@/lib/hotel/conversations/service";
+import { isConversationResetCommand } from "@/lib/hotel/conversations/nlu";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -110,6 +112,25 @@ export async function POST(request: Request) {
 
   if (!from || !body) {
     return twilioXmlResponse();
+  }
+
+  if (isConversationResetCommand(body)) {
+    const result = await handleGlobalResetCommand({
+      from,
+      to,
+      body,
+      messageSid,
+      displayName: String(raw.ProfileName ?? raw.profileName ?? ""),
+      rawPayload: sanitizeTwilioPayload(raw),
+    });
+    const twiml = resolveTwilioWebhookTwiml(result);
+
+    console.info("twilio_webhook_reset_command_replied", {
+      hasBotReply: Boolean(result.botReply?.body),
+      hasTwimlMessage: twiml.includes("<Message>"),
+    });
+
+    return twilioXmlResponse(twiml);
   }
 
   console.info("twilio_webhook_received", {

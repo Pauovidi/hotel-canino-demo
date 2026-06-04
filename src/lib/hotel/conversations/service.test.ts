@@ -134,6 +134,12 @@ class MemoryConversationStore implements ConversationStore {
   }
 }
 
+class ResetFailingConversationStore extends MemoryConversationStore {
+  async getByPhone(): Promise<ConversationRecord | undefined> {
+    throw Object.assign(new Error("mock reset store lookup failed"), { code: 400 });
+  }
+}
+
 describe("conversation service", () => {
   it("only auto-seeds fixtures with explicit opt-in or test runtime", async () => {
     expect(shouldAutoSeedConversations({ NODE_ENV: "development" })).toBe(false);
@@ -560,6 +566,20 @@ describe("conversation service", () => {
     expect(result.conversation.mode).toBe("bot");
     expect(result.conversation.events.some((event) => event.eventType === "conversation_reset_requested")).toBe(true);
     expect(result.conversation.events.some((event) => event.eventType === "nlu_classified")).toBe(false);
+  });
+
+  it("answers reset even when the conversation store fails before loading context", async () => {
+    const result = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "reiniciar" },
+      new ResetFailingConversationStore(),
+      createStaticClientDirectory([]),
+    );
+
+    expect(result.botReply?.body).toBe("Reiniciado.");
+    expect(result.twiml).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?><Response><Message>Reiniciado.</Message></Response>',
+    );
+    expect(result.conversation.mode).toBe("bot");
   });
 
   it("resets only the current conversation context even from human mode", async () => {

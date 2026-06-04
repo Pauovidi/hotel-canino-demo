@@ -608,6 +608,116 @@ function createMessage(input: Omit<Message, "id" | "createdAt" | "transport">): 
   };
 }
 
+function buildResetRecord(record: ConversationRecord): ConversationRecord {
+  return {
+    ...record,
+    mode: "bot",
+    humanRequested: false,
+    assignedAgent: undefined,
+    pendingReservationProposal: undefined,
+    pendingReservationContext: undefined,
+    pendingReservationModificationFlow: undefined,
+    pendingReservationCancellationFlow: undefined,
+    reservationFlow: undefined,
+    unreadCount: 0,
+    requiresManualReview:
+      record.clientStatus === "blocked" || record.clientStatus === "ambiguous",
+    updatedAt: nowIso(),
+  };
+}
+
+function buildUnpersistedResetResult(payload: InboundWhatsAppPayload): InboundResult {
+  const normalized = normalizePhone(payload.from);
+  const at = nowIso();
+  const conversation: ConversationRecord = {
+    id: createId("conversation_reset_unpersisted"),
+    phoneE164: normalized.phoneE164,
+    phoneNormalized: normalized.phoneNormalized,
+    displayName: payload.displayName,
+    channel: "whatsapp",
+    sourceType: "whatsapp",
+    mode: "bot",
+    humanRequested: false,
+    unreadCount: 0,
+    createdAt: at,
+    updatedAt: at,
+    messages: [],
+    events: [],
+  };
+  const inbound = createMessage({
+    conversationId: conversation.id,
+    direction: "inbound",
+    senderType: "user",
+    externalMessageSid: payload.messageSid,
+    body: redactConversationSensitiveText(payload.body),
+    rawPayload: sanitizeConversationPayload(payload.rawPayload),
+  });
+  const botReply = createMessage({
+    conversationId: conversation.id,
+    direction: "outbound",
+    senderType: "bot",
+    body: CONVERSATION_RESET_REPLY,
+  });
+
+  return {
+    conversation,
+    inbound,
+    botReply,
+    twiml: buildTwilioMessageResponse(CONVERSATION_RESET_REPLY),
+  };
+}
+
+export async function handleGlobalResetCommand(
+  payload: InboundWhatsAppPayload,
+  store: ConversationStore = getConversationStore(),
+): Promise<InboundResult> {
+  try {
+    const conversation = await getOrCreateConversation(store, payload.from, payload.displayName);
+    const safeBody = redactConversationSensitiveText(payload.body);
+    const virtualInbound = createMessage({
+      conversationId: conversation.id,
+      direction: "inbound",
+      senderType: "user",
+      externalMessageSid: payload.messageSid,
+      body: safeBody,
+      rawPayload: sanitizeConversationPayload(payload.rawPayload),
+    });
+    const latest = (await store.getById(conversation.id)) ?? conversation;
+    const resetRecord = buildResetRecord(latest);
+    await store.replaceConversation(resetRecord);
+    await store.addEvent(
+      createEvent(conversation.id, "conversation_reset_requested", {
+        matchedFrom: "global_command",
+        hiddenCommand: true,
+        clearedPendingProposal: Boolean(latest.pendingReservationProposal),
+        clearedPendingContext: Boolean(latest.pendingReservationContext),
+        clearedPendingModificationFlow: Boolean(latest.pendingReservationModificationFlow),
+        clearedPendingCancellationFlow: Boolean(latest.pendingReservationCancellationFlow),
+        clearedReservationFlow: Boolean(latest.reservationFlow),
+        clearedHumanMode: latest.mode === "human" || latest.humanRequested,
+      }),
+    );
+    const botReply = await store.addMessage(
+      createMessage({
+        conversationId: conversation.id,
+        direction: "outbound",
+        senderType: "bot",
+        body: CONVERSATION_RESET_REPLY,
+      }),
+    );
+
+    return {
+      conversation: (await store.getById(conversation.id)) ?? resetRecord,
+      inbound: virtualInbound,
+      botReply,
+      twiml: buildTwilioMessageResponse(CONVERSATION_RESET_REPLY),
+    };
+  } catch (error) {
+    console.error("conversation_reset_command_store_failed", safeConversationStoreError(error));
+    return buildUnpersistedResetResult(payload);
+  }
+}
+
 async function getOrCreateConversation(
   store: ConversationStore,
   phone: string,
@@ -911,8 +1021,13 @@ export async function handleInboundWhatsApp(
   clientDirectory: ClientDirectory = getClientDirectory(),
   reservationBridgeDeps?: WhatsAppReservationBridgeDeps,
 ): Promise<InboundResult> {
-  const conversation = await getOrCreateConversation(store, payload.from, payload.displayName);
   const safeBody = redactConversationSensitiveText(payload.body);
+
+  if (isConversationResetCommand(safeBody)) {
+    return handleGlobalResetCommand(payload, store);
+  }
+
+  const conversation = await getOrCreateConversation(store, payload.from, payload.displayName);
   if (payload.messageSid) {
     const existing = conversation.messages.find(
       (message) => message.externalMessageSid === payload.messageSid,
@@ -925,61 +1040,6 @@ export async function handleInboundWhatsApp(
         twiml: buildTwilioMessageResponse(),
       };
     }
-  }
-
-  if (isConversationResetCommand(safeBody)) {
-    const virtualInbound = createMessage({
-      conversationId: conversation.id,
-      direction: "inbound",
-      senderType: "user",
-      externalMessageSid: payload.messageSid,
-      body: safeBody,
-      rawPayload: sanitizeConversationPayload(payload.rawPayload),
-    });
-    const latest = (await store.getById(conversation.id)) ?? conversation;
-    const resetRecord: ConversationRecord = {
-      ...latest,
-      mode: "bot",
-      humanRequested: false,
-      assignedAgent: undefined,
-      pendingReservationProposal: undefined,
-      pendingReservationContext: undefined,
-      pendingReservationModificationFlow: undefined,
-      pendingReservationCancellationFlow: undefined,
-      reservationFlow: undefined,
-      unreadCount: 0,
-      requiresManualReview:
-        latest.clientStatus === "blocked" || latest.clientStatus === "ambiguous",
-      updatedAt: nowIso(),
-    };
-    await store.replaceConversation(resetRecord);
-    await store.addEvent(
-      createEvent(conversation.id, "conversation_reset_requested", {
-        matchedFrom: "global_command",
-        hiddenCommand: true,
-        clearedPendingProposal: Boolean(latest.pendingReservationProposal),
-        clearedPendingContext: Boolean(latest.pendingReservationContext),
-        clearedPendingModificationFlow: Boolean(latest.pendingReservationModificationFlow),
-        clearedPendingCancellationFlow: Boolean(latest.pendingReservationCancellationFlow),
-        clearedReservationFlow: Boolean(latest.reservationFlow),
-        clearedHumanMode: latest.mode === "human" || latest.humanRequested,
-      }),
-    );
-    const botReply = await store.addMessage(
-      createMessage({
-        conversationId: conversation.id,
-        direction: "outbound",
-        senderType: "bot",
-        body: CONVERSATION_RESET_REPLY,
-      }),
-    );
-
-    return {
-      conversation: (await store.getById(conversation.id)) ?? resetRecord,
-      inbound: virtualInbound,
-      botReply,
-      twiml: buildTwilioMessageResponse(CONVERSATION_RESET_REPLY),
-    };
   }
 
   const fresh = (await store.getById(conversation.id)) ?? conversation;
