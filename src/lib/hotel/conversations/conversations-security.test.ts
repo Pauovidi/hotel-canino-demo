@@ -501,6 +501,36 @@ describe("conversations security", () => {
     expect(text).toContain(botReply?.body ?? "");
   });
 
+  it("returns exact TwiML for a global reset webhook before fallback handling", async () => {
+    tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-twilio-reset-"));
+    process.env.HOTEL_CONVERSATIONS_STORE_DIR = tempDir;
+    process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+    resetConversationStoreForTests();
+
+    const response = await postTwilioWebhook(
+      new Request("https://example.test/api/twilio/whatsapp?token=expected-token", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          From: "whatsapp:+34600000006",
+          To: "whatsapp:+14155238886",
+          Body: "reiniciar",
+          MessageSid: "SM_RESET_TOKEN_001",
+        }),
+      }),
+    );
+    const text = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("text/xml");
+    expect(text).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?><Response><Message>Reiniciado.</Message></Response>',
+    );
+    expect(text).not.toContain("hemos recibido tu mensaje");
+  });
+
   it("returns a controlled TwiML Message when the conversation store fails", async () => {
     tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-twilio-store-failure-"));
     process.env.HOTEL_CONVERSATIONS_STORE_PATH = tempDir;

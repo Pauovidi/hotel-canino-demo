@@ -46,7 +46,13 @@ describe("conversation NLU", () => {
     ["Quiero cancelar mi reserva", "reservation_cancel"],
     ["Quiero cambiar la fecha", "reservation_modify"],
     ["reiniciar", "conversation_reset"],
+    ["Reiniciar", "conversation_reset"],
+    ["/reiniciar", "conversation_reset"],
+    ["reset", "conversation_reset"],
+    ["/reset", "conversation_reset"],
+    ["resetear", "conversation_reset"],
     ["empezar de nuevo", "conversation_reset"],
+    ["limpiar conversación", "conversation_reset"],
     ["Quiero hablar con una persona", "human_handoff"],
     ["¿Ha comido mi perro?", "stay_status_question"],
   ] as const)("classifies %s as %s", (message, intent) => {

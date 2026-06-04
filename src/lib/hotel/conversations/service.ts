@@ -10,7 +10,9 @@ import {
 import {
   buildConversationReplyPlan,
   classifyConversationIntent,
+  CONVERSATION_RESET_REPLY,
   isAffirmativeConfirmationUtterance,
+  isConversationResetCommand,
 } from "./nlu";
 import {
   confirmPendingReservationProposal,
@@ -925,47 +927,16 @@ export async function handleInboundWhatsApp(
     }
   }
 
-  const fresh = (await store.getById(conversation.id)) ?? conversation;
-  const clientIdentity = await resolveAndPersistClientIdentity(
-    store,
-    fresh,
-    payload,
-    clientDirectory,
-  );
-  const freshWithClient = clientIdentity.conversation;
-  const commandPlan = buildConversationReplyPlan(safeBody);
-
-  if (commandPlan.intent === "conversation_reset") {
+  if (isConversationResetCommand(safeBody)) {
     const virtualInbound = createMessage({
-      conversationId: freshWithClient.id,
+      conversationId: conversation.id,
       direction: "inbound",
       senderType: "user",
       externalMessageSid: payload.messageSid,
       body: safeBody,
       rawPayload: sanitizeConversationPayload(payload.rawPayload),
     });
-    const latest = (await store.getById(freshWithClient.id)) ?? freshWithClient;
-
-    if (clientIdentity.identity.status === "blocked") {
-      const replyBody =
-        "Gracias, revisamos tu solicitud con el equipo y te contestamos por aquí.";
-      const humanRecord: ConversationRecord = {
-        ...latest,
-        mode: "human",
-        humanRequested: true,
-        priority: "urgent",
-        requiresManualReview: true,
-        unreadCount: 0,
-        updatedAt: nowIso(),
-      };
-      await store.replaceConversation(humanRecord);
-      return {
-        conversation: (await store.getById(freshWithClient.id)) ?? humanRecord,
-        inbound: virtualInbound,
-        twiml: buildTwilioMessageResponse(replyBody),
-      };
-    }
-
+    const latest = (await store.getById(conversation.id)) ?? conversation;
     const resetRecord: ConversationRecord = {
       ...latest,
       mode: "bot",
@@ -983,23 +954,42 @@ export async function handleInboundWhatsApp(
     };
     await store.replaceConversation(resetRecord);
     await store.addEvent(
-      createEvent(freshWithClient.id, "conversation_reset_requested", {
-        matchedFrom: "nlu",
+      createEvent(conversation.id, "conversation_reset_requested", {
+        matchedFrom: "global_command",
         hiddenCommand: true,
         clearedPendingProposal: Boolean(latest.pendingReservationProposal),
         clearedPendingContext: Boolean(latest.pendingReservationContext),
         clearedPendingModificationFlow: Boolean(latest.pendingReservationModificationFlow),
         clearedPendingCancellationFlow: Boolean(latest.pendingReservationCancellationFlow),
         clearedReservationFlow: Boolean(latest.reservationFlow),
+        clearedHumanMode: latest.mode === "human" || latest.humanRequested,
+      }),
+    );
+    const botReply = await store.addMessage(
+      createMessage({
+        conversationId: conversation.id,
+        direction: "outbound",
+        senderType: "bot",
+        body: CONVERSATION_RESET_REPLY,
       }),
     );
 
     return {
-      conversation: (await store.getById(freshWithClient.id)) ?? resetRecord,
+      conversation: (await store.getById(conversation.id)) ?? resetRecord,
       inbound: virtualInbound,
-      twiml: buildTwilioMessageResponse(commandPlan.reply),
+      botReply,
+      twiml: buildTwilioMessageResponse(CONVERSATION_RESET_REPLY),
     };
   }
+
+  const fresh = (await store.getById(conversation.id)) ?? conversation;
+  const clientIdentity = await resolveAndPersistClientIdentity(
+    store,
+    fresh,
+    payload,
+    clientDirectory,
+  );
+  const freshWithClient = clientIdentity.conversation;
 
   const inbound = await store.addMessage(
     createMessage({

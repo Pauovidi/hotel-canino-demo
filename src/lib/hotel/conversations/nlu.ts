@@ -77,7 +77,7 @@ const RESERVATION_CANCEL_REPLY =
 const RESERVATION_MODIFY_REPLY =
   "Claro. Te ayudo a modificarla. ¿Quieres cambiar fechas, datos de la mascota, observaciones o cancelar la reserva?";
 
-const CONVERSATION_RESET_REPLY = "Reiniciado.";
+export const CONVERSATION_RESET_REPLY = "Reiniciado.";
 
 const SHARED_FAQ_BYPASS_INTENTS: ConversationIntent[] = [
   "conversation_reset",
@@ -108,6 +108,13 @@ function hasAny(text: string, signals: string[]): boolean {
 
 function matchAny(text: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
+}
+
+export function isConversationResetCommand(message: string): boolean {
+  const normalized = normalizeText(message).replace(/^\/\s*/, "");
+  return matchAny(normalized, [
+    /^(reiniciar|reset|resetear|resetea|reinicia conversacion|reinicia la conversacion|empezar de nuevo|volver a empezar|borrar conversacion|limpiar conversacion|empezar otra vez|olvida lo anterior)$/,
+  ]);
 }
 
 function greetingPrefix(message: string): string | undefined {
@@ -243,11 +250,7 @@ export function classifyConversationIntent(message: string): ConversationNluResu
     return result("unknown", "low");
   }
 
-  if (
-    matchAny(normalized, [
-      /^(reiniciar|reset|resetea|reinicia conversacion|empezar de nuevo|volver a empezar|borrar conversacion|empezar otra vez|olvida lo anterior)$/,
-    ])
-  ) {
+  if (isConversationResetCommand(message)) {
     matchedSignals.push("conversation_reset");
     return result("conversation_reset");
   }

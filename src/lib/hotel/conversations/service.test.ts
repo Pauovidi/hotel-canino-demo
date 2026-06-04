@@ -529,6 +529,39 @@ describe("conversation service", () => {
     expect(inbound.conversation.events.some((event) => event.eventType === "auto_reply_skipped_human_mode")).toBe(true);
   });
 
+  it.each([
+    "reiniciar",
+    "/reiniciar",
+    "reset",
+    "Reiniciar",
+    "/reset",
+    "resetear",
+    "empezar de nuevo",
+    "limpiar conversación",
+  ])("answers %s with the global reset reply", async (body) => {
+    const store = new MemoryConversationStore();
+
+    const result = await handleInboundWhatsApp(
+      { from: "+34612345678", body },
+      store,
+      createStaticClientDirectory([
+        {
+          nombre: "Cliente QA",
+          telefonoNormalizado: "34612345678",
+          sheetName: "CLIENTES",
+        },
+      ]),
+    );
+
+    expect(result.botReply?.body).toBe("Reiniciado.");
+    expect(result.twiml).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?><Response><Message>Reiniciado.</Message></Response>',
+    );
+    expect(result.conversation.mode).toBe("bot");
+    expect(result.conversation.events.some((event) => event.eventType === "conversation_reset_requested")).toBe(true);
+    expect(result.conversation.events.some((event) => event.eventType === "nlu_classified")).toBe(false);
+  });
+
   it("resets only the current conversation context even from human mode", async () => {
     const store = new MemoryConversationStore();
     const created = await handleInboundWhatsApp(
@@ -569,27 +602,147 @@ describe("conversation service", () => {
     expect(reset.conversation.humanRequested).toBe(false);
     expect(reset.conversation.assignedAgent).toBeUndefined();
     expect(reset.conversation.pendingReservationProposal).toBeUndefined();
-    expect(reset.conversation.messages).toHaveLength(beforeReset?.messages.length ?? 0);
+    expect(reset.conversation.messages).toHaveLength((beforeReset?.messages.length ?? 0) + 1);
     expect(reset.conversation.lastMessagePreview).not.toContain("reiniciar");
-    expect(reset.botReply).toBeUndefined();
-    expect(reset.twiml).toContain("Reiniciado.");
+    expect(reset.botReply?.body).toBe("Reiniciado.");
+    expect(reset.twiml).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?><Response><Message>Reiniciado.</Message></Response>',
+    );
     expect(reset.conversation.unreadCount).toBe(0);
     expect(reset.conversation.events.some((event) => event.eventType === "conversation_reset_requested")).toBe(true);
     expect(reset.conversation.events.some((event) => event.eventType === "auto_reply_skipped_human_mode")).toBe(false);
   });
 
-  it("answers a fresh greeting naturally after a hidden reset", async () => {
+  it("resets an active reservation flow before continuing with normal routing", async () => {
+    const store = new MemoryConversationStore();
+
+    const start = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "quiero reservar" },
+      store,
+      createStaticClientDirectory([]),
+    );
+    const reset = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "reiniciar" },
+      store,
+      createStaticClientDirectory([]),
+    );
+
+    expect(start.conversation.reservationFlow?.status).toBe("asking_client_kind");
+    expect(reset.botReply?.body).toBe("Reiniciado.");
+    expect(reset.conversation.reservationFlow).toBeUndefined();
+    expect(reset.conversation.pendingReservationProposal).toBeUndefined();
+    expect(reset.conversation.pendingReservationContext).toBeUndefined();
+  });
+
+  it("resets an active modification flow before change-flow routing", async () => {
+    const store = new MemoryConversationStore();
+    const created = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "hola" },
+      store,
+    );
+    const now = new Date().toISOString();
+    await store.replaceConversation({
+      ...created.conversation,
+      pendingReservationModificationFlow: {
+        flowId: "mod_flow_reset",
+        conversationId: created.conversation.id,
+        phoneNormalized: created.conversation.phoneNormalized,
+        status: "collecting_change",
+        source: "whatsapp",
+        createdAt: now,
+        updatedAt: now,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    });
+
+    const reset = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "reiniciar" },
+      store,
+    );
+
+    expect(reset.botReply?.body).toBe("Reiniciado.");
+    expect(reset.conversation.pendingReservationModificationFlow).toBeUndefined();
+    expect(reset.conversation.events.some((event) => event.eventType === "reservation_modification_target_missing")).toBe(false);
+  });
+
+  it("resets an active cancellation flow before cancellation routing", async () => {
+    const store = new MemoryConversationStore();
+    const created = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "hola" },
+      store,
+    );
+    const now = new Date().toISOString();
+    await store.replaceConversation({
+      ...created.conversation,
+      pendingReservationCancellationFlow: {
+        flowId: "cancel_flow_reset",
+        conversationId: created.conversation.id,
+        phoneNormalized: created.conversation.phoneNormalized,
+        status: "awaiting_confirmation",
+        source: "whatsapp",
+        createdAt: now,
+        updatedAt: now,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    });
+
+    const reset = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "reiniciar" },
+      store,
+    );
+
+    expect(reset.botReply?.body).toBe("Reiniciado.");
+    expect(reset.conversation.pendingReservationCancellationFlow).toBeUndefined();
+    expect(reset.conversation.events.some((event) => event.eventType === "reservation_cancellation_confirmation_requested")).toBe(false);
+  });
+
+  it("answers a fresh greeting naturally after reset", async () => {
     const store = new MemoryConversationStore();
 
     await handleInboundWhatsApp({ from: "+34612345678", body: "reiniciar" }, store);
-    const greeting = await handleInboundWhatsApp({ from: "+34612345678", body: "Buenos días" }, store);
+    const greeting = await handleInboundWhatsApp({ from: "+34612345678", body: "hola buenas tardes" }, store);
 
-    expect(greeting.botReply?.body).toBe("Buenos días. ¿En qué podemos ayudarte?");
+    expect(greeting.botReply?.body).toBe("Buenas tardes. ¿En qué podemos ayudarte?");
+    expect(greeting.botReply?.body).not.toContain("Perdona, no te he entendido bien");
     expect(greeting.botReply?.body).not.toContain("horarios");
     expect(greeting.botReply?.body).not.toContain("visitas");
   });
 
-  it("does not let blocked clients reset out of human review", async () => {
+  it("answers a payment FAQ correctly after reset", async () => {
+    const store = new MemoryConversationStore();
+
+    await handleInboundWhatsApp({ from: "+34612345678", body: "reiniciar" }, store);
+    const payment = await handleInboundWhatsApp({ from: "+34612345678", body: "¿y el pago?" }, store);
+
+    expect(payment.botReply?.body).toContain("El pago se hace a la llegada");
+    expect(payment.botReply?.body).not.toContain("Perdona, no te he entendido bien");
+  });
+
+  it("starts reservation modification routing after reset without falling back to human", async () => {
+    const store = new MemoryConversationStore();
+
+    await handleInboundWhatsApp({ from: "+34612345678", body: "reiniciar" }, store);
+    const modification = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "quiero modificar una reserva" },
+      store,
+      createStaticClientDirectory([]),
+      {
+        now: () => new Date("2026-06-02T09:00:00.000Z"),
+        async listReservationRecords() {
+          return [];
+        },
+      },
+    );
+
+    expect(modification.conversation.mode).toBe("bot");
+    expect(modification.conversation.humanRequested).toBe(false);
+    expect(modification.conversation.pendingReservationModificationFlow).toBeDefined();
+    expect(modification.botReply?.body).toContain("No encuentro una reserva futura");
+    expect(modification.botReply?.body).not.toContain("Gracias, hemos recibido tu mensaje");
+    expect(modification.botReply?.body).not.toContain("Perdona, no te he entendido bien");
+  });
+
+  it("resets before blocked-client directory guardrails run", async () => {
     const store = new MemoryConversationStore();
     const directory = createStaticClientDirectory([
       {
@@ -605,12 +758,11 @@ describe("conversation service", () => {
       directory,
     );
 
-    expect(result.conversation.clientStatus).toBe("blocked");
-    expect(result.conversation.mode).toBe("human");
-    expect(result.botReply).toBeUndefined();
-    expect(result.twiml).toContain("revisamos tu solicitud");
-    expect(result.conversation.messages).toHaveLength(0);
-    expect(result.conversation.events.some((event) => event.eventType === "conversation_reset_requested")).toBe(false);
+    expect(result.conversation.mode).toBe("bot");
+    expect(result.botReply?.body).toBe("Reiniciado.");
+    expect(result.twiml).toContain("Reiniciado.");
+    expect(result.conversation.events.some((event) => event.eventType === "conversation_reset_requested")).toBe(true);
+    expect(result.conversation.events.some((event) => event.eventType === "client_directory_blocked")).toBe(false);
   });
 
   it("answers general information without human handoff", async () => {
