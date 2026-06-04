@@ -72,10 +72,10 @@ const RESERVATION_CONFIRM_REPLY =
   "Para confirmar una reserva necesitamos una propuesta válida revisada por el equipo. Si ya tienes una solicitud en marcha, te paso con una persona para confirmarla con seguridad.";
 
 const RESERVATION_CANCEL_REPLY =
-  "Para cancelar una reserva necesito localizarla primero. Envíame el identificador de reserva, el teléfono usado o el nombre del perro, y lo revisa una persona del equipo.";
+  "Claro. Te ayudo a cancelarla. Primero necesito localizar la reserva.";
 
 const RESERVATION_MODIFY_REPLY =
-  "Para cambiar fechas o datos de una reserva, envíame el identificador de reserva o el nombre del perro y las nuevas fechas. Lo revisa una persona del equipo antes de confirmar nada.";
+  "Claro. Te ayudo a modificarla. ¿Quieres cambiar fechas, datos de la mascota, observaciones o cancelar la reserva?";
 
 const CONVERSATION_RESET_REPLY = "Reiniciado.";
 
@@ -88,6 +88,8 @@ const SHARED_FAQ_BYPASS_INTENTS: ConversationIntent[] = [
   "reservation_start",
   "availability_request",
   "reservation_confirm",
+  "reservation_cancel",
+  "reservation_modify",
 ];
 
 function normalizeText(value: string): string {
@@ -310,7 +312,12 @@ export function classifyConversationIntent(message: string): ConversationNluResu
       "modificar",
       "cambio de fecha",
       "mover reserva",
-      "cambiar reserva",
+    ]) ||
+    matchAny(normalized, [
+      /\bcambiar\s+(?:una|la|mi)?\s*reserva\b/,
+      /\bcambiar\s+(?:fechas?|datos|entrada|salida|hora)\b/,
+      /\bnecesito\s+cambiar\b/,
+      /\bpuedo\s+cambiar\b/,
     ])
   ) {
     matchedSignals.push("reservation_modify");
@@ -573,9 +580,9 @@ export function buildConversationReplyPlan(message: string): ConversationReplyPl
     case "reservation_confirm":
       return { ...nlu, reply: RESERVATION_CONFIRM_REPLY, handoff: true, source: "conversation_nlu" };
     case "reservation_cancel":
-      return { ...nlu, reply: RESERVATION_CANCEL_REPLY, handoff: true, source: "conversation_nlu" };
+      return { ...nlu, reply: RESERVATION_CANCEL_REPLY, handoff: false, source: "conversation_nlu" };
     case "reservation_modify":
-      return { ...nlu, reply: RESERVATION_MODIFY_REPLY, handoff: true, source: "conversation_nlu" };
+      return { ...nlu, reply: RESERVATION_MODIFY_REPLY, handoff: false, source: "conversation_nlu" };
     case "conversation_reset":
       return { ...nlu, reply: CONVERSATION_RESET_REPLY, handoff: false, source: "conversation_nlu" };
     case "faq_hours":

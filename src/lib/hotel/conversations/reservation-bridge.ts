@@ -41,6 +41,7 @@ const MONTHS: Record<string, number> = {
 export interface WhatsAppReservationBridgeDeps {
   now?: () => Date;
   buildSheetAdapter?: () => Promise<SheetAdapter>;
+  listReservationRecords?: () => Promise<ReservationRecord[]>;
   upsertReservationRecord?: (reservation: ReservationRecord) => Promise<void>;
   upsertClientFromConfirmedReservation?: (
     input: ClientUpsertFromConfirmedReservationInput,

@@ -115,6 +115,67 @@ export interface PendingReservationContext {
   createdFromMessageId: string;
 }
 
+export type PendingReservationChangeStatus =
+  | "identifying_reservation"
+  | "collecting_change"
+  | "awaiting_confirmation"
+  | "confirmed"
+  | "cancelled"
+  | "manual_review";
+
+export interface PendingReservationModificationFlow {
+  flowId: string;
+  conversationId: string;
+  phoneNormalized: string;
+  status: PendingReservationChangeStatus;
+  source: "whatsapp";
+  targetReservationId?: string;
+  candidateReservationIds?: string[];
+  petName?: string;
+  currentCheckInDate?: string;
+  currentCheckInTime?: string;
+  currentCheckOutDate?: string;
+  currentCheckOutTime?: string;
+  requestedCheckInDate?: string;
+  requestedCheckInTime?: string;
+  requestedCheckOutDate?: string;
+  requestedCheckOutTime?: string;
+  requestedChanges?: Array<"dates" | "times" | "pet" | "notes" | "contact" | "cancellation">;
+  requestedNotes?: string;
+  availabilityStatus?: "pending" | "available" | "unavailable";
+  oldPrice?: number;
+  newPrice?: number;
+  priceDelta?: number;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+  failureReason?: string;
+}
+
+export interface PendingReservationCancellationFlow {
+  flowId: string;
+  conversationId: string;
+  phoneNormalized: string;
+  status:
+    | "identifying_reservation"
+    | "awaiting_confirmation"
+    | "confirmed"
+    | "cancelled"
+    | "manual_review";
+  source: "whatsapp";
+  targetReservationId?: string;
+  candidateReservationIds?: string[];
+  petName?: string;
+  checkInDate?: string;
+  checkInTime?: string;
+  checkOutDate?: string;
+  checkOutTime?: string;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+  failureReason?: string;
+}
+
 export interface Conversation {
   id: string;
   phoneE164: string;
@@ -150,6 +211,8 @@ export interface Conversation {
   clientDirectoryUpsertWarning?: string;
   pendingReservationProposal?: PendingReservationProposal;
   pendingReservationContext?: PendingReservationContext;
+  pendingReservationModificationFlow?: PendingReservationModificationFlow;
+  pendingReservationCancellationFlow?: PendingReservationCancellationFlow;
   reservationFlow?: ConversationReservationFlow;
   archivedAt?: string;
   archivedBy?: string;

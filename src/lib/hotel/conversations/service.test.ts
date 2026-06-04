@@ -769,7 +769,7 @@ describe("conversation service", () => {
     );
 
     expect(result.conversation.mode).toBe("bot");
-    expect(result.botReply?.body).toContain("cambios o cancelaciones");
+    expect(result.botReply?.body).toContain("No encuentro una reserva futura");
     expect(result.botReply?.body).not.toContain("cancelada correctamente");
   });
 

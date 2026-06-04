@@ -97,6 +97,15 @@ function mapSource(record: ReservationRecord): EntryLogRecord["source"] {
 }
 
 function mapAction(record: ReservationRecord): EntryLogRecord["action"] {
+  if (
+    record.status === "confirmada" &&
+    record.workflowTrail?.some((step) =>
+      step.reason?.toLowerCase().includes("modificacion conversacional"),
+    )
+  ) {
+    return "modificada";
+  }
+
   if (record.status === "confirmada") {
     return "confirmada";
   }

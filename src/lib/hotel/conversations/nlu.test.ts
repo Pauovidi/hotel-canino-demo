@@ -193,7 +193,6 @@ describe("conversation NLU", () => {
     ["¿qué vacunas necesita?", "faq_vaccines", "requisitos de alojamiento"],
     ["¿dónde estáis?", "faq_location", "Camino de Santiago, 58"],
     ["¿hay peluquería?", "faq_services", "servicios complementarios"],
-    ["quiero cambiar la reserva", "faq_cancellation", "cambios o cancelaciones"],
   ] as const)("answers shared WhatsApp FAQ %s", (message, intent, expectedCopy) => {
     const plan = buildConversationReplyPlan(message);
 
@@ -202,6 +201,15 @@ describe("conversation NLU", () => {
     expect(plan.handoff).toBe(false);
     expect(plan.reply).toContain(expectedCopy);
     expect(plan.reply).not.toContain("Perdona, no te he entendido bien");
+  });
+
+  it("routes reservation changes to the operational modification flow", () => {
+    const plan = buildConversationReplyPlan("quiero cambiar la reserva");
+
+    expect(plan.intent).toBe("reservation_modify");
+    expect(plan.source).toBe("conversation_nlu");
+    expect(plan.handoff).toBe(false);
+    expect(plan.reply).toContain("Te ayudo a modificarla");
   });
 
   it("uses the covered-question fallback for concrete unknown questions", () => {

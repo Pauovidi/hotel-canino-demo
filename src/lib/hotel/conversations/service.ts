@@ -16,6 +16,11 @@ import {
   confirmPendingReservationProposal,
   type WhatsAppReservationBridgeDeps,
 } from "./reservation-bridge";
+import {
+  advanceReservationChangeFlow,
+  isReservationChangeFlowActive,
+  startReservationChangeFlow,
+} from "./reservation-change-flow";
 import { isConcreteKnowledgeQuestion } from "@/lib/hotel/knowledge/faq";
 import {
   advanceReservationFlow,
@@ -461,6 +466,45 @@ function buildReservationFlowResumePrompt(record: ConversationRecord): string | 
 function appendReservationResume(reply: string, record: ConversationRecord): string {
   const resume = buildReservationFlowResumePrompt(record);
   return resume ? `${reply}\n\n${resume}` : reply;
+}
+
+async function sendReservationChangeOutcome(input: {
+  store: ConversationStore;
+  outcome: Awaited<ReturnType<typeof startReservationChangeFlow>>;
+  inbound: Message;
+}): Promise<InboundResult> {
+  await input.store.replaceConversation(input.outcome.conversation);
+  await input.store.addEvent(
+    createEvent(
+      input.outcome.conversation.id,
+      input.outcome.eventType,
+      input.outcome.eventPayload,
+    ),
+  );
+  if (input.outcome.handoff) {
+    await input.store.addEvent(
+      createEvent(input.outcome.conversation.id, "human_requested", {
+        matchedFrom: "reservation_change_flow",
+        reason: input.outcome.eventType,
+      }),
+    );
+  }
+  const botReply = await input.store.addMessage(
+    createMessage({
+      conversationId: input.outcome.conversation.id,
+      direction: "outbound",
+      senderType: "bot",
+      body: input.outcome.reply,
+    }),
+  );
+
+  return {
+    conversation:
+      (await input.store.getById(input.outcome.conversation.id)) ?? input.outcome.conversation,
+    inbound: input.inbound,
+    botReply,
+    twiml: buildTwilioMessageResponse(input.outcome.reply),
+  };
 }
 
 function shouldInterruptReservationFlowWithFaq(
@@ -929,6 +973,8 @@ export async function handleInboundWhatsApp(
       assignedAgent: undefined,
       pendingReservationProposal: undefined,
       pendingReservationContext: undefined,
+      pendingReservationModificationFlow: undefined,
+      pendingReservationCancellationFlow: undefined,
       reservationFlow: undefined,
       unreadCount: 0,
       requiresManualReview:
@@ -942,6 +988,8 @@ export async function handleInboundWhatsApp(
         hiddenCommand: true,
         clearedPendingProposal: Boolean(latest.pendingReservationProposal),
         clearedPendingContext: Boolean(latest.pendingReservationContext),
+        clearedPendingModificationFlow: Boolean(latest.pendingReservationModificationFlow),
+        clearedPendingCancellationFlow: Boolean(latest.pendingReservationCancellationFlow),
         clearedReservationFlow: Boolean(latest.reservationFlow),
       }),
     );
@@ -1004,6 +1052,34 @@ export async function handleInboundWhatsApp(
   }
 
   const latestBeforeFlow = (await store.getById(freshWithClient.id)) ?? freshWithClient;
+  if (isReservationChangeFlowActive(latestBeforeFlow)) {
+    const changePlan = buildConversationReplyPlan(safeBody);
+    const outcome = await advanceReservationChangeFlow({
+      conversation: latestBeforeFlow,
+      message: safeBody,
+      replyPlan: changePlan,
+      deps: reservationBridgeDeps,
+    });
+
+    if (outcome) {
+      await store.addEvent(
+        createEvent(latestBeforeFlow.id, "nlu_classified", {
+          intent: changePlan.intent,
+          confidence: changePlan.confidence,
+          matchedSignals: changePlan.matchedSignals,
+          slots: changePlan.slots,
+          source: changePlan.source,
+          activeReservationChangeFlow: true,
+        }),
+      );
+      return sendReservationChangeOutcome({
+        store,
+        outcome,
+        inbound,
+      });
+    }
+  }
+
   if (isReservationFlowActive(latestBeforeFlow)) {
     const flowInterruptionPlan = buildConversationReplyPlan(safeBody);
     if (shouldInterruptReservationFlowWithFaq(latestBeforeFlow, safeBody, flowInterruptionPlan)) {
@@ -1287,6 +1363,21 @@ export async function handleInboundWhatsApp(
       botReply,
       twiml: buildTwilioMessageResponse(flow.reply),
     };
+  }
+
+  if (replyPlan.intent === "reservation_modify" || replyPlan.intent === "reservation_cancel") {
+    const outcome = await startReservationChangeFlow({
+      conversation: (await store.getById(freshWithClient.id)) ?? latestBeforePlan,
+      message: safeBody,
+      replyPlan,
+      kind: replyPlan.intent === "reservation_cancel" ? "cancellation" : "modification",
+      deps: reservationBridgeDeps,
+    });
+    return sendReservationChangeOutcome({
+      store,
+      outcome,
+      inbound,
+    });
   }
 
   if (replyPlan.intent === "reservation_confirm") {

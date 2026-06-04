@@ -161,6 +161,7 @@ function makeBridgeDeps() {
   const counters = {
     checks: 0,
     writes: 0,
+    cancellations: 0,
     reservations: [] as ReservationRecord[],
     clientUpserts: [] as ClientUpsertFromConfirmedReservationInput[],
   };
@@ -217,6 +218,7 @@ function makeBridgeDeps() {
       };
     },
     async cancelReservation(reservationId: string) {
+      counters.cancellations += 1;
       return {
         ok: true,
         reservationId,
@@ -236,7 +238,18 @@ function makeBridgeDeps() {
         return adapter;
       },
       async upsertReservationRecord(reservation: ReservationRecord) {
-        counters.reservations.push(structuredClone(reservation));
+        const next = structuredClone(reservation);
+        const existingIndex = counters.reservations.findIndex(
+          (item) => item.reservationId === next.reservationId,
+        );
+        if (existingIndex >= 0) {
+          counters.reservations[existingIndex] = next;
+        } else {
+          counters.reservations.push(next);
+        }
+      },
+      async listReservationRecords() {
+        return structuredClone(counters.reservations);
       },
       async upsertClientFromConfirmedReservation(input: ClientUpsertFromConfirmedReservationInput) {
         counters.clientUpserts.push(structuredClone(input));
@@ -485,6 +498,104 @@ async function runDirectSmoke() {
     entryLogAffected: entryLog ? "yes" : "no",
     clientUpsertAffected: counters.clientUpserts.length > 0 ? "yes" : "no",
     reply: summarizeReply(confirmed.botReply?.body),
+  });
+
+  await handleInboundWhatsApp(
+    {
+      from: "whatsapp:+34600009993",
+      to: SANDBOX_TO,
+      body: "quiero modificar una reserva",
+      messageSid: "SM_QA_modify_start",
+    },
+    store,
+    knownDirectory,
+    deps,
+  );
+  const modificationProposal = await handleInboundWhatsApp(
+    {
+      from: "whatsapp:+34600009993",
+      to: SANDBOX_TO,
+      body: "del 28 al 30 de diciembre de 2026",
+      messageSid: "SM_QA_modify_dates",
+    },
+    store,
+    knownDirectory,
+    deps,
+  );
+  const modificationConfirmed = await handleInboundWhatsApp(
+    {
+      from: "whatsapp:+34600009993",
+      to: SANDBOX_TO,
+      body: "sí",
+      messageSid: "SM_QA_modify_confirm",
+    },
+    store,
+    knownDirectory,
+    deps,
+  );
+  const modifiedReservation = counters.reservations[0];
+  rows.push({
+    label: "reservation-modification-bridge",
+    status:
+      modificationProposal.conversation.pendingReservationModificationFlow?.status ===
+        "awaiting_confirmation" &&
+      modificationConfirmed.conversation.pendingReservationModificationFlow?.status ===
+        "confirmed" &&
+      counters.writes === 2 &&
+      counters.cancellations === 1 &&
+      modifiedReservation?.checkInDate === "2026-12-28" &&
+      buildEntryLogRecord(modifiedReservation).action === "modificada"
+        ? "OK"
+        : "FAIL",
+    intent: "reservation_modify",
+    mode: modificationConfirmed.conversation.mode,
+    twiml: isTwiml(modificationConfirmed.twiml) ? "valid" : "invalid",
+    events: modificationConfirmed.conversation.events.map((event) => event.eventType).join(","),
+    entryLogAffected: "yes",
+    reply: summarizeReply(modificationConfirmed.botReply?.body),
+  });
+
+  const cancellationStart = await handleInboundWhatsApp(
+    {
+      from: "whatsapp:+34600009993",
+      to: SANDBOX_TO,
+      body: "quiero cancelar una reserva",
+      messageSid: "SM_QA_cancel_start",
+    },
+    store,
+    knownDirectory,
+    deps,
+  );
+  const cancellationConfirmed = await handleInboundWhatsApp(
+    {
+      from: "whatsapp:+34600009993",
+      to: SANDBOX_TO,
+      body: "sí por favor",
+      messageSid: "SM_QA_cancel_confirm",
+    },
+    store,
+    knownDirectory,
+    deps,
+  );
+  const cancelledReservation = counters.reservations[0];
+  rows.push({
+    label: "reservation-cancellation-bridge",
+    status:
+      cancellationStart.conversation.pendingReservationCancellationFlow?.status ===
+        "awaiting_confirmation" &&
+      cancellationConfirmed.conversation.pendingReservationCancellationFlow?.status ===
+        "confirmed" &&
+      counters.cancellations === 2 &&
+      cancelledReservation?.status === "cancelada" &&
+      buildEntryLogRecord(cancelledReservation).action === "cancelada"
+        ? "OK"
+        : "FAIL",
+    intent: "reservation_cancel",
+    mode: cancellationConfirmed.conversation.mode,
+    twiml: isTwiml(cancellationConfirmed.twiml) ? "valid" : "invalid",
+    events: cancellationConfirmed.conversation.events.map((event) => event.eventType).join(","),
+    entryLogAffected: "yes",
+    reply: summarizeReply(cancellationConfirmed.botReply?.body),
   });
 
   const humanFirst = await handleInboundWhatsApp(
