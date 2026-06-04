@@ -298,6 +298,33 @@ describe("conversations security", () => {
     });
   });
 
+  it("returns controlled JSON when archive persistence fails", async () => {
+    tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-conversation-archive-store-failure-"));
+    process.env.HOTEL_CONVERSATIONS_STORE_PATH = tempDir;
+    process.env.HOTEL_PANEL_USERNAME = "admin";
+    process.env.HOTEL_PANEL_PASSWORD = "correct-password";
+    resetConversationStoreForTests();
+
+    const authorization = `Basic ${Buffer.from("admin:correct-password").toString("base64")}`;
+    const response = await postConversationArchive(
+      new Request("https://example.test/api/conversations/id/archive", {
+        method: "POST",
+        headers: { authorization, "content-type": "application/json" },
+        body: JSON.stringify({ reason: "qa_cleanup" }),
+      }),
+      { params: Promise.resolve({ id: "conv_missing_due_store_failure" }) },
+    );
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Content-Type")).toContain("application/json");
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    expect(json).toEqual({
+      ok: false,
+      error: "No se pudo archivar la conversación.",
+    });
+  });
+
   it("enforces the manual reply character limit on server-side routes", () => {
     const routeFiles = [
       "src/app/api/conversations/[id]/reply/route.ts",

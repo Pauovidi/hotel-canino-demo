@@ -14,6 +14,16 @@ const NO_STORE_HEADERS = {
   Pragma: "no-cache",
 };
 
+function safeArchiveError(error: unknown) {
+  return {
+    errorName: error instanceof Error ? error.name : "UnknownError",
+    safeErrorCode:
+      error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code).slice(0, 80)
+        : undefined,
+  };
+}
+
 export async function POST(
   request: Request,
   context: { params: Promise<{ id: string }> },
@@ -37,7 +47,11 @@ export async function POST(
       );
     }
 
-    throw error;
+    console.error("conversations_store_archive_failed", safeArchiveError(error));
+    return NextResponse.json(
+      { ok: false, error: "No se pudo archivar la conversación." },
+      { status: 503, headers: NO_STORE_HEADERS },
+    );
   }
 }
 
@@ -63,6 +77,10 @@ export async function DELETE(
       );
     }
 
-    throw error;
+    console.error("conversations_store_restore_failed", safeArchiveError(error));
+    return NextResponse.json(
+      { ok: false, error: "No se pudo restaurar la conversación." },
+      { status: 503, headers: NO_STORE_HEADERS },
+    );
   }
 }

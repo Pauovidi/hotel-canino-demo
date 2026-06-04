@@ -25,6 +25,9 @@ const CONVERSATION_HEADERS = [
   "snapshot_json",
 ] as const;
 const DEFAULT_CACHE_TTL_MS = 4500;
+const SNAPSHOT_CHUNK_SIZE = 32_000;
+const MIN_SAVE_COLUMN_COUNT = 26;
+const LOAD_RANGE = "A:ZZ";
 
 interface SheetsContext {
   client: sheets_v4.Sheets;
@@ -78,6 +81,31 @@ function readCell(row: unknown[], index: number): string {
   return String(row[index] ?? "").trim();
 }
 
+function columnName(index: number): string {
+  let value = index + 1;
+  let name = "";
+
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    name = String.fromCharCode(65 + remainder) + name;
+    value = Math.floor((value - 1) / 26);
+  }
+
+  return name;
+}
+
+function chunkString(value: string): string[] {
+  const chunks: string[] = [];
+  for (let index = 0; index < value.length; index += SNAPSHOT_CHUNK_SIZE) {
+    chunks.push(value.slice(index, index + SNAPSHOT_CHUNK_SIZE));
+  }
+  return chunks.length > 0 ? chunks : [""];
+}
+
+function snapshotJsonFromRow(row: unknown[]): string {
+  return row.slice(4).map((cell) => String(cell ?? "")).join("").trim();
+}
+
 function safeErrorCode(error: unknown): string | undefined {
   return error && typeof error === "object" && "code" in error
     ? String((error as { code?: unknown }).code).slice(0, 80)
@@ -93,7 +121,7 @@ function parseRecord(row: unknown[], rowNumber: number): ConversationRecord | un
   const rowPhoneNormalized = readCell(row, 1);
   const rowUpdatedAt = readCell(row, 2);
   const rowArchivedAt = readCell(row, 3);
-  const rawJson = readCell(row, 4);
+  const rawJson = snapshotJsonFromRow(row);
   if (!rawJson) {
     console.warn("conversation_store_row_skipped", {
       provider: "google_sheets",
@@ -437,7 +465,7 @@ export class GoogleSheetsConversationStore implements ConversationStore {
     try {
       const response = await context.client.spreadsheets.values.get({
         spreadsheetId: context.spreadsheetId,
-        range: quoteSheetRange(this.sheetName, "A:E"),
+        range: quoteSheetRange(this.sheetName, LOAD_RANGE),
         majorDimension: "ROWS",
         valueRenderOption: "UNFORMATTED_VALUE",
       });
@@ -456,6 +484,14 @@ export class GoogleSheetsConversationStore implements ConversationStore {
       this.setCachedSnapshot(snapshot);
       return snapshot;
     } catch (error) {
+      console.error("conversations_store_load_failed", {
+        provider: "google_sheets",
+        sheetName: this.sheetName,
+        operation: "values.get",
+        range: LOAD_RANGE,
+        errorName: error instanceof Error ? error.name : "UnknownError",
+        safeErrorCode: safeErrorCode(error),
+      });
       if (this.cachedSnapshot) {
         console.warn("conversation_store_load_failed_using_stale_cache", {
           provider: "google_sheets",
@@ -476,22 +512,42 @@ export class GoogleSheetsConversationStore implements ConversationStore {
       conversations: dedupeConversationRecords(snapshot.conversations),
       updatedAt: this.nowIso(),
     };
+    const rows = normalizedSnapshot.conversations.map((record) => {
+      const chunks = chunkString(JSON.stringify(record));
+      return [
+        record.id,
+        record.phoneNormalized,
+        record.updatedAt,
+        record.archivedAt ?? "",
+        ...chunks,
+      ];
+    });
+    const maxSnapshotChunks = Math.max(1, ...rows.map((row) => row.length - 4));
+    const baseHeaders = [
+      ...CONVERSATION_HEADERS,
+      ...Array.from({ length: maxSnapshotChunks - 1 }, (_, index) => `snapshot_json_${index + 2}`),
+    ];
+    const width = Math.max(baseHeaders.length, MIN_SAVE_COLUMN_COUNT);
+    const headers = [
+      ...baseHeaders,
+      ...Array.from({ length: Math.max(0, width - baseHeaders.length) }, (_, index) => (
+        `snapshot_json_${baseHeaders.length - 3 + index}`
+      )),
+    ];
     const values = [
-      [...CONVERSATION_HEADERS],
-      ...normalizedSnapshot.conversations.map((record) => [
-      record.id,
-      record.phoneNormalized,
-      record.updatedAt,
-      record.archivedAt ?? "",
-      JSON.stringify(record),
+      headers,
+      ...rows.map((row) => [
+        ...row,
+        ...Array.from({ length: Math.max(0, width - row.length) }, () => ""),
       ]),
     ];
+    const endColumn = columnName(width - 1);
 
     let previousRowCount = 0;
     try {
       const existing = await context.client.spreadsheets.values.get({
         spreadsheetId: context.spreadsheetId,
-        range: quoteSheetRange(this.sheetName, "A:E"),
+        range: quoteSheetRange(this.sheetName, LOAD_RANGE),
         majorDimension: "ROWS",
         valueRenderOption: "UNFORMATTED_VALUE",
       });
@@ -504,14 +560,29 @@ export class GoogleSheetsConversationStore implements ConversationStore {
       });
     }
 
-    await context.client.spreadsheets.values.update({
-      spreadsheetId: context.spreadsheetId,
-      range: quoteSheetRange(this.sheetName, "A1:E"),
-      valueInputOption: "RAW",
-      requestBody: {
-        values,
-      },
-    });
+    try {
+      await context.client.spreadsheets.values.update({
+        spreadsheetId: context.spreadsheetId,
+        range: quoteSheetRange(this.sheetName, `A1:${endColumn}`),
+        valueInputOption: "RAW",
+        requestBody: {
+          values,
+        },
+      });
+    } catch (error) {
+      console.error("conversations_store_save_failed", {
+        provider: "google_sheets",
+        sheetName: this.sheetName,
+        operation: "values.update",
+        range: `A1:${endColumn}`,
+        rowCount: values.length,
+        columnCount: width,
+        maxSnapshotChunks,
+        errorName: error instanceof Error ? error.name : "UnknownError",
+        safeErrorCode: safeErrorCode(error),
+      });
+      throw error;
+    }
 
     if (previousRowCount > values.length) {
       try {
@@ -519,7 +590,7 @@ export class GoogleSheetsConversationStore implements ConversationStore {
           spreadsheetId: context.spreadsheetId,
           range: quoteSheetRange(
             this.sheetName,
-            `A${values.length + 1}:E${previousRowCount}`,
+            `A${values.length + 1}:${endColumn}${previousRowCount}`,
           ),
         });
       } catch (error) {

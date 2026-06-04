@@ -154,6 +154,7 @@ describe("conversation panel operational UI", () => {
     expect(source).toContain("conversationMatchesMode");
     expect(source).toContain("suppressPollError");
     expect(source).toContain("refreshAbortRef.current?.abort()");
+    expect(source).toContain("refreshSequenceRef.current += 1");
     expect(source).toContain("timeline.scrollHeight <= timeline.clientHeight");
     expect(source).toContain("left.createdAt.localeCompare(right.createdAt)");
   });

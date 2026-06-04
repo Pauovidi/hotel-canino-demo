@@ -297,6 +297,10 @@ export async function POST(request: Request) {
     return twilioXmlResponse(twiml);
   } catch (error) {
     console.error("twilio_webhook_store_failed", safeErrorPayload(error));
+    console.warn("twilio_degraded_due_to_conversation_store", {
+      hasClientIdentity: isStrongClientIdentity(clientIdentity.identity),
+      ...safeErrorPayload(error),
+    });
     return twilioXmlResponse(buildStoreFailureTwiml(body, error, clientIdentity.identity));
   }
 }

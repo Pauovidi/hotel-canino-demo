@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createStaticClientDirectory } from "@/lib/hotel/clients";
 import { GoogleSheetsConversationStore } from "./google-sheets-store";
 import {
@@ -9,7 +9,7 @@ import {
 } from "./service";
 import type { Conversation } from "./types";
 
-function createFakeSheetsContext(options: { failNextUpdate?: boolean } = {}) {
+function createFakeSheetsContext(options: { failNextUpdate?: boolean; failNextUpdateCode?: number } = {}) {
   const sheets = new Map<string, unknown[][]>();
   const calls = {
     spreadsheetsGet: 0,
@@ -79,7 +79,9 @@ function createFakeSheetsContext(options: { failNextUpdate?: boolean } = {}) {
           calls.valuesUpdate += 1;
           if (failNextUpdate) {
             failNextUpdate = false;
-            throw new Error("mock values.update failed");
+            throw Object.assign(new Error("mock values.update failed"), {
+              code: options.failNextUpdateCode,
+            });
           }
           const sheetName = sheetNameFromRange(request.range);
           const rows = sheets.get(sheetName) ?? [];
@@ -127,6 +129,10 @@ function conversation(overrides: Partial<Conversation> = {}): Conversation {
 }
 
 describe("GoogleSheetsConversationStore", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("persists conversations across store instances", async () => {
     const fake = createFakeSheetsContext();
     const firstStore = new GoogleSheetsConversationStore("CONVERSATIONS", {
@@ -158,7 +164,7 @@ describe("GoogleSheetsConversationStore", () => {
       unreadCount: 1,
     });
     expect(conversations[0].messages).toHaveLength(1);
-    expect(fake.sheets.get("CONVERSATIONS")?.[0]).toEqual([
+    expect(fake.sheets.get("CONVERSATIONS")?.[0].slice(0, 5)).toEqual([
       "id",
       "phone_normalized",
       "updated_at",
@@ -319,6 +325,119 @@ describe("GoogleSheetsConversationStore", () => {
       archived: 0,
     });
     await expect(store.list({ query: "34600000000" })).resolves.toHaveLength(1);
+  });
+
+  it("splits large conversation snapshots across cells and restores them", async () => {
+    const fake = createFakeSheetsContext();
+    const firstStore = new GoogleSheetsConversationStore("CONVERSATIONS", {
+      createSheetsClient: fake.createSheetsClient,
+      now: () => new Date("2026-06-02T10:00:00.000Z"),
+    });
+
+    await firstStore.upsertConversation(conversation());
+    await firstStore.addMessage({
+      id: "msg_google_sheets_large_snapshot",
+      conversationId: "conv_google_sheets_qa",
+      direction: "inbound",
+      senderType: "user",
+      transport: "whatsapp",
+      body: "Mensaje largo ".repeat(6000),
+      createdAt: "2026-06-02T10:01:00.000Z",
+    });
+
+    const rows = fake.sheets.get("CONVERSATIONS") ?? [];
+    const header = rows[0];
+    const persisted = rows[1];
+    const snapshotChunks = persisted.slice(4).map((cell) => String(cell));
+
+    expect(header).toContain("snapshot_json_2");
+    expect(snapshotChunks.length).toBeGreaterThan(1);
+    expect(snapshotChunks.every((chunk) => chunk.length <= 32_000)).toBe(true);
+
+    const secondStore = new GoogleSheetsConversationStore("CONVERSATIONS", {
+      createSheetsClient: fake.createSheetsClient,
+      now: () => new Date("2026-06-02T10:02:00.000Z"),
+    });
+    const conversations = await secondStore.list();
+
+    expect(conversations).toHaveLength(1);
+    expect(conversations[0].messages[0].body).toContain("Mensaje largo");
+    expect(conversations[0].messages[0].body.length).toBeGreaterThan(50_000);
+  });
+
+  it("loads legacy rows with chunked snapshot_json columns", async () => {
+    const fake = createFakeSheetsContext();
+    const snapshot = JSON.stringify({
+      ...conversation({
+        id: "conv_chunked_legacy",
+        phoneNormalized: "34600000007",
+      }),
+      messages: [
+        {
+          id: "msg_chunked_legacy",
+          conversationId: "conv_chunked_legacy",
+          direction: "inbound",
+          senderType: "user",
+          transport: "whatsapp",
+          body: "Hola desde chunk",
+          createdAt: "2026-06-02T10:01:00.000Z",
+        },
+      ],
+    });
+    fake.sheets.set("CONVERSATIONS", [
+      [
+        "id",
+        "phone_normalized",
+        "updated_at",
+        "archived_at",
+        "snapshot_json",
+        "snapshot_json_2",
+      ],
+      [
+        "conv_chunked_legacy",
+        "34600000007",
+        "2026-06-02T10:00:00.000Z",
+        "",
+        snapshot.slice(0, 20),
+        snapshot.slice(20),
+      ],
+    ]);
+    const store = new GoogleSheetsConversationStore("CONVERSATIONS", {
+      createSheetsClient: fake.createSheetsClient,
+      now: () => new Date("2026-06-02T10:03:00.000Z"),
+    });
+
+    const conversations = await store.list();
+
+    expect(conversations).toHaveLength(1);
+    expect(conversations[0].id).toBe("conv_chunked_legacy");
+    expect(conversations[0].messages[0].body).toBe("Hola desde chunk");
+  });
+
+  it("propagates Google Sheets 400 save failures with sanitized diagnostics", async () => {
+    const fake = createFakeSheetsContext({ failNextUpdateCode: 400 });
+    fake.sheets.set("CONVERSATIONS", [
+      ["id", "phone_normalized", "updated_at", "archived_at", "snapshot_json"],
+    ]);
+    const store = new GoogleSheetsConversationStore("CONVERSATIONS", {
+      createSheetsClient: fake.createSheetsClient,
+      now: () => new Date("2026-06-02T10:00:00.000Z"),
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    fake.failNextUpdate();
+    await expect(store.upsertConversation(conversation())).rejects.toMatchObject({
+      code: 400,
+    });
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      "conversations_store_save_failed",
+      expect.objectContaining({
+        provider: "google_sheets",
+        operation: "values.update",
+        safeErrorCode: "400",
+      }),
+    );
   });
 
   it("ignores empty and structurally incomplete rows without blocking valid conversations", async () => {

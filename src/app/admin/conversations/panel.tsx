@@ -1004,7 +1004,7 @@ export function ConversationsPanel({
                   .filter((item) =>
                     "eventType" in item
                       ? shouldShowTimelineEvent(item.eventType)
-                      : !isOperationalCommandBody(item.body),
+                      : true,
                   )
                   .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
                   .map((item) =>

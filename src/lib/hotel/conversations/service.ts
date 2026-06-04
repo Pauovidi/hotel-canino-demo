@@ -674,14 +674,14 @@ export async function handleGlobalResetCommand(
   try {
     const conversation = await getOrCreateConversation(store, payload.from, payload.displayName);
     const safeBody = redactConversationSensitiveText(payload.body);
-    const virtualInbound = createMessage({
+    const inbound = await store.addMessage(createMessage({
       conversationId: conversation.id,
       direction: "inbound",
       senderType: "user",
       externalMessageSid: payload.messageSid,
       body: safeBody,
       rawPayload: sanitizeConversationPayload(payload.rawPayload),
-    });
+    }));
     const latest = (await store.getById(conversation.id)) ?? conversation;
     const resetRecord = buildResetRecord(latest);
     await store.replaceConversation(resetRecord);
@@ -708,7 +708,7 @@ export async function handleGlobalResetCommand(
 
     return {
       conversation: (await store.getById(conversation.id)) ?? resetRecord,
-      inbound: virtualInbound,
+      inbound,
       botReply,
       twiml: buildTwilioMessageResponse(CONVERSATION_RESET_REPLY),
     };

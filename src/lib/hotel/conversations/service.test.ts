@@ -645,7 +645,8 @@ describe("conversation service", () => {
     expect(reset.conversation.humanRequested).toBe(false);
     expect(reset.conversation.assignedAgent).toBeUndefined();
     expect(reset.conversation.pendingReservationProposal).toBeUndefined();
-    expect(reset.conversation.messages).toHaveLength((beforeReset?.messages.length ?? 0) + 1);
+    expect(reset.conversation.messages).toHaveLength((beforeReset?.messages.length ?? 0) + 2);
+    expect(reset.conversation.messages.some((message) => message.body === "reiniciar")).toBe(true);
     expect(reset.conversation.lastMessagePreview).not.toContain("reiniciar");
     expect(reset.botReply?.body).toBe("Reiniciado.");
     expect(reset.twiml).toBe(
