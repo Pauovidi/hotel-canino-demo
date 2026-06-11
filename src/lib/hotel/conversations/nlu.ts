@@ -1,5 +1,11 @@
 import type { FaqIntentId } from "@/lib/hotel/faq";
 import { matchFaqIntent } from "@/lib/hotel/knowledge/faq";
+import {
+  analyzeConversationIntelligence,
+  buildNeedPetCountForQuoteReply,
+  buildPriceQuoteReply,
+  buildVagueDatePrecisionReply,
+} from "./conversation-intelligence";
 
 export type ConversationIntent =
   | "greeting"
@@ -16,6 +22,7 @@ export type ConversationIntent =
   | "faq_services"
   | "faq_cancellation"
   | "faq_contact"
+  | "price_quote"
   | "availability_request"
   | "reservation_start"
   | "reservation_confirm"
@@ -35,6 +42,12 @@ export interface ConversationSlots {
   email?: string;
   reservationId?: string;
   requestedTopic?: string;
+  petCount?: number;
+  petBreeds?: string[];
+  checkInDate?: string;
+  checkOutDate?: string;
+  vagueDateMention?: string;
+  needsExactDate?: boolean;
 }
 
 export interface ConversationNluResult {
@@ -85,6 +98,7 @@ const SHARED_FAQ_BYPASS_INTENTS: ConversationIntent[] = [
   "general_information",
   "human_handoff",
   "stay_status_question",
+  "price_quote",
   "reservation_start",
   "availability_request",
   "reservation_confirm",
@@ -235,7 +249,17 @@ function extractSlots(rawText: string, normalized: string): ConversationSlots {
 
 export function classifyConversationIntent(message: string): ConversationNluResult {
   const normalized = normalizeText(message);
-  const slots = extractSlots(message, normalized);
+  const intelligence = analyzeConversationIntelligence(message);
+  const baseSlots = extractSlots(message, normalized);
+  const slots: ConversationSlots = {
+    ...baseSlots,
+    petCount: intelligence.petCount,
+    petBreeds: intelligence.petBreeds.length ? intelligence.petBreeds : undefined,
+    checkInDate: intelligence.checkInDate,
+    checkOutDate: intelligence.checkOutDate,
+    vagueDateMention: intelligence.vagueDateMention?.text,
+    needsExactDate: intelligence.needsExactDate || undefined,
+  };
   const matchedSignals: string[] = [];
 
   function result(
@@ -253,6 +277,17 @@ export function classifyConversationIntent(message: string): ConversationNluResu
   if (isConversationResetCommand(message)) {
     matchedSignals.push("conversation_reset");
     return result("conversation_reset");
+  }
+
+  if (
+    intelligence.intent === "price_quote" &&
+    (intelligence.checkInDate ||
+      intelligence.checkOutDate ||
+      intelligence.petCount ||
+      intelligence.matchedSignals.includes("stay_intent"))
+  ) {
+    matchedSignals.push(...intelligence.matchedSignals);
+    return result("price_quote");
   }
 
   if (
@@ -360,6 +395,11 @@ export function classifyConversationIntent(message: string): ConversationNluResu
   ) {
     matchedSignals.push("reservation_start");
     return result(slots.checkIn || slots.checkOut ? "availability_request" : "reservation_start");
+  }
+
+  if (intelligence.intent === "reservation_or_availability") {
+    matchedSignals.push(...intelligence.matchedSignals);
+    return result("availability_request", "medium");
   }
 
   if (
@@ -588,6 +628,35 @@ export function buildConversationReplyPlan(message: string): ConversationReplyPl
       return { ...nlu, reply: RESERVATION_MODIFY_REPLY, handoff: false, source: "conversation_nlu" };
     case "conversation_reset":
       return { ...nlu, reply: CONVERSATION_RESET_REPLY, handoff: false, source: "conversation_nlu" };
+    case "price_quote": {
+      const intelligence = analyzeConversationIntelligence(message);
+      if (intelligence.needsExactDate) {
+        return {
+          ...nlu,
+          reply: buildVagueDatePrecisionReply(intelligence),
+          handoff: false,
+          source: "conversation_nlu",
+        };
+      }
+      if (intelligence.checkInDate && intelligence.checkOutDate && intelligence.petCount) {
+        return {
+          ...nlu,
+          reply: buildPriceQuoteReply({
+            petCount: intelligence.petCount,
+            checkInDate: intelligence.checkInDate,
+            checkOutDate: intelligence.checkOutDate,
+          }),
+          handoff: false,
+          source: "conversation_nlu",
+        };
+      }
+      return {
+        ...nlu,
+        reply: buildNeedPetCountForQuoteReply(intelligence),
+        handoff: false,
+        source: "conversation_nlu",
+      };
+    }
     case "faq_hours":
     case "faq_prices":
     case "faq_visits":

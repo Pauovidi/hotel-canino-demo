@@ -1126,4 +1126,202 @@ describe("conversation service", () => {
       ),
     ).toBe(true);
   });
+
+  it("keeps a price quote flow alive from exact dates to pet count", async () => {
+    const store = new MemoryConversationStore();
+    const directory = createStaticClientDirectory([]);
+    const deps = { now: () => new Date("2026-06-11T10:00:00.000Z") };
+
+    const start = await handleInboundWhatsApp(
+      {
+        from: "+34612345678",
+        body: "Hola! Querría saber el precio desde 30 junio hasta 8 julio",
+      },
+      store,
+      directory,
+      deps,
+    );
+    const quote = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "1 perro" },
+      store,
+      directory,
+      deps,
+    );
+
+    expect(start.botReply?.body).toBe(
+      "Claro. Para calcularlo del 30 de junio al 8 de julio necesito saber cuántos perros serían.",
+    );
+    expect(start.conversation.pendingPriceQuoteFlow).toMatchObject({
+      status: "collecting_pet_count",
+      checkInDate: "2026-06-30",
+      checkOutDate: "2026-07-08",
+    });
+    expect(start.botReply?.body).not.toContain("Perdona, no te he entendido bien");
+    expect(quote.botReply?.body).toBe(
+      "Para 1 perro, del 30 de junio al 8 de julio serían 8 noches. El precio estimado es 240 €. Si quieres, puedo comprobar disponibilidad para esas fechas.",
+    );
+    expect(quote.conversation.pendingPriceQuoteFlow).toMatchObject({
+      status: "quoted",
+      petCount: 1,
+      nights: 8,
+      estimatedPrice: 240,
+    });
+    expect(quote.botReply?.body).not.toContain("Perdona, no te he entendido bien");
+  });
+
+  it("calculates a price quote directly when the user says mi perro with exact dates", async () => {
+    const store = new MemoryConversationStore();
+
+    const result = await handleInboundWhatsApp(
+      {
+        from: "+34612345678",
+        body: "quería saber que me cuesta deja a mi perro del 30 de junio al 8 de julio",
+      },
+      store,
+      createStaticClientDirectory([]),
+      { now: () => new Date("2026-06-11T10:00:00.000Z") },
+    );
+
+    expect(result.botReply?.body).toBe(
+      "Para 1 perro, del 30 de junio al 8 de julio serían 8 noches. El precio estimado es 240 €. Si quieres, puedo comprobar disponibilidad para esas fechas.",
+    );
+    expect(result.conversation.pendingPriceQuoteFlow).toMatchObject({
+      status: "quoted",
+      petCount: 1,
+      nights: 8,
+      estimatedPrice: 240,
+    });
+    expect(result.botReply?.body).not.toContain("Perdona, no te he entendido bien");
+  });
+
+  it("treats a breed plus residencia as a stay request, not a pet name fallback", async () => {
+    const store = new MemoryConversationStore();
+    const directory = createStaticClientDirectory([]);
+    const deps = { now: () => new Date("2026-06-11T10:00:00.000Z") };
+
+    const info = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "Hola quiero información" },
+      store,
+      directory,
+      deps,
+    );
+    const breed = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "Si una residencia para un Rottweiler" },
+      store,
+      directory,
+      deps,
+    );
+
+    expect(info.botReply?.body).toContain("Te puedo ayudar con horarios");
+    expect(breed.botReply?.body).toBe(
+      "Perfecto, entiendo que sería una estancia para un Rottweiler. ¿Qué día sería la entrada y qué día la salida?",
+    );
+    expect(breed.conversation.pendingReservationContext).toMatchObject({
+      petCount: 1,
+      petBreeds: ["Rottweiler"],
+      requestedFields: ["dates"],
+    });
+    expect(breed.conversation.petName).toBeUndefined();
+    expect(breed.botReply?.body).not.toContain("Perdona, no te he entendido bien");
+  });
+
+  it("keeps the reservation context and asks for precision on vague checkout dates", async () => {
+    const store = new MemoryConversationStore();
+    const directory = createStaticClientDirectory([]);
+    const deps = { now: () => new Date("2026-06-11T10:00:00.000Z") };
+
+    await handleInboundWhatsApp(
+      { from: "+34612345678", body: "Si una residencia para un Rottweiler" },
+      store,
+      directory,
+      deps,
+    );
+    const vague = await handleInboundWhatsApp(
+      {
+        from: "+34612345678",
+        body: "Si puede ser lo dejaría este sábado hasta principios de septiembre",
+      },
+      store,
+      directory,
+      deps,
+    );
+
+    expect(vague.botReply?.body).toBe(
+      "Perfecto. Entiendo entrada este sábado. Para comprobar disponibilidad necesito que me confirmes el día exacto de salida a principios de septiembre y, si puedes, la hora aproximada de entrada y salida.",
+    );
+    expect(vague.conversation.pendingReservationContext).toMatchObject({
+      checkInDate: "2026-06-13",
+      vagueDateMention: "principios de septiembre",
+      needsExactDate: true,
+    });
+    expect(vague.botReply?.body).not.toContain("Perdona, no te he entendido bien");
+  });
+
+  it.each([
+    "para un labrador",
+    "para una golden",
+    "para dos perros, un border collie y un mestizo",
+    "tengo un pastor alemán",
+    "tenéis sitio para un Rottweiler",
+  ])("routes breed/stay phrase %s without fallback", async (body) => {
+    const store = new MemoryConversationStore();
+
+    const result = await handleInboundWhatsApp(
+      { from: "+34612345678", body },
+      store,
+      createStaticClientDirectory([]),
+      { now: () => new Date("2026-06-11T10:00:00.000Z") },
+    );
+
+    expect(result.botReply?.body).toContain("estancia");
+    expect(result.botReply?.body).toContain("entrada");
+    expect(result.botReply?.body).not.toContain("Perdona, no te he entendido bien");
+  });
+
+  it.each([
+    "hasta principios de septiembre",
+    "hasta mediados de agosto",
+    "hasta finales de julio",
+    "la semana que viene",
+    "unos días en agosto",
+  ])("asks for precision for vague date phrase %s", async (body) => {
+    const store = new MemoryConversationStore();
+    const directory = createStaticClientDirectory([]);
+    const deps = { now: () => new Date("2026-06-11T10:00:00.000Z") };
+
+    await handleInboundWhatsApp(
+      { from: "+34612345678", body: "residencia para un labrador" },
+      store,
+      directory,
+      deps,
+    );
+    const result = await handleInboundWhatsApp(
+      { from: "+34612345678", body },
+      store,
+      directory,
+      deps,
+    );
+
+    expect(result.botReply?.body).toMatch(/día concreto|fechas concretas|confirmes/);
+    expect(result.botReply?.body).not.toContain("Perdona, no te he entendido bien");
+  });
+
+  it("calculates price for two dogs with exact dates in one stay phrase", async () => {
+    const store = new MemoryConversationStore();
+
+    const result = await handleInboundWhatsApp(
+      {
+        from: "+34612345678",
+        body: "cuánto me cuesta para dos perros del 1 al 5 de agosto",
+      },
+      store,
+      createStaticClientDirectory([]),
+      { now: () => new Date("2026-06-11T10:00:00.000Z") },
+    );
+
+    expect(result.botReply?.body).toBe(
+      "Para 2 perros, del 1 de agosto al 5 de agosto serían 4 noches. El precio estimado es 180 €. Si quieres, puedo comprobar disponibilidad para esas fechas.",
+    );
+    expect(result.botReply?.body).not.toContain("Perdona, no te he entendido bien");
+  });
 });

@@ -94,6 +94,11 @@ function normalizeRecord(value: unknown): ConversationRecord | undefined {
     typeof record.pendingReservationContext === "object"
       ? (record.pendingReservationContext as ConversationRecord["pendingReservationContext"])
       : undefined;
+  const pendingPriceQuoteFlow =
+    record.pendingPriceQuoteFlow &&
+    typeof record.pendingPriceQuoteFlow === "object"
+      ? (record.pendingPriceQuoteFlow as ConversationRecord["pendingPriceQuoteFlow"])
+      : undefined;
   const pendingReservationModificationFlow =
     record.pendingReservationModificationFlow &&
     typeof record.pendingReservationModificationFlow === "object"
@@ -199,6 +204,7 @@ function normalizeRecord(value: unknown): ConversationRecord | undefined {
         : undefined,
     pendingReservationProposal,
     pendingReservationContext,
+    pendingPriceQuoteFlow,
     pendingReservationModificationFlow,
     pendingReservationCancellationFlow,
     reservationFlow,

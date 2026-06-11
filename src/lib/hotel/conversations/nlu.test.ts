@@ -31,6 +31,14 @@ describe("conversation NLU", () => {
     ["¿Qué vacunas necesita?", "faq_vaccines"],
     ["¿Mandáis fotos o vídeos?", "faq_photos_videos"],
     ["¿Tenéis sitio del 14 al 18 de abril?", "availability_request"],
+    ["Si una residencia para un Rottweiler", "availability_request"],
+    ["lo dejaría este sábado", "availability_request"],
+    ["se quedaría del 12 al 18", "availability_request"],
+    ["necesito dejar a mi perro una semana", "reservation_start"],
+    ["tenéis sitio para un Rottweiler", "availability_request"],
+    ["Hola! Querría saber el precio desde 30 junio hasta 8 julio", "price_quote"],
+    ["quería saber que me cuesta deja a mi perro del 30 de junio al 8 de julio", "price_quote"],
+    ["cuánto me cuesta para dos perros del 1 al 5 de agosto", "price_quote"],
     ["quiero hacer una reserva", "reservation_start"],
     ["quiero hacer reserva", "reservation_start"],
     ["quisiera reservar", "reservation_start"],
@@ -181,6 +189,48 @@ describe("conversation NLU", () => {
     expect(plan.intent).toBe("conversation_reset");
     expect(plan.reply).toBe("Reiniciado.");
     expect(plan.reply).not.toContain("información general");
+  });
+
+  it("extracts price quote slots without turning a plain price FAQ into a flow", () => {
+    const quote = buildConversationReplyPlan("Hola! Querría saber el precio desde 30 junio hasta 8 julio");
+    const direct = buildConversationReplyPlan(
+      "quería saber que me cuesta deja a mi perro del 30 de junio al 8 de julio",
+    );
+    const plainFaq = buildConversationReplyPlan("¿cuánto cuesta?");
+
+    expect(quote.intent).toBe("price_quote");
+    expect(quote.slots.checkInDate).toBe("2026-06-30");
+    expect(quote.slots.checkOutDate).toBe("2026-07-08");
+    expect(quote.reply).toContain("necesito saber cuántos perros");
+    expect(quote.reply).not.toContain("Perdona, no te he entendido bien");
+    expect(direct.intent).toBe("price_quote");
+    expect(direct.slots.petCount).toBe(1);
+    expect(direct.reply).toContain("240 €");
+    expect(plainFaq.intent).toBe("faq_prices");
+  });
+
+  it("treats breed mentions as breed slots, not pet names", () => {
+    const result = classifyConversationIntent("Si una residencia para un Rottweiler");
+
+    expect(result.intent).toBe("availability_request");
+    expect(result.slots.petCount).toBe(1);
+    expect(result.slots.petBreeds).toEqual(["Rottweiler"]);
+    expect(result.slots.petName).toBeUndefined();
+    expect(result.matchedSignals).toContain("breed_detected");
+  });
+
+  it.each([
+    "hasta principios de septiembre",
+    "hasta mediados de agosto",
+    "hasta finales de julio",
+    "la semana que viene",
+    "unos días en agosto",
+  ])("marks vague date phrase %s as needing exact date", (message) => {
+    const result = classifyConversationIntent(`residencia para un labrador ${message}`);
+
+    expect(result.intent).toBe("availability_request");
+    expect(result.slots.needsExactDate).toBe(true);
+    expect(result.slots.vagueDateMention).toBeDefined();
   });
 
   it.each([

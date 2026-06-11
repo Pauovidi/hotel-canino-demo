@@ -40,6 +40,7 @@ export interface ConversationReservationFlow {
   ownerName?: string;
   petName?: string;
   petNames?: string[];
+  petBreeds?: string[];
   petCount?: number;
   petCountInference?: "names" | "explicit" | "names_and_explicit";
   petCountInconsistency?: {
@@ -65,6 +66,27 @@ export interface ConversationReservationFlow {
   reservationId?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface PendingPriceQuoteFlow {
+  flowId: string;
+  conversationId: string;
+  phoneNormalized: string;
+  status: "collecting_pet_count" | "needs_exact_date" | "quoted";
+  source: "whatsapp";
+  checkInDate?: string;
+  checkOutDate?: string;
+  checkInLabel?: string;
+  checkOutLabel?: string;
+  vagueDateMention?: string;
+  needsExactDate?: boolean;
+  petCount?: number;
+  petBreeds?: string[];
+  nights?: number;
+  estimatedPrice?: number;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
 }
 
 export interface PendingReservationProposal {
@@ -113,6 +135,12 @@ export interface PendingReservationContext {
   expiresAt: string;
   requestedFields: Array<"petName" | "dates">;
   createdFromMessageId: string;
+  petCount?: number;
+  petBreeds?: string[];
+  checkInDate?: string;
+  checkInLabel?: string;
+  vagueDateMention?: string;
+  needsExactDate?: boolean;
 }
 
 export type PendingReservationChangeStatus =
@@ -211,6 +239,7 @@ export interface Conversation {
   clientDirectoryUpsertWarning?: string;
   pendingReservationProposal?: PendingReservationProposal;
   pendingReservationContext?: PendingReservationContext;
+  pendingPriceQuoteFlow?: PendingPriceQuoteFlow;
   pendingReservationModificationFlow?: PendingReservationModificationFlow;
   pendingReservationCancellationFlow?: PendingReservationCancellationFlow;
   reservationFlow?: ConversationReservationFlow;

@@ -926,6 +926,44 @@ describe("conversations security", () => {
     expect(text.trim()).not.toMatch(/^\{/);
   });
 
+  it("persists inbound and outbound Twilio messages for a healthy price quote flow", async () => {
+    tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-twilio-price-flow-"));
+    process.env.HOTEL_CONVERSATIONS_STORE_PATH = path.join(tempDir, "conversations.json");
+    process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+    setTwilioClientDirectoryForTests(createStaticClientDirectory([]));
+    resetConversationStoreForTests();
+
+    const response = await postTwilioWebhook(
+      new Request("https://example.test/api/twilio/whatsapp?token=expected-token", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          From: "whatsapp:+34600000010",
+          To: "whatsapp:+14155238886",
+          Body: "quería saber que me cuesta deja a mi perro del 30 de junio al 8 de julio",
+          MessageSid: "SM_TWILIO_PRICE_QUOTE_001",
+        }),
+      }),
+    );
+    const text = await response.text();
+    const conversations = await getConversationStore().list({ query: "junio" });
+    const conversation = conversations[0];
+
+    expect(response.status).toBe(200);
+    expect(text).toContain("<Message>");
+    expect(text).toContain("240 €");
+    expect(conversation.messages.some((message) => message.direction === "inbound")).toBe(true);
+    expect(conversation.messages.some((message) => message.direction === "outbound" && message.body.includes("240 €"))).toBe(true);
+    expect(conversation.pendingPriceQuoteFlow).toMatchObject({
+      status: "quoted",
+      petCount: 1,
+      nights: 8,
+      estimatedPrice: 240,
+    });
+  });
+
   it("returns a safe incident TwiML Message for critical flows when the conversation store fails", async () => {
     tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-twilio-critical-store-failure-"));
     process.env.HOTEL_CONVERSATIONS_STORE_PATH = tempDir;

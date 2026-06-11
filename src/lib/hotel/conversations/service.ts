@@ -31,6 +31,17 @@ import {
   isReservationFlowRejection,
   startReservationFlow,
 } from "./reservation-flow";
+import {
+  analyzeConversationIntelligence,
+  buildBreedReservationReply,
+  buildNeedPetCountForQuoteReply,
+  buildPendingPriceQuoteFlow,
+  buildPriceQuoteReply,
+  buildVagueDatePrecisionReply,
+  calculateNights,
+  calculateQuotePrice,
+  isPendingPriceQuoteFlowLive,
+} from "./conversation-intelligence";
 import { getConversationStore } from "./file-store";
 import { filterConversationRecords, type ConversationStore } from "./store";
 import type {
@@ -470,6 +481,249 @@ function appendReservationResume(reply: string, record: ConversationRecord): str
   return resume ? `${reply}\n\n${resume}` : reply;
 }
 
+async function sendBotOutcome(input: {
+  store: ConversationStore;
+  conversation: ConversationRecord;
+  inbound: Message;
+  reply: string;
+  eventType: string;
+  eventPayload?: Record<string, unknown>;
+}): Promise<InboundResult> {
+  await input.store.replaceConversation(input.conversation);
+  await input.store.addEvent(
+    createEvent(input.conversation.id, input.eventType, input.eventPayload),
+  );
+  const botReply = await input.store.addMessage(
+    createMessage({
+      conversationId: input.conversation.id,
+      direction: "outbound",
+      senderType: "bot",
+      body: input.reply,
+    }),
+  );
+
+  return {
+    conversation: (await input.store.getById(input.conversation.id)) ?? input.conversation,
+    inbound: input.inbound,
+    botReply,
+    twiml: buildTwilioMessageResponse(input.reply),
+  };
+}
+
+function buildQuoteOutcome(
+  record: ConversationRecord,
+  message: string,
+  now: Date,
+): { conversation: ConversationRecord; reply: string; eventPayload: Record<string, unknown> } | undefined {
+  const analysis = analyzeConversationIntelligence(message, now);
+  const pending = record.pendingPriceQuoteFlow;
+
+  if (
+    isPendingPriceQuoteFlowLive(record, now) &&
+    analysis.petCount &&
+    pending?.checkInDate &&
+    pending.checkOutDate
+  ) {
+    const nights = calculateNights(pending.checkInDate, pending.checkOutDate);
+    const estimatedPrice = calculateQuotePrice(analysis.petCount, nights);
+    const conversation: ConversationRecord = {
+      ...record,
+      pendingPriceQuoteFlow: {
+        ...pending,
+        status: "quoted",
+        petCount: analysis.petCount,
+        petBreeds: analysis.petBreeds.length ? analysis.petBreeds : pending.petBreeds,
+        nights,
+        estimatedPrice,
+        updatedAt: now.toISOString(),
+      },
+      updatedAt: nowIso(),
+    };
+    return {
+      conversation,
+      reply: buildPriceQuoteReply({
+        petCount: analysis.petCount,
+        checkInDate: pending.checkInDate,
+        checkOutDate: pending.checkOutDate,
+      }),
+      eventPayload: {
+        intent: "price_quote",
+        source: "pending_price_quote_flow",
+        petCount: analysis.petCount,
+        nights,
+        estimatedPrice,
+      },
+    };
+  }
+
+  if (analysis.intent !== "price_quote") {
+    return undefined;
+  }
+
+  if (analysis.needsExactDate) {
+    const conversation: ConversationRecord = {
+      ...record,
+      pendingPriceQuoteFlow: buildPendingPriceQuoteFlow({
+        conversation: record,
+        analysis,
+        now,
+        status: "needs_exact_date",
+      }),
+      updatedAt: nowIso(),
+    };
+    return {
+      conversation,
+      reply: buildVagueDatePrecisionReply(analysis),
+      eventPayload: {
+        intent: "price_quote",
+        source: "deterministic_conversation_intelligence",
+        needsExactDate: true,
+        vagueDateMention: analysis.vagueDateMention?.text,
+      },
+    };
+  }
+
+  if (analysis.checkInDate && analysis.checkOutDate && analysis.petCount) {
+    const nights = calculateNights(analysis.checkInDate, analysis.checkOutDate);
+    const estimatedPrice = calculateQuotePrice(analysis.petCount, nights);
+    const conversation: ConversationRecord = {
+      ...record,
+      pendingPriceQuoteFlow: buildPendingPriceQuoteFlow({
+        conversation: record,
+        analysis,
+        now,
+        status: "quoted",
+        nights,
+        estimatedPrice,
+      }),
+      updatedAt: nowIso(),
+    };
+    return {
+      conversation,
+      reply: buildPriceQuoteReply({
+        petCount: analysis.petCount,
+        checkInDate: analysis.checkInDate,
+        checkOutDate: analysis.checkOutDate,
+      }),
+      eventPayload: {
+        intent: "price_quote",
+        source: "deterministic_conversation_intelligence",
+        petCount: analysis.petCount,
+        nights,
+        estimatedPrice,
+      },
+    };
+  }
+
+  if (analysis.checkInDate && analysis.checkOutDate) {
+    const conversation: ConversationRecord = {
+      ...record,
+      pendingPriceQuoteFlow: buildPendingPriceQuoteFlow({
+        conversation: record,
+        analysis,
+        now,
+        status: "collecting_pet_count",
+      }),
+      updatedAt: nowIso(),
+    };
+    return {
+      conversation,
+      reply: buildNeedPetCountForQuoteReply(analysis),
+      eventPayload: {
+        intent: "price_quote",
+        source: "deterministic_conversation_intelligence",
+        awaiting: "pet_count",
+      },
+    };
+  }
+
+  return undefined;
+}
+
+function pendingReservationContextIsLive(record: ConversationRecord, now: Date): boolean {
+  return Boolean(
+    record.pendingReservationContext?.status === "collecting" &&
+      new Date(record.pendingReservationContext.expiresAt).getTime() > now.getTime(),
+  );
+}
+
+function buildReservationIntelligenceOutcome(
+  record: ConversationRecord,
+  message: string,
+  inbound: Message,
+  now: Date,
+): { conversation: ConversationRecord; reply: string; eventPayload: Record<string, unknown> } | undefined {
+  const analysis = analyzeConversationIntelligence(message, now);
+  const hasLiveContext = pendingReservationContextIsLive(record, now);
+
+  if (hasLiveContext && analysis.needsExactDate) {
+    const context = record.pendingReservationContext!;
+    return {
+      conversation: {
+        ...record,
+        pendingReservationContext: {
+          ...context,
+          checkInDate: analysis.checkInDate ?? context.checkInDate,
+          checkInLabel: analysis.checkInLabel ?? context.checkInLabel,
+          vagueDateMention: analysis.vagueDateMention?.text,
+          needsExactDate: true,
+          updatedAt: now.toISOString(),
+          expiresAt: new Date(now.getTime() + 30 * 60 * 1000).toISOString(),
+        },
+        updatedAt: nowIso(),
+      },
+      reply: buildVagueDatePrecisionReply(analysis),
+      eventPayload: {
+        intent: "reservation_or_availability",
+        source: "pending_reservation_context",
+        needsExactDate: true,
+        vagueDateMention: analysis.vagueDateMention?.text,
+      },
+    };
+  }
+
+  if (
+    analysis.intent !== "reservation_or_availability" ||
+    (!analysis.petBreeds.length && !analysis.needsExactDate)
+  ) {
+    return undefined;
+  }
+
+  return {
+    conversation: {
+      ...record,
+      pendingReservationContext: {
+        contextId: record.pendingReservationContext?.contextId ?? createId("pending_reservation_context"),
+        conversationId: record.id,
+        phoneNormalized: record.phoneNormalized,
+        status: "collecting",
+        source: "whatsapp",
+        requestedAt: record.pendingReservationContext?.requestedAt ?? now.toISOString(),
+        updatedAt: now.toISOString(),
+        expiresAt: new Date(now.getTime() + 30 * 60 * 1000).toISOString(),
+        requestedFields: ["dates"],
+        createdFromMessageId: record.pendingReservationContext?.createdFromMessageId ?? inbound.id,
+        petCount: analysis.petCount,
+        petBreeds: analysis.petBreeds,
+        checkInDate: analysis.checkInDate,
+        checkInLabel: analysis.checkInLabel,
+        vagueDateMention: analysis.vagueDateMention?.text,
+        needsExactDate: analysis.needsExactDate,
+      },
+      updatedAt: nowIso(),
+    },
+    reply: buildBreedReservationReply(analysis),
+    eventPayload: {
+      intent: "reservation_or_availability",
+      source: "deterministic_conversation_intelligence",
+      petCount: analysis.petCount,
+      petBreeds: analysis.petBreeds,
+      needsExactDate: analysis.needsExactDate,
+      matchedSignals: analysis.matchedSignals,
+    },
+  };
+}
+
 async function sendReservationChangeOutcome(input: {
   store: ConversationStore;
   outcome: Awaited<ReturnType<typeof startReservationChangeFlow>>;
@@ -616,6 +870,7 @@ function buildResetRecord(record: ConversationRecord): ConversationRecord {
     assignedAgent: undefined,
     pendingReservationProposal: undefined,
     pendingReservationContext: undefined,
+    pendingPriceQuoteFlow: undefined,
     pendingReservationModificationFlow: undefined,
     pendingReservationCancellationFlow: undefined,
     reservationFlow: undefined,
@@ -691,6 +946,7 @@ export async function handleGlobalResetCommand(
         hiddenCommand: true,
         clearedPendingProposal: Boolean(latest.pendingReservationProposal),
         clearedPendingContext: Boolean(latest.pendingReservationContext),
+        clearedPendingPriceQuoteFlow: Boolean(latest.pendingPriceQuoteFlow),
         clearedPendingModificationFlow: Boolean(latest.pendingReservationModificationFlow),
         clearedPendingCancellationFlow: Boolean(latest.pendingReservationCancellationFlow),
         clearedReservationFlow: Boolean(latest.reservationFlow),
@@ -1300,6 +1556,23 @@ export async function handleInboundWhatsApp(
       };
     }
 
+    const reservationIntelligence = buildReservationIntelligenceOutcome(
+      latestBeforeFlow,
+      safeBody,
+      inbound,
+      reservationBridgeDeps?.now?.() ?? new Date(),
+    );
+    if (reservationIntelligence) {
+      return sendBotOutcome({
+        store,
+        conversation: reservationIntelligence.conversation,
+        inbound,
+        reply: reservationIntelligence.reply,
+        eventType: "reservation_context_detected",
+        eventPayload: reservationIntelligence.eventPayload,
+      });
+    }
+
     const flow = await advanceReservationFlow({
       conversation: latestBeforeFlow,
       inboundMessageId: inbound.id,
@@ -1331,8 +1604,38 @@ export async function handleInboundWhatsApp(
     }
   }
 
-  const initialReplyPlan = buildConversationReplyPlan(safeBody);
   const latestBeforePlan = (await store.getById(freshWithClient.id)) ?? freshWithClient;
+  const intelligenceNow = reservationBridgeDeps?.now?.() ?? new Date();
+  const quoteOutcome = buildQuoteOutcome(latestBeforePlan, safeBody, intelligenceNow);
+  if (quoteOutcome) {
+    return sendBotOutcome({
+      store,
+      conversation: quoteOutcome.conversation,
+      inbound,
+      reply: quoteOutcome.reply,
+      eventType: "price_quote_flow_updated",
+      eventPayload: quoteOutcome.eventPayload,
+    });
+  }
+
+  const reservationIntelligence = buildReservationIntelligenceOutcome(
+    latestBeforePlan,
+    safeBody,
+    inbound,
+    intelligenceNow,
+  );
+  if (reservationIntelligence) {
+    return sendBotOutcome({
+      store,
+      conversation: reservationIntelligence.conversation,
+      inbound,
+      reply: reservationIntelligence.reply,
+      eventType: "reservation_context_detected",
+      eventPayload: reservationIntelligence.eventPayload,
+    });
+  }
+
+  const initialReplyPlan = buildConversationReplyPlan(safeBody);
   const replyPlan = shouldTreatAsReservationSlotFill(
     latestBeforePlan,
     initialReplyPlan,
