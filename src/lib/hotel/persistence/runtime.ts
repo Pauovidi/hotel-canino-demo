@@ -51,7 +51,8 @@ export function readHotelPersistenceConfig(
 ): HotelPersistenceConfig {
   const configuredProvider = env.HOTEL_PERSISTENCE_PROVIDER?.trim();
   const explicitProvider = normalizeProvider(configuredProvider);
-  const configuredConversationStoreProvider = env.HOTEL_CONVERSATIONS_STORE_PROVIDER?.trim();
+  const configuredConversationStoreProvider =
+    env.HOTEL_CONVERSATIONS_STORE_PROVIDER?.trim() ?? env.HOTEL_CONVERSATIONS_STORE?.trim();
   const explicitConversationStoreProvider = normalizeProvider(configuredConversationStoreProvider);
   const isProduction = env.NODE_ENV === "production";
   const isVercelPreview = env.VERCEL_ENV === "preview";

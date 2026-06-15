@@ -80,6 +80,39 @@ describe("production persistence runtime", () => {
     expect(config.conversationStoreProvider).toBe("google_sheets");
   });
 
+  it("accepts HOTEL_CONVERSATIONS_STORE as the EasyPanel store selector", () => {
+    const config = readHotelPersistenceConfig({
+      NODE_ENV: "production",
+      HOTEL_RUNTIME_TARGET: "easypanel",
+      HOTEL_CONVERSATIONS_STORE: "postgres",
+    } as NodeJS.ProcessEnv);
+
+    expect(config.provider).toBe("file-volume");
+    expect(config.conversationStoreProvider).toBe("postgres");
+    expect(config.configuredConversationStoreProvider).toBe("postgres");
+    expect(config.databaseUrlConfigured).toBe(false);
+  });
+
+  it("keeps the explicit legacy provider variable ahead of the EasyPanel alias", () => {
+    const config = readHotelPersistenceConfig({
+      NODE_ENV: "production",
+      HOTEL_CONVERSATIONS_STORE_PROVIDER: "google_sheets",
+      HOTEL_CONVERSATIONS_STORE: "postgres",
+    } as NodeJS.ProcessEnv);
+
+    expect(config.conversationStoreProvider).toBe("google_sheets");
+    expect(config.configuredConversationStoreProvider).toBe("google_sheets");
+  });
+
+  it("accepts HOTEL_CONVERSATIONS_STORE=google_sheets for legacy conversation storage", () => {
+    const config = readHotelPersistenceConfig({
+      NODE_ENV: "production",
+      HOTEL_CONVERSATIONS_STORE: "google_sheets",
+    } as NodeJS.ProcessEnv);
+
+    expect(config.conversationStoreProvider).toBe("google_sheets");
+  });
+
   it("redirects /data file overrides to tmp on Vercel Preview", () => {
     const byDir = resolveJsonStorePath({
       fileName: "hotel-conversations.json",

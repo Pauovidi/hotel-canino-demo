@@ -17,6 +17,7 @@ function readPersistenceHealth() {
   const config = readHotelPersistenceConfig();
 
   return {
+    runtimeTarget: process.env.HOTEL_RUNTIME_TARGET?.trim() || null,
     provider: config.provider,
     conversationStoreProvider: config.conversationStoreProvider,
     databaseUrlConfigured: config.databaseUrlConfigured,
@@ -64,10 +65,14 @@ export async function GET(request?: Request) {
       statusCallbackConfigured: Boolean(twilio.statusCallbackUrl),
     },
     persistence: {
+      runtimeTarget: persistence.runtimeTarget,
       provider: persistence.provider,
       conversationStoreProvider: persistence.conversationStoreProvider,
       databaseUrlConfigured: persistence.databaseUrlConfigured,
       durableFileBaseDir: persistence.durableFileBaseDir,
+      ready:
+        persistence.conversationStoreProvider !== "postgres" ||
+        persistence.databaseUrlConfigured,
     },
     conversationStore: {
       provider: persistence.conversationStoreProvider,

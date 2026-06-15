@@ -16,6 +16,7 @@ describe("health route", () => {
     process.env.TWILIO_WHATSAPP_FROM = "whatsapp:+34600111222";
     process.env.TWILIO_WHATSAPP_PROVIDER_MODE = "real";
     process.env.DATABASE_URL = "postgres://user:password@example.test/db";
+    process.env.HOTEL_RUNTIME_TARGET = "easypanel";
     process.env.HOTEL_PERSISTENCE_PROVIDER = "postgres";
     process.env.HOTEL_CONVERSATIONS_STORE_PROVIDER = "google_sheets";
     process.env.HOTEL_CONVERSATIONS_SHEET_NAME = "CONVERSATIONS";
@@ -39,6 +40,8 @@ describe("health route", () => {
       }),
     );
     expect(json.persistence.provider).toBe("postgres");
+    expect(json.persistence.runtimeTarget).toBe("easypanel");
+    expect(json.persistence.ready).toBe(true);
     expect(json.persistence.conversationStoreProvider).toBe("google_sheets");
     expect(json.conversationStore).toEqual(
       expect.objectContaining({
@@ -82,5 +85,33 @@ describe("health route", () => {
     expect(serialized).not.toContain("password@example");
     expect(serialized).not.toContain("sheet_secret_like_id");
     expect(serialized).not.toContain("private-secret-key");
+  });
+
+  it("reports postgres conversation readiness without exposing DATABASE_URL", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.HOTEL_RUNTIME_TARGET = "easypanel";
+    process.env.HOTEL_CONVERSATIONS_STORE = "postgres";
+    process.env.DATABASE_URL = "postgres://user:password@example.test/db";
+
+    const response = await GET();
+    const json = await response.json();
+    const serialized = JSON.stringify(json);
+
+    expect(response.status).toBe(200);
+    expect(json.persistence).toEqual(
+      expect.objectContaining({
+        runtimeTarget: "easypanel",
+        conversationStoreProvider: "postgres",
+        databaseUrlConfigured: true,
+        ready: true,
+      }),
+    );
+    expect(json.conversationStore).toEqual(
+      expect.objectContaining({
+        provider: "postgres",
+        configured: true,
+      }),
+    );
+    expect(serialized).not.toContain("password@example");
   });
 });
