@@ -19,6 +19,11 @@ describe("health route", () => {
     process.env.HOTEL_RUNTIME_TARGET = "easypanel";
     process.env.HOTEL_PERSISTENCE_PROVIDER = "postgres";
     process.env.HOTEL_CONVERSATIONS_STORE_PROVIDER = "google_sheets";
+    process.env.HOTEL_SHEETS_WRITE_ENABLED = "false";
+    process.env.HOTEL_SHEETS_DRY_RUN = "true";
+    process.env.HOTEL_LLM_NLU_ENABLED = "false";
+    process.env.HOTEL_LLM_NLU_SHADOW = "true";
+    process.env.HOTEL_LLM_NLU_DECISION_MODE = "shadow";
     process.env.HOTEL_CONVERSATIONS_SHEET_NAME = "CONVERSATIONS";
     process.env.HOTEL_CLIENTS_SHEET_NAME = "CLIENTES";
     process.env.HOTEL_CLIENTS_CACHE_TTL_MS = "12345";
@@ -43,6 +48,17 @@ describe("health route", () => {
     expect(json.persistence.runtimeTarget).toBe("easypanel");
     expect(json.persistence.ready).toBe(true);
     expect(json.persistence.conversationStoreProvider).toBe("google_sheets");
+    expect(json.runtimeSafety).toEqual({
+      sheets: {
+        writeEnabled: false,
+        dryRun: true,
+      },
+      llmNlu: {
+        enabled: false,
+        shadow: true,
+        decisionMode: "shadow",
+      },
+    });
     expect(json.conversationStore).toEqual(
       expect.objectContaining({
         provider: "google_sheets",
@@ -91,6 +107,9 @@ describe("health route", () => {
     process.env.NODE_ENV = "production";
     process.env.HOTEL_RUNTIME_TARGET = "easypanel";
     process.env.HOTEL_CONVERSATIONS_STORE = "postgres";
+    process.env.HOTEL_SHEETS_WRITE_ENABLED = "false";
+    process.env.HOTEL_SHEETS_DRY_RUN = "true";
+    process.env.HOTEL_LLM_NLU_ENABLED = "false";
     process.env.DATABASE_URL = "postgres://user:password@example.test/db";
 
     const response = await GET();
@@ -112,6 +131,11 @@ describe("health route", () => {
         configured: true,
       }),
     );
+    expect(json.runtimeSafety.sheets).toEqual({
+      writeEnabled: false,
+      dryRun: true,
+    });
+    expect(json.runtimeSafety.llmNlu.enabled).toBe(false);
     expect(serialized).not.toContain("password@example");
   });
 });

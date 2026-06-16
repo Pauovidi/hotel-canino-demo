@@ -33,9 +33,24 @@ function shouldCheckClientsLive(request?: Request): boolean {
   return new URL(request.url).searchParams.get("clientsLive") === "1";
 }
 
+function readRuntimeSafetyHealth() {
+  return {
+    sheets: {
+      writeEnabled: process.env.HOTEL_SHEETS_WRITE_ENABLED === "true",
+      dryRun: process.env.HOTEL_SHEETS_DRY_RUN !== "false",
+    },
+    llmNlu: {
+      enabled: process.env.HOTEL_LLM_NLU_ENABLED === "true",
+      shadow: process.env.HOTEL_LLM_NLU_SHADOW !== "false",
+      decisionMode: process.env.HOTEL_LLM_NLU_DECISION_MODE?.trim() || "shadow",
+    },
+  };
+}
+
 export async function GET(request?: Request) {
   const twilio = readTwilioWhatsAppConfig();
   const persistence = readPersistenceHealth();
+  const runtimeSafety = readRuntimeSafetyHealth();
   const conversationStore = readGoogleSheetsConversationStoreHealth();
   const clientDirectory = readGoogleSheetsClientDirectoryHealth();
   const reservationStore = readReservationStoreHealth();
@@ -74,6 +89,7 @@ export async function GET(request?: Request) {
         persistence.conversationStoreProvider !== "postgres" ||
         persistence.databaseUrlConfigured,
     },
+    runtimeSafety,
     conversationStore: {
       provider: persistence.conversationStoreProvider,
       sheetName: conversationStore.sheetName,
