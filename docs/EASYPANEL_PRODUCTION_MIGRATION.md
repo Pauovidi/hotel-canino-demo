@@ -8,7 +8,8 @@ This branch prepares `hotel-canino-demo` to run in EasyPanel with Postgres in pa
 - `next.config.ts` uses `output: "standalone"`.
 - `/api/health` reports safe booleans and provider names only. It does not print `DATABASE_URL`, Twilio tokens, Google credentials or sheet IDs.
 - `db/migrations` contains the conversation tables used by `PostgresConversationStore`.
-- `npm run db:migrate` applies migrations against the configured `DATABASE_URL`.
+- `npm run db:migrate:postgres` applies migrations against the configured Postgres database.
+- `npm run db:check:postgres` verifies `SELECT 1` plus the required conversation tables and columns.
 
 ## EasyPanel variables
 
@@ -67,10 +68,11 @@ Google Sheets remains for `CLIENTES`, confirmed reservations/monthly sheets and 
 1. Build the image locally or in EasyPanel from this repo branch.
 2. Provision Postgres in EasyPanel.
 3. Configure variables, keeping Sheets writes disabled.
-4. Run `npm run db:migrate` with EasyPanel's `DATABASE_URL`.
-5. Start the service in parallel without changing the real Twilio webhook.
-6. Check `/api/health`; expect `persistence.conversationStoreProvider=postgres`, `databaseUrlConfigured=true` and `ready=true`.
-7. Use a Twilio sandbox or isolated webhook URL for validation.
+4. Run `npm run db:migrate:postgres` with EasyPanel's configured database.
+5. Run `npm run db:check:postgres`.
+6. Restart/redeploy the service in parallel without changing the real Twilio webhook.
+7. Check `/api/health`; expect `persistence.conversationStoreProvider=postgres`, `databaseUrlConfigured=true`, `databaseReachable=true`, `postgresSchemaReady=true` and `ready=true`.
+8. Use a Twilio sandbox or isolated webhook URL for validation.
 
 ## Cutover guardrails
 

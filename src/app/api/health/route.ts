@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { readHotelPersistenceConfig } from "@/lib/hotel/persistence/runtime";
 import { readTwilioWhatsAppConfig } from "@/lib/hotel/twilio/client";
 import { readGoogleSheetsConversationStoreHealth } from "@/lib/hotel/conversations/google-sheets-store";
+import { checkPostgresConversationSchema } from "@/lib/hotel/conversations/postgres-readiness";
 import {
   readGoogleSheetsClientDirectoryHealth,
   readGoogleSheetsClientDirectoryLiveHealth,
@@ -51,6 +52,10 @@ export async function GET(request?: Request) {
   const twilio = readTwilioWhatsAppConfig();
   const persistence = readPersistenceHealth();
   const runtimeSafety = readRuntimeSafetyHealth();
+  const postgresHealth =
+    persistence.conversationStoreProvider === "postgres"
+      ? await checkPostgresConversationSchema()
+      : undefined;
   const conversationStore = readGoogleSheetsConversationStoreHealth();
   const clientDirectory = readGoogleSheetsClientDirectoryHealth();
   const reservationStore = readReservationStoreHealth();
@@ -84,10 +89,20 @@ export async function GET(request?: Request) {
       provider: persistence.provider,
       conversationStoreProvider: persistence.conversationStoreProvider,
       databaseUrlConfigured: persistence.databaseUrlConfigured,
+      databaseReachable: postgresHealth?.databaseReachable,
+      postgresSchemaReady: postgresHealth?.postgresSchemaReady,
+      missingTables: postgresHealth?.missingTables ?? [],
+      missingColumns: postgresHealth?.missingColumns ?? {},
+      safeErrorCode: postgresHealth?.safeErrorCode,
+      safeErrorName: postgresHealth?.safeErrorName,
       durableFileBaseDir: persistence.durableFileBaseDir,
       ready:
         persistence.conversationStoreProvider !== "postgres" ||
-        persistence.databaseUrlConfigured,
+        Boolean(
+          postgresHealth?.databaseUrlConfigured &&
+            postgresHealth.databaseReachable &&
+            postgresHealth.postgresSchemaReady,
+        ),
     },
     runtimeSafety,
     conversationStore: {

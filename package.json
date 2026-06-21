@@ -23,6 +23,8 @@
     "docker:run": "docker run --rm -p 3000:3000 --env-file .env.local hotel-canino-demo:local",
     "smoke:docker": "node scripts/smoke-docker.mjs",
     "db:migrate": "node scripts/db-migrate.mjs",
+    "db:migrate:postgres": "node scripts/run-postgres-migrations.mjs",
+    "db:check:postgres": "node scripts/check-postgres-schema.mjs",
     "db:setup": "npm run db:migrate",
     "easypanel:check": "node scripts/check-easypanel-env.mjs",
     "hotel:conversations:seed": "tsx scripts/hotel-conversations-seed.ts",

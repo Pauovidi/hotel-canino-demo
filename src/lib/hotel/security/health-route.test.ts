@@ -1,8 +1,20 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GET } from "@/app/api/health/route";
+
+const postgresReadinessMock = vi.hoisted(() => ({
+  checkPostgresConversationSchema: vi.fn(),
+}));
+
+vi.mock("@/lib/hotel/conversations/postgres-readiness", () => ({
+  checkPostgresConversationSchema: postgresReadinessMock.checkPostgresConversationSchema,
+}));
 
 describe("health route", () => {
   const previousEnv = { ...process.env };
+
+  beforeEach(() => {
+    postgresReadinessMock.checkPostgresConversationSchema.mockReset();
+  });
 
   afterEach(() => {
     process.env = { ...previousEnv };
@@ -111,6 +123,13 @@ describe("health route", () => {
     process.env.HOTEL_SHEETS_DRY_RUN = "true";
     process.env.HOTEL_LLM_NLU_ENABLED = "false";
     process.env.DATABASE_URL = "postgres://user:password@example.test/db";
+    postgresReadinessMock.checkPostgresConversationSchema.mockResolvedValue({
+      databaseUrlConfigured: true,
+      databaseReachable: true,
+      postgresSchemaReady: true,
+      missingTables: [],
+      missingColumns: {},
+    });
 
     const response = await GET();
     const json = await response.json();
@@ -122,6 +141,8 @@ describe("health route", () => {
         runtimeTarget: "easypanel",
         conversationStoreProvider: "postgres",
         databaseUrlConfigured: true,
+        databaseReachable: true,
+        postgresSchemaReady: true,
         ready: true,
       }),
     );
@@ -136,6 +157,37 @@ describe("health route", () => {
       dryRun: true,
     });
     expect(json.runtimeSafety.llmNlu.enabled).toBe(false);
+    expect(serialized).not.toContain("password@example");
+  });
+
+  it("marks postgres persistence not ready when required tables are missing", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.HOTEL_RUNTIME_TARGET = "easypanel";
+    process.env.HOTEL_CONVERSATIONS_STORE = "postgres";
+    process.env.DATABASE_URL = "postgres://user:password@example.test/db";
+    postgresReadinessMock.checkPostgresConversationSchema.mockResolvedValue({
+      databaseUrlConfigured: true,
+      databaseReachable: true,
+      postgresSchemaReady: false,
+      missingTables: ["hotel_conversations"],
+      missingColumns: {},
+    });
+
+    const response = await GET();
+    const json = await response.json();
+    const serialized = JSON.stringify(json);
+
+    expect(response.status).toBe(200);
+    expect(json.persistence).toEqual(
+      expect.objectContaining({
+        conversationStoreProvider: "postgres",
+        databaseUrlConfigured: true,
+        databaseReachable: true,
+        postgresSchemaReady: false,
+        missingTables: ["hotel_conversations"],
+        ready: false,
+      }),
+    );
     expect(serialized).not.toContain("password@example");
   });
 });

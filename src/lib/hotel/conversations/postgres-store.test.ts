@@ -200,4 +200,60 @@ describe("PostgresConversationStore", () => {
     expect(queries.some((sql) => sql.includes("hotel_conversation_messages"))).toBe(true);
     expect(queries.some((sql) => sql.includes("google"))).toBe(false);
   });
+
+  it("supports critical WhatsApp reservation and reset flows through Postgres state", async () => {
+    const { PostgresConversationStore } = await import("./postgres-store");
+    const { handleInboundWhatsApp } = await import("./service");
+    const { createStaticClientDirectory } = await import("@/lib/hotel/clients");
+    const store = new PostgresConversationStore();
+    const directory = createStaticClientDirectory([
+      {
+        nombre: "Pau QA",
+        telefonoMovil: "+34 600 009 991",
+        telefonoNormalizado: "34600009991",
+        email: "pau.qa@example.test",
+        rowNumber: 7,
+        sheetName: "CLIENTES",
+      },
+    ]);
+
+    const greeting = await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "hola", messageSid: "SM_PG_HELLO" },
+      store,
+      directory,
+    );
+    const reservation = await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "quiero reservar", messageSid: "SM_PG_BOOK" },
+      store,
+      directory,
+    );
+    const reloaded = await store.getById(reservation.conversation.id);
+
+    expect(greeting.botReply?.body).toContain("Pau");
+    expect(reservation.botReply?.body).not.toContain(
+      "no puedo consultar correctamente la conversación",
+    );
+    expect(reservation.conversation.reservationFlow).toEqual(
+      expect.objectContaining({
+        clientKind: "habitual",
+        status: "collecting_pet",
+      }),
+    );
+    expect(reloaded?.reservationFlow?.status).toBe("collecting_pet");
+    expect(reloaded?.messages.some((message) => message.body === "quiero reservar")).toBe(true);
+    expect(reloaded?.messages.some((message) => message.direction === "outbound")).toBe(true);
+
+    const reset = await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "reiniciar", messageSid: "SM_PG_RESET" },
+      store,
+      directory,
+    );
+    const resetRecord = await store.getById(reservation.conversation.id);
+
+    expect(reset.botReply?.body).toBe("Reiniciado.");
+    expect(resetRecord?.reservationFlow).toBeUndefined();
+    expect(resetRecord?.pendingReservationProposal).toBeUndefined();
+    expect(resetRecord?.pendingReservationModificationFlow).toBeUndefined();
+    expect(resetRecord?.pendingReservationCancellationFlow).toBeUndefined();
+  });
 });

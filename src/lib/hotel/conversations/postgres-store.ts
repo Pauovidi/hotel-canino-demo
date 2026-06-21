@@ -16,7 +16,7 @@ let poolSingleton: Pool | undefined;
 
 function getPool(): Pool {
   if (!process.env.DATABASE_URL?.trim()) {
-    throw new Error("DATABASE_URL is required when HOTEL_PERSISTENCE_PROVIDER=postgres");
+    throw new Error("DATABASE_URL is required when the conversation store is postgres");
   }
 
   poolSingleton ??= new Pool({
@@ -25,6 +25,42 @@ function getPool(): Pool {
   });
 
   return poolSingleton;
+}
+
+function safePostgresErrorPayload(error: unknown): Record<string, string | undefined> {
+  const payload = error && typeof error === "object" ? (error as Record<string, unknown>) : {};
+
+  return {
+    errorName: error instanceof Error ? error.name : "UnknownError",
+    safeErrorCode: typeof payload.code === "string" ? payload.code.slice(0, 80) : undefined,
+    table: typeof payload.table === "string" ? payload.table.slice(0, 120) : undefined,
+    column: typeof payload.column === "string" ? payload.column.slice(0, 120) : undefined,
+    constraint:
+      typeof payload.constraint === "string" ? payload.constraint.slice(0, 120) : undefined,
+  };
+}
+
+function logPostgresStoreFailure(event: string, error: unknown): void {
+  const code =
+    error && typeof error === "object" && "code" in error
+      ? String((error as { code?: unknown }).code)
+      : undefined;
+  const classifiedEvent =
+    code === "42P01" || code === "42703" ? "postgres_schema_missing" : event;
+
+  console.error(classifiedEvent, safePostgresErrorPayload(error));
+}
+
+async function runPostgresStoreOperation<T>(
+  event: string,
+  callback: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await callback();
+  } catch (error) {
+    logPostgresStoreFailure(event, error);
+    throw error;
+  }
 }
 
 async function withClient<T>(callback: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -113,7 +149,7 @@ async function writeRecord(client: PoolClient, record: ConversationRecord): Prom
 
 export class PostgresConversationStore implements ConversationStore {
   async load(): Promise<ConversationSnapshot> {
-    return withClient(async (client) => {
+    return runPostgresStoreOperation("postgres_store_connect_failed", () => withClient(async (client) => {
       const result = await client.query<{ payload: ConversationRecord }>(
         "SELECT payload FROM hotel_conversations ORDER BY updated_at DESC",
       );
@@ -122,7 +158,7 @@ export class PostgresConversationStore implements ConversationStore {
         conversations: result.rows.map((row) => normalizeRecord(row.payload)),
         updatedAt: new Date().toISOString(),
       };
-    });
+    }));
   }
 
   async save(snapshot: ConversationSnapshot): Promise<void> {
@@ -135,23 +171,23 @@ export class PostgresConversationStore implements ConversationStore {
   }
 
   async getById(id: string): Promise<ConversationRecord | undefined> {
-    return withClient(async (client) => {
+    return runPostgresStoreOperation("postgres_store_connect_failed", () => withClient(async (client) => {
       const result = await client.query<{ payload: ConversationRecord }>(
         "SELECT payload FROM hotel_conversations WHERE id = $1",
         [id],
       );
       return result.rows[0] ? normalizeRecord(result.rows[0].payload) : undefined;
-    });
+    }));
   }
 
   async getByPhone(phoneNormalized: string): Promise<ConversationRecord | undefined> {
-    return withClient(async (client) => {
+    return runPostgresStoreOperation("postgres_store_connect_failed", () => withClient(async (client) => {
       const result = await client.query<{ payload: ConversationRecord }>(
         "SELECT payload FROM hotel_conversations WHERE phone_normalized = $1 ORDER BY updated_at DESC LIMIT 1",
         [phoneNormalized],
       );
       return result.rows[0] ? normalizeRecord(result.rows[0].payload) : undefined;
-    });
+    }));
   }
 
   async upsertConversation(conversation: Conversation): Promise<ConversationRecord> {
@@ -162,7 +198,9 @@ export class PostgresConversationStore implements ConversationStore {
       messages: existing?.messages ?? [],
       events: existing?.events ?? [],
     };
-    await withClient((client) => writeRecord(client, record));
+    await runPostgresStoreOperation("postgres_state_save_failed", () =>
+      withClient((client) => writeRecord(client, record)),
+    );
     return record;
   }
 
@@ -190,7 +228,9 @@ export class PostgresConversationStore implements ConversationStore {
       lastOutboundAt: message.direction === "outbound" ? message.createdAt : record.lastOutboundAt,
       unreadCount: message.direction === "inbound" ? record.unreadCount + 1 : record.unreadCount,
     };
-    await withClient((client) => writeRecord(client, next));
+    await runPostgresStoreOperation("postgres_message_save_failed", () =>
+      withClient((client) => writeRecord(client, next)),
+    );
     return message;
   }
 
@@ -200,23 +240,25 @@ export class PostgresConversationStore implements ConversationStore {
       throw new Error(`Conversation ${event.conversationId} not found`);
     }
 
-    await withClient((client) =>
+    await runPostgresStoreOperation("postgres_state_save_failed", () => withClient((client) =>
       writeRecord(client, {
         ...record,
         events: [...record.events, event],
         updatedAt: event.createdAt,
       }),
-    );
+    ));
     return event;
   }
 
   async replaceConversation(record: ConversationRecord): Promise<ConversationRecord> {
-    await withClient((client) => writeRecord(client, normalizeRecord(record)));
+    await runPostgresStoreOperation("postgres_state_save_failed", () =>
+      withClient((client) => writeRecord(client, normalizeRecord(record))),
+    );
     return record;
   }
 
   async seed(records: ConversationRecord[]): Promise<ConversationSnapshot> {
-    await withClient(async (client) => {
+    await runPostgresStoreOperation("postgres_state_save_failed", () => withClient(async (client) => {
       await client.query("BEGIN");
       try {
         await client.query("DELETE FROM hotel_conversation_events");
@@ -230,7 +272,7 @@ export class PostgresConversationStore implements ConversationStore {
         await client.query("ROLLBACK");
         throw error;
       }
-    });
+    }));
 
     return {
       conversations: records,

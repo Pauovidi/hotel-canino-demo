@@ -34,6 +34,11 @@ RUN groupadd --system --gid 1001 nodejs \
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/package.json ./package.json
+COPY --from=builder --chown=nextjs:nodejs /app/db ./db
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/postgres-conversation-schema.mjs ./scripts/postgres-conversation-schema.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/run-postgres-migrations.mjs ./scripts/run-postgres-migrations.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/check-postgres-schema.mjs ./scripts/check-postgres-schema.mjs
 
 USER nextjs
 EXPOSE 3000
