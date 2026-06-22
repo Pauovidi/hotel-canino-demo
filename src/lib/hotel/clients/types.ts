@@ -25,6 +25,11 @@ export type ClientPetsMatchStatus =
   | "exact_or_token"
   | "token_subset_unique"
   | "probable_high_unique_token"
+  | "exact_canonical"
+  | "token_subset_unique_canonical"
+  | "probable_high_unique_token_canonical"
+  | "duplicate_clear_canonical"
+  | "ambiguous_canonical"
   | "ambiguous"
   | "missing"
   | "manual_review";

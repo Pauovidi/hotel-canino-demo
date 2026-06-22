@@ -179,6 +179,11 @@ function normalizeRecord(value: unknown): ConversationRecord | undefined {
       record.clientPetsMatchStatus === "exact_or_token" ||
       record.clientPetsMatchStatus === "token_subset_unique" ||
       record.clientPetsMatchStatus === "probable_high_unique_token" ||
+      record.clientPetsMatchStatus === "exact_canonical" ||
+      record.clientPetsMatchStatus === "token_subset_unique_canonical" ||
+      record.clientPetsMatchStatus === "probable_high_unique_token_canonical" ||
+      record.clientPetsMatchStatus === "duplicate_clear_canonical" ||
+      record.clientPetsMatchStatus === "ambiguous_canonical" ||
       record.clientPetsMatchStatus === "ambiguous" ||
       record.clientPetsMatchStatus === "missing" ||
       record.clientPetsMatchStatus === "manual_review"

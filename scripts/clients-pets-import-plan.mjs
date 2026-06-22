@@ -8,9 +8,13 @@ import { google } from "googleapis";
 import JSZip from "jszip";
 import XLSX from "xlsx";
 import {
+  CANONICAL_MATCH_STATUSES,
+  DUPLICATE_STATUSES,
   MATCH_STATUSES,
+  buildCanonicalClients,
   chatbotRuleForPetCount,
   matchAnimalClient,
+  matchAnimalClientCanonical,
   normalizeName,
 } from "./clients-pets-matching.mjs";
 
@@ -47,6 +51,8 @@ function parseArgs(argv) {
     } else if (item === "--out-dir") {
       args.outDir = argv[index + 1];
       index += 1;
+    } else if (item === "--v3") {
+      args.v3 = true;
     }
   }
   return args;
@@ -173,6 +179,11 @@ async function readWorkbookTables(filePath) {
 }
 
 function readTabularFile(filePath) {
+  if (filePath.toLowerCase().endsWith(".csv")) {
+    const workbook = XLSX.readFile(filePath, { type: "file", codepage: 65001 });
+    const sheetName = workbook.SheetNames[0];
+    return XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "", raw: false });
+  }
   const workbook = XLSX.readFile(filePath, { cellDates: false });
   const sheetName = workbook.SheetNames[0];
   const sheet = workbook.Sheets[sheetName];
@@ -271,7 +282,7 @@ function buildAnimalGroupsFromRows(rows) {
       "CLIENTE_NOMBRE",
       "NOMBRE_CLIENTE",
     ]);
-    const petName = readValue(row, ["MASCOTA", "Mascota", "mascota", "ANIMAL", "Animal"]);
+    const petName = readValue(row, ["MASCOTA", "Mascota", "mascota", "ANIMAL", "Animal", "Nombre"]);
     if (!origin && !petName) {
       return;
     }
@@ -875,7 +886,473 @@ async function writeClientReviewWorkbook(filePath, groups, generatedAt) {
   await workbook.xlsx.writeFile(filePath);
 }
 
+const V3_SAFE_IMPORT_STATUSES = new Set([
+  CANONICAL_MATCH_STATUSES.EXACT_CANONICAL,
+  CANONICAL_MATCH_STATUSES.TOKEN_SUBSET_UNIQUE_CANONICAL,
+  CANONICAL_MATCH_STATUSES.DUPLICATE_CLEAR_CANONICAL,
+]);
+const V3_PROBABLE_IMPORT_STATUSES = new Set([
+  CANONICAL_MATCH_STATUSES.PROBABLE_HIGH_UNIQUE_TOKEN_CANONICAL,
+]);
+
+function matchAllCanonical(source, canonicalClients) {
+  const matched = source.animalGroups.map((group) => ({
+    ...group,
+    pets: group.pets.filter((pet) => pet.name),
+    match: matchAnimalClientCanonical(group.origin, canonicalClients),
+  }));
+
+  return matched.filter(
+    (group) =>
+      group.pets.length > 0 ||
+      group.match.status === CANONICAL_MATCH_STATUSES.IGNORED_NOISE,
+  );
+}
+
+function canonicalKey(client) {
+  return client.canonicalClientId;
+}
+
+function aggregateByCanonical(groups, statuses) {
+  const aggregate = new Map();
+  for (const group of groups) {
+    if (!statuses.has(group.match.status) || !group.match.canonicalClient) {
+      continue;
+    }
+    const client = group.match.canonicalClient;
+    const key = canonicalKey(client);
+    const current = aggregate.get(key) ?? {
+      client,
+      status: group.match.status,
+      tokenMatches: [],
+      origins: [],
+      pets: [],
+    };
+    current.origins.push(group.origin);
+    if (group.match.tokenMatch) {
+      current.tokenMatches.push(group.match.tokenMatch);
+    }
+    current.pets.push(...group.pets);
+    aggregate.set(key, current);
+  }
+  return Array.from(aggregate.values()).map((entry) => ({
+    ...entry,
+    pets: uniquePetObjects(entry.pets),
+    origins: uniqueValues(entry.origins),
+    tokenMatches: uniqueValues(entry.tokenMatches),
+  }));
+}
+
+function canonicalClientRows(canonicalClients) {
+  return canonicalClients.map((client) => ({
+    canonical_client_id: client.canonicalClientId,
+    canonical_client_name: client.canonicalClientName,
+    duplicate_group_id: client.duplicateGroupId,
+    duplicate_status: client.duplicateStatus,
+    duplicate_confidence: client.duplicateConfidence,
+    duplicate_reason: client.duplicateReason,
+    source_client_rows: client.sourceClientRows.join("; "),
+    source_client_names: client.sourceClientNames.join("; "),
+    canonical_row: client.canonicalRow,
+    has_phone: client.canonicalPhone ? "yes" : "no",
+    has_email: client.canonicalEmail ? "yes" : "no",
+  }));
+}
+
+function duplicateRows(canonicalClients, reviewOnly) {
+  return canonicalClients
+    .filter((client) => client.sourceClientRows.length > 1)
+    .filter((client) =>
+      reviewOnly
+        ? client.duplicateStatus === DUPLICATE_STATUSES.MANUAL_REVIEW_CONFLICT
+        : client.duplicateStatus !== DUPLICATE_STATUSES.MANUAL_REVIEW_CONFLICT,
+    )
+    .map((client) => ({
+      canonical_client_id: client.canonicalClientId,
+      canonical_client_name: client.canonicalClientName,
+      duplicate_group_id: client.duplicateGroupId,
+      duplicate_status: client.duplicateStatus,
+      duplicate_confidence: client.duplicateConfidence,
+      duplicate_reason: client.duplicateReason,
+      source_client_rows: client.sourceClientRows.join("; "),
+      source_client_names: client.sourceClientNames.join("; "),
+      accion: reviewOnly
+        ? "Revisar antes de fusionar/importar."
+        : "Duplicado claro; confirmar antes de fusion real.",
+    }));
+}
+
+function canonicalUpdateRows(aggregates, generatedAt) {
+  return aggregates.map((entry) => ({
+    canonical_client_id: entry.client.canonicalClientId,
+    CSV_ROW_CLIENTES: entry.client.canonicalRow,
+    nombre: entry.client.canonicalClientName,
+    telefono_normalizado: entry.client.canonicalPhone,
+    email: entry.client.canonicalEmail,
+    CLIENTE_NORMALIZADO: normalizeName(entry.client.canonicalClientName),
+    MASCOTAS_COUNT: entry.pets.length,
+    MASCOTAS: entry.pets.map((pet) => pet.name).join("; "),
+    MASCOTAS_META: petMeta(entry.pets),
+    MASCOTAS_MATCH_STATUS: entry.status,
+    MASCOTAS_SOURCE: "client_pets_canonical_dry_run_v3",
+    MASCOTAS_UPDATED_AT: generatedAt,
+    MATCH_METHOD: entry.status,
+    TOKEN_MATCH: entry.tokenMatches.join("; "),
+    ANIMAL_CLIENTE_ORIGEN: entry.origins.join("; "),
+    duplicate_group_id: entry.client.duplicateGroupId,
+    duplicate_status: entry.client.duplicateStatus,
+    source_client_rows: entry.client.sourceClientRows.join("; "),
+    CHATBOT_RULE: chatbotRuleForPetCount(entry.pets.length, entry.status),
+  }));
+}
+
+function canonicalPetImportRows(aggregates, statusLabel, generatedAt) {
+  return aggregates.flatMap((entry) =>
+    entry.pets.map((pet) => ({
+      canonical_client_id: entry.client.canonicalClientId,
+      CSV_ROW_CLIENTES: entry.client.canonicalRow,
+      CLIENTE_NOMBRE: entry.client.canonicalClientName,
+      telefono_normalizado: entry.client.canonicalPhone,
+      email: entry.client.canonicalEmail,
+      CLIENTE_NORMALIZADO: normalizeName(entry.client.canonicalClientName),
+      MASCOTA: pet.name,
+      RAZA: pet.breed || "",
+      SEXO: pet.sex || "",
+      ANIMAL_CLIENTE_ORIGEN: entry.origins.join("; "),
+      FILA_ORIGEN_ANIMALES: pet.sourceRow || "",
+      MATCH_STATUS: entry.status,
+      duplicate_group_id: entry.client.duplicateGroupId,
+      SOURCE: statusLabel,
+      UPDATED_AT: generatedAt,
+    })),
+  );
+}
+
+function canonicalAmbiguousRows(groups) {
+  return groups
+    .filter((group) => group.match.status === CANONICAL_MATCH_STATUSES.AMBIGUOUS_CANONICAL)
+    .map((group) => ({
+      ANIMAL_CLIENTE_ORIGEN: group.origin,
+      ANIMAL_CLIENTE_NORMALIZADO: group.match.normalizedName,
+      ANIMAL_TOKEN_KEY: group.match.usefulTokens.join(" "),
+      MASCOTAS_COUNT: group.pets.length,
+      MASCOTAS: reviewPetSummary(group),
+      MASCOTAS_META: petMeta(group.pets),
+      MATCH_METHOD: group.match.matchMethod ?? CANONICAL_MATCH_STATUSES.AMBIGUOUS_CANONICAL,
+      TOKEN_MATCH: group.match.tokenMatch ?? "",
+      CANDIDATES_COUNT: group.match.candidates.length,
+      CLIENTES_CANONICOS_CANDIDATOS: group.match.candidates
+        .map((candidate) => candidate.canonicalClientName)
+        .join("; "),
+      ACCION: "Revisar manualmente; no importar automaticamente.",
+    }));
+}
+
+function canonicalSimpleAnimalRows(groups, status, action) {
+  return groups
+    .filter((group) => group.match.status === status)
+    .map((group) => ({
+      ANIMAL_CLIENTE_ORIGEN: group.origin,
+      ANIMAL_CLIENTE_NORMALIZADO: group.match.normalizedName,
+      ANIMAL_TOKEN_KEY: group.match.usefulTokens.join(" "),
+      MASCOTAS_COUNT: group.pets.length,
+      MASCOTAS: reviewPetSummary(group),
+      MASCOTAS_META: petMeta(group.pets),
+      ACCION: action,
+    }));
+}
+
+function canonicalUnmatchedClients(canonicalClients, safeAggregates, probableAggregates) {
+  const matched = new Set(
+    [...safeAggregates, ...probableAggregates].map((entry) => canonicalKey(entry.client)),
+  );
+  return canonicalClients
+    .filter((client) => !matched.has(canonicalKey(client)))
+    .map((client) => ({
+      canonical_client_id: client.canonicalClientId,
+      canonical_client_name: client.canonicalClientName,
+      duplicate_group_id: client.duplicateGroupId,
+      duplicate_status: client.duplicateStatus,
+      source_client_rows: client.sourceClientRows.join("; "),
+      ACCION: "Sin mascotas asignadas en dry-run v3.",
+    }));
+}
+
+function countCanonicalStatuses(groups) {
+  const counts = {
+    exact_canonical: 0,
+    token_subset_unique_canonical: 0,
+    probable_high_unique_token_canonical: 0,
+    duplicate_clear_canonical: 0,
+    ambiguous_canonical: 0,
+    missing: 0,
+    ignored_noise: 0,
+  };
+  for (const group of groups) {
+    counts[group.match.status] = (counts[group.match.status] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function clientFacingDuplicateRows(canonicalClients, reviewOnly) {
+  return duplicateRows(canonicalClients, reviewOnly).map((row) => ({
+    Cliente_detectado: row.canonical_client_name,
+    Filas_o_variantes_en_CLIENTES: row.source_client_names,
+    Motivo: row.duplicate_reason,
+    Acción_cliente: reviewOnly
+      ? "Confirmar si son la misma persona y cual es el nombre correcto."
+      : "Confirmar rapidamente si son la misma persona.",
+    Confirmar_mismo_cliente: "",
+    Nombre_correcto: "",
+    Comentarios: "",
+  }));
+}
+
+function clientFacingAmbiguousRows(groups, incompleteOnly) {
+  return groups
+    .filter((group) => group.match.status === CANONICAL_MATCH_STATUSES.AMBIGUOUS_CANONICAL)
+    .filter((group) =>
+      incompleteOnly
+        ? group.match.matchMethod === "incomplete_name_common"
+        : group.match.matchMethod !== "incomplete_name_common",
+    )
+    .map((group) => ({
+      Nombre_en_animales: group.origin,
+      Cliente_en_animales: group.origin,
+      Mascotas: reviewPetSummary(group),
+      Posibles_clientes_en_CLIENTES: group.match.candidates
+        .map((candidate) => candidate.canonicalClientName)
+        .join("; "),
+      Posibles_clientes: group.match.candidates
+        .map((candidate) => candidate.canonicalClientName)
+        .join("; "),
+      Qué_necesitamos: incompleteOnly
+        ? "Apellidos o cliente correcto para distinguir la persona."
+        : "Elegir el cliente correcto.",
+      Cliente_correcto: "",
+      Comentarios: "",
+    }));
+}
+
+function clientFacingMissingRows(groups) {
+  return groups
+    .filter((group) => group.match.status === CANONICAL_MATCH_STATUSES.MISSING)
+    .map((group) => ({
+      Cliente_en_animales: group.origin,
+      Mascotas: reviewPetSummary(group),
+      Mascotas_con_raza: reviewPetBreedSummary(group),
+      Acción_cliente: "Indicar cliente correcto o si hay que crear/corregir cliente.",
+      Cliente_correcto: "",
+      Comentarios: "",
+    }));
+}
+
+function clientFacingProbableRows(groups) {
+  return groups
+    .filter(
+      (group) =>
+        group.match.status === CANONICAL_MATCH_STATUSES.PROBABLE_HIGH_UNIQUE_TOKEN_CANONICAL,
+    )
+    .map((group) => ({
+      Cliente_en_animales: group.origin,
+      Mascotas: reviewPetSummary(group),
+      Cliente_sugerido: group.match.canonicalClient?.canonicalClientName ?? "",
+      Motivo: `Coincide un token unico: ${group.match.tokenMatch}`,
+      Confirmar_si_es_correcto: "",
+      Cliente_correcto: "",
+      Comentarios: "",
+    }));
+}
+
+function findCanonicalExample(groups, canonicalClients, name) {
+  const normalized = normalizeName(name);
+  const group = groups.find((item) => normalizeName(item.origin) === normalized);
+  const duplicate = canonicalClients.find(
+    (client) =>
+      client.normalizedName === normalized ||
+      client.sourceClientNames.some((sourceName) => normalizeName(sourceName) === normalized),
+  );
+  return {
+    animalFound: Boolean(group),
+    animalStatus: group?.match.status,
+    suggestedClient: group?.match.canonicalClient?.canonicalClientName ?? "",
+    duplicateStatus: duplicate?.duplicateStatus,
+    duplicateGroupSize: duplicate?.sourceClientRows.length,
+  };
+}
+
+function buildV3Plan(source, canonicalClients, groups, sheetCheck, generatedFiles) {
+  const safeAggregates = aggregateByCanonical(groups, V3_SAFE_IMPORT_STATUSES);
+  const probableAggregates = aggregateByCanonical(groups, V3_PROBABLE_IMPORT_STATUSES);
+  const clearDuplicates = duplicateRows(canonicalClients, false);
+  const reviewDuplicates = duplicateRows(canonicalClients, true);
+  return {
+    generatedAt: new Date().toISOString(),
+    sourceMode: source.sourceMode,
+    sourceFile: source.sourceFile,
+    sheetAccess: sheetCheck.sheetAccess,
+    sheetAccessReason: sheetCheck.skipReason ?? sheetCheck.errorCode,
+    counts: {
+      sourceClients: source.clients.length,
+      sourceAnimalGroups: source.animalGroups.length,
+      canonicalClients: canonicalClients.length,
+      clearDuplicates: clearDuplicates.length,
+      reviewDuplicates: reviewDuplicates.length,
+      ...countCanonicalStatuses(groups),
+      clientesUpdateExact: safeAggregates.length,
+      clientesUpdateProbableHigh: probableAggregates.length,
+      clientPetsImportExact: canonicalPetImportRows(safeAggregates, "v3_phase_1", "").length,
+      clientPetsImportProbableHigh: canonicalPetImportRows(
+        probableAggregates,
+        "v3_phase_2",
+        "",
+      ).length,
+      canonicalClientsWithoutPetMatch: canonicalUnmatchedClients(
+        canonicalClients,
+        safeAggregates,
+        probableAggregates,
+      ).length,
+    },
+    phasePlan: {
+      phase1:
+        "Importar exact_canonical + token_subset_unique_canonical + duplicate_clear_canonical si se aprueba deduplicacion clara.",
+      phase2: "Importar probable_high_unique_token_canonical solo con aprobacion.",
+      phase3:
+        "Resolver duplicados dudosos, nombres incompletos, ambiguos reales y sin match corregidos por cliente.",
+      neverImport: ["ambiguous_canonical", "missing", "ignored_noise"],
+    },
+    examples: {
+      monicaMartinez: findCanonicalExample(groups, canonicalClients, "Mónica Martínez"),
+      antonioFernandez: findCanonicalExample(groups, canonicalClients, "Antonio Fernández"),
+      marinaArnaut: findCanonicalExample(groups, canonicalClients, "Marina Arnaut"),
+      mariCarmen: findCanonicalExample(groups, canonicalClients, "Mari Carmen"),
+      pilar: findCanonicalExample(groups, canonicalClients, "Pilar"),
+      marina: findCanonicalExample(groups, canonicalClients, "Marina"),
+      molina: findCanonicalExample(groups, canonicalClients, "Molina"),
+      alejandroMolina: findCanonicalExample(groups, canonicalClients, "Alejandro Molina"),
+    },
+    generatedFiles,
+  };
+}
+
+function renderV3Markdown(plan) {
+  return `# CLIENTES + mascotas canonical import plan v3
+
+Generated at: ${plan.generatedAt}
+
+Source mode: ${plan.sourceMode}
+
+## Canonical summary
+
+- canonical clients: ${plan.counts.canonicalClients}
+- duplicados claros: ${plan.counts.clearDuplicates}
+- duplicados revision: ${plan.counts.reviewDuplicates}
+
+## Matching summary
+
+- exact_canonical: ${plan.counts.exact_canonical}
+- token_subset_unique_canonical: ${plan.counts.token_subset_unique_canonical}
+- probable_high_unique_token_canonical: ${plan.counts.probable_high_unique_token_canonical}
+- duplicate_clear_canonical: ${plan.counts.duplicate_clear_canonical}
+- ambiguous_canonical: ${plan.counts.ambiguous_canonical}
+- missing: ${plan.counts.missing}
+- ignored_noise: ${plan.counts.ignored_noise}
+
+## Import phases
+
+- Phase 1: ${plan.phasePlan.phase1}
+- Phase 2: ${plan.phasePlan.phase2}
+- Phase 3: ${plan.phasePlan.phase3}
+- Never import: ${plan.phasePlan.neverImport.join(", ")}
+
+## Google Sheets read-only check
+
+- Sheet access: ${plan.sheetAccess}
+- Sheet access reason: ${plan.sheetAccessReason ?? "n/a"}
+
+No Google Sheets writes were performed.
+`;
+}
+
+async function writeV3Workbook(filePath, source, canonicalClients, groups, generatedAt) {
+  const safeAggregates = aggregateByCanonical(groups, V3_SAFE_IMPORT_STATUSES);
+  const probableAggregates = aggregateByCanonical(groups, V3_PROBABLE_IMPORT_STATUSES);
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "Codex dry-run";
+  workbook.created = new Date(generatedAt);
+  const counts = countCanonicalStatuses(groups);
+  addWorksheet(workbook, "Resumen", [
+    { Campo: "canonical clients", Valor: canonicalClients.length },
+    { Campo: "duplicados claros", Valor: duplicateRows(canonicalClients, false).length },
+    { Campo: "duplicados revision", Valor: duplicateRows(canonicalClients, true).length },
+    ...Object.entries(counts).map(([Campo, Valor]) => ({ Campo, Valor })),
+  ]);
+  addWorksheet(workbook, "CANONICAL_CLIENTS", canonicalClientRows(canonicalClients));
+  addWorksheet(workbook, "DUPLICADOS_CLAROS", duplicateRows(canonicalClients, false));
+  addWorksheet(workbook, "DUPLICADOS_REVISION", duplicateRows(canonicalClients, true));
+  addWorksheet(workbook, "CLIENTES_update_exact", canonicalUpdateRows(safeAggregates, generatedAt));
+  addWorksheet(
+    workbook,
+    "CLIENTES_update_probable_high",
+    canonicalUpdateRows(probableAggregates, generatedAt),
+  );
+  addWorksheet(
+    workbook,
+    "CLIENT_PETS_import_exact",
+    canonicalPetImportRows(safeAggregates, "v3_phase_1", generatedAt),
+  );
+  addWorksheet(
+    workbook,
+    "CLIENT_PETS_import_probableHigh",
+    canonicalPetImportRows(probableAggregates, "v3_phase_2", generatedAt),
+  );
+  addWorksheet(workbook, "MASCOTAS_ambiguas_canonicas", canonicalAmbiguousRows(groups));
+  addWorksheet(
+    workbook,
+    "MASCOTAS_sin_match",
+    canonicalSimpleAnimalRows(groups, CANONICAL_MATCH_STATUSES.MISSING, "Sin candidato razonable."),
+  );
+  addWorksheet(
+    workbook,
+    "IGNORED_NOISE",
+    canonicalSimpleAnimalRows(groups, CANONICAL_MATCH_STATUSES.IGNORED_NOISE, "Ignorar."),
+  );
+  addWorksheet(
+    workbook,
+    "CLIENTES_sin_mascota_match",
+    canonicalUnmatchedClients(canonicalClients, safeAggregates, probableAggregates),
+  );
+  addWorksheet(workbook, "Instrucciones_importacion", [
+    { Fase: "1", Accion: "Importar seguros", Detalle: "exact_canonical + token_subset_unique_canonical + duplicate_clear_canonical si se aprueba deduplicacion clara." },
+    { Fase: "2", Accion: "Importar probables", Detalle: "probable_high_unique_token_canonical solo con aprobacion." },
+    { Fase: "3", Accion: "Manual", Detalle: "Resolver duplicados dudosos, nombres incompletos, ambiguos reales y sin match." },
+    { Fase: "Nunca", Accion: "No importar", Detalle: "ambiguous_canonical, missing, ignored_noise." },
+  ]);
+  await workbook.xlsx.writeFile(filePath);
+}
+
+async function writeV3ClientWorkbook(filePath, canonicalClients, groups, generatedAt) {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "Codex dry-run";
+  workbook.created = new Date(generatedAt);
+  addWorksheet(workbook, "Confirmar_duplicados_claros", clientFacingDuplicateRows(canonicalClients, false));
+  addWorksheet(workbook, "Completar_nombres_incompletos", clientFacingAmbiguousRows(groups, true));
+  addWorksheet(workbook, "Revisar_ambiguos_reales", clientFacingAmbiguousRows(groups, false));
+  addWorksheet(workbook, "Revisar_sin_match", clientFacingMissingRows(groups));
+  addWorksheet(workbook, "Confirmar_probables_altos", clientFacingProbableRows(groups));
+  addWorksheet(workbook, "Instrucciones", [
+    { Paso: "1", Instruccion: "No hace falta revisar los matches seguros." },
+    { Paso: "2", Instruccion: "Los duplicados claros solo necesitan confirmacion rapida." },
+    { Paso: "3", Instruccion: "Los nombres incompletos requieren apellidos o cliente correcto." },
+    { Paso: "4", Instruccion: "Los casos sin match requieren indicar cliente correcto o crear/corregir cliente." },
+  ]);
+  await workbook.xlsx.writeFile(filePath);
+}
+
 async function buildSource(args) {
+  if (args.v3 && (!args.clientes || !args.animales)) {
+    throw new Error("V3 requires original files: --clientes <clientes.csv> --animales <animales.xls>");
+  }
   if (args.clientes && args.animales) {
     return buildSourceFromOriginFiles(args.clientes, args.animales);
   }
@@ -889,6 +1366,29 @@ async function buildSource(args) {
 
 export async function runImportPlan(args) {
   const source = await buildSource(args);
+  if (args.v3) {
+    const canonicalClients = buildCanonicalClients(source.clients);
+    const groups = matchAllCanonical(source, canonicalClients);
+    const outDir = path.resolve(args.outDir ?? "local-data/reports");
+    const generatedAt = new Date().toISOString();
+    await fs.mkdir(outDir, { recursive: true });
+
+    const v3Path = path.join(outDir, "cruce_clientes_mascotas_v3.xlsx");
+    const clientV3Path = path.join(outDir, "revision_cliente_mascotas_y_duplicados_v3.xlsx");
+    await writeV3Workbook(v3Path, source, canonicalClients, groups, generatedAt);
+    await writeV3ClientWorkbook(clientV3Path, canonicalClients, groups, generatedAt);
+
+    const plan = buildV3Plan(source, canonicalClients, groups, await readClientsSheetReadOnly(), {
+      v3Workbook: v3Path,
+      clientReviewWorkbook: clientV3Path,
+      json: path.join(outDir, "clients_pets_import_plan.json"),
+      markdown: path.join(outDir, "clients_pets_import_plan.md"),
+    });
+    await fs.writeFile(plan.generatedFiles.json, JSON.stringify(plan, null, 2), "utf8");
+    await fs.writeFile(plan.generatedFiles.markdown, renderV3Markdown(plan), "utf8");
+    return plan;
+  }
+
   const groups = matchAll(source);
   const outDir = path.resolve(args.outDir ?? "local-data/reports");
   const generatedAt = new Date().toISOString();
@@ -918,11 +1418,13 @@ async function main() {
       reportDir: path.dirname(plan.generatedFiles.json),
       counts: plan.counts,
       sheetAccess: plan.sheetAccess,
-      molinaCheck: {
-        found: plan.molinaCheck.found,
-        status: plan.molinaCheck.status,
-        relatedCount: plan.molinaCheck.relatedGroups?.length ?? 0,
-      },
+      molinaCheck: plan.molinaCheck
+        ? {
+            found: plan.molinaCheck.found,
+            status: plan.molinaCheck.status,
+            relatedCount: plan.molinaCheck.relatedGroups?.length ?? 0,
+          }
+        : undefined,
     }),
   );
 }

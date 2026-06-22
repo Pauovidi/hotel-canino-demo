@@ -368,7 +368,15 @@ describe("conversation service", () => {
     expect(result.botReply?.body).not.toContain("¿Ya eres cliente");
   });
 
-  it.each(["exact", "token_subset_unique", "probable_high_unique_token"] as const)(
+  it.each([
+    "exact",
+    "token_subset_unique",
+    "probable_high_unique_token",
+    "exact_canonical",
+    "token_subset_unique_canonical",
+    "probable_high_unique_token_canonical",
+    "duplicate_clear_canonical",
+  ] as const)(
     "uses the only safe known pet for a recognized client with status %s",
     async (mascotasMatchStatus) => {
     const store = new MemoryConversationStore();
@@ -414,7 +422,7 @@ describe("conversation service", () => {
         email: "pau.qa@example.test",
         mascotas: ["Kira", "Thor"],
         mascotasCount: 2,
-        mascotasMatchStatus: "probable_high_unique_token",
+        mascotasMatchStatus: "duplicate_clear_canonical",
         rowNumber: 7,
         sheetName: "CLIENTES",
       },
@@ -431,7 +439,7 @@ describe("conversation service", () => {
     expect(result.botReply?.body).toContain("para alguna de ellas o para otra mascota");
   });
 
-  it.each(["ambiguous", "missing", "manual_review"] as const)(
+  it.each(["ambiguous", "ambiguous_canonical", "missing", "manual_review"] as const)(
     "asks pet name when known client pet status is %s",
     async (mascotasMatchStatus) => {
     const store = new MemoryConversationStore();

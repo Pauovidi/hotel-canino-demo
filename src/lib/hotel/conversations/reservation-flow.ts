@@ -146,6 +146,11 @@ function safeClientPets(input: {
     | "exact_or_token"
     | "token_subset_unique"
     | "probable_high_unique_token"
+    | "exact_canonical"
+    | "token_subset_unique_canonical"
+    | "probable_high_unique_token_canonical"
+    | "duplicate_clear_canonical"
+    | "ambiguous_canonical"
     | "ambiguous"
     | "missing"
     | "manual_review";
@@ -158,7 +163,11 @@ function safeClientPets(input: {
     input.status === "exact" ||
     input.status === "exact_or_token" ||
     input.status === "token_subset_unique" ||
-    input.status === "probable_high_unique_token";
+    input.status === "probable_high_unique_token" ||
+    input.status === "exact_canonical" ||
+    input.status === "token_subset_unique_canonical" ||
+    input.status === "probable_high_unique_token_canonical" ||
+    input.status === "duplicate_clear_canonical";
   if (!safeStatus || pets.length === 0) {
     return [];
   }

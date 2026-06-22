@@ -157,6 +157,11 @@ function parsePetsMatchStatus(value: string): ClientPetsMatchStatus | undefined 
     normalized === "exact_or_token" ||
     normalized === "token_subset_unique" ||
     normalized === "probable_high_unique_token" ||
+    normalized === "exact_canonical" ||
+    normalized === "token_subset_unique_canonical" ||
+    normalized === "probable_high_unique_token_canonical" ||
+    normalized === "duplicate_clear_canonical" ||
+    normalized === "ambiguous_canonical" ||
     normalized === "ambiguous" ||
     normalized === "missing" ||
     normalized === "manual_review"
