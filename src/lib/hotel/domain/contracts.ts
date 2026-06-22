@@ -227,6 +227,15 @@ export interface ReservationRecord {
   cancellationRequestedAt?: string;
   cancellationCompletedAt?: string;
   reminderSentAt?: string;
+  termsAccepted?: boolean;
+  termsAcceptedAt?: string;
+  termsVersion?: string;
+  termsSource?: "whatsapp_link";
+  termsUrl?: string;
+  confirmationTemplateSentAt?: string;
+  confirmationTemplateMode?: "whatsapp_reply" | "dry_run";
+  prearrivalReminderSentAt?: string;
+  postStayFollowupSentAt?: string;
   sheetRegistration?: SheetReservationRegistration;
   reviewFlags: ReservationReviewFlag[];
   availability?: AvailabilityResult;

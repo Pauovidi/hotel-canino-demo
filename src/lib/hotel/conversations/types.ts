@@ -122,6 +122,12 @@ export interface PendingReservationProposal {
   createdFromMessageId: string;
   reservationId?: string;
   failureReason?: string;
+  termsAccepted?: boolean;
+  termsAcceptedAt?: string;
+  termsVersion?: string;
+  termsSource?: "whatsapp_link";
+  termsUrl?: string;
+  contractAcceptanceRequestedAt?: string;
 }
 
 export interface PendingReservationContext {

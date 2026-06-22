@@ -19,6 +19,13 @@ import {
   type WhatsAppReservationBridgeDeps,
 } from "./reservation-bridge";
 import {
+  buildContractAcceptanceRequest,
+  CONTRACT_TERMS_VERSION,
+  getClientRequestsConfig,
+  isExplicitContractAcceptance,
+  isExplicitContractRejection,
+} from "./client-requests";
+import {
   advanceReservationChangeFlow,
   isReservationChangeFlowActive,
   startReservationChangeFlow,
@@ -52,6 +59,7 @@ import type {
   ConversationMode,
   ConversationRecord,
   Message,
+  PendingReservationProposal,
 } from "./types";
 
 export interface InboundWhatsAppPayload {
@@ -1203,26 +1211,184 @@ export async function getConversation(
   return store.getById(id);
 }
 
+async function resolveContractAcceptanceGate(input: {
+  store: ConversationStore;
+  conversation: ConversationRecord;
+  message: string;
+  deps?: WhatsAppReservationBridgeDeps;
+}): Promise<
+  | { handled: false; conversation: ConversationRecord }
+  | { handled: true; conversation: ConversationRecord; reply: string }
+> {
+  const config = getClientRequestsConfig();
+  const proposal = input.conversation.pendingReservationProposal;
+  if (!config.requireContractAcceptance || !proposal || proposal.status !== "proposed") {
+    return { handled: false, conversation: input.conversation };
+  }
+
+  if (proposal.termsAccepted) {
+    return { handled: false, conversation: input.conversation };
+  }
+
+  const nowValue = input.deps?.now?.() ?? new Date();
+  const nowValueIso = nowValue.toISOString();
+  const buildProposalPatch = (
+    patch: Partial<PendingReservationProposal>,
+  ): PendingReservationProposal => ({
+    ...proposal,
+    termsUrl: config.contractUrl,
+    termsVersion: CONTRACT_TERMS_VERSION,
+    termsSource: "whatsapp_link",
+    ...patch,
+  });
+
+  if (isExplicitContractAcceptance(input.message) && proposal.contractAcceptanceRequestedAt) {
+    const acceptedProposal = buildProposalPatch({
+      termsAccepted: true,
+      termsAcceptedAt: nowValueIso,
+    });
+    const acceptedRecord: ConversationRecord = {
+      ...input.conversation,
+      pendingReservationProposal: acceptedProposal,
+      updatedAt: nowValueIso,
+    };
+    await replaceConversationBestEffort(
+      input.store,
+      acceptedRecord,
+      "contract_acceptance_update_conversation",
+    );
+    await addEventBestEffort(
+      input.store,
+      createEvent(input.conversation.id, "contract_accepted", {
+        proposalId: proposal.proposalId,
+        termsVersion: CONTRACT_TERMS_VERSION,
+        termsSource: "whatsapp_link",
+      }),
+      "contract_accepted",
+    );
+
+    return {
+      handled: false,
+      conversation: await getConversationByIdBestEffort(
+        input.store,
+        input.conversation.id,
+        acceptedRecord,
+        "contract_acceptance_return_read",
+      ),
+    };
+  }
+
+  if (isExplicitContractRejection(input.message)) {
+    const rejectedProposal = buildProposalPatch({
+      termsAccepted: false,
+      failureReason: "contract_not_accepted",
+    });
+    const rejectedRecord: ConversationRecord = {
+      ...input.conversation,
+      pendingReservationProposal: rejectedProposal,
+      mode: "human",
+      humanRequested: true,
+      requiresManualReview: true,
+      updatedAt: nowValueIso,
+    };
+    await replaceConversationBestEffort(
+      input.store,
+      rejectedRecord,
+      "contract_rejection_update_conversation",
+    );
+    await addEventBestEffort(
+      input.store,
+      createEvent(input.conversation.id, "contract_acceptance_rejected", {
+        proposalId: proposal.proposalId,
+      }),
+      "contract_acceptance_rejected",
+    );
+
+    return {
+      handled: true,
+      conversation: await getConversationByIdBestEffort(
+        input.store,
+        input.conversation.id,
+        rejectedRecord,
+        "contract_rejection_return_read",
+      ),
+      reply:
+        "De acuerdo, no confirmamos la reserva sin aceptar las condiciones. Lo revisa una persona del equipo y te contestamos por aqui.",
+    };
+  }
+
+  const requestedProposal = buildProposalPatch({
+    termsAccepted: false,
+    contractAcceptanceRequestedAt: proposal.contractAcceptanceRequestedAt ?? nowValueIso,
+  });
+  const requestedRecord: ConversationRecord = {
+    ...input.conversation,
+    pendingReservationProposal: requestedProposal,
+    updatedAt: nowValueIso,
+  };
+  await replaceConversationBestEffort(
+    input.store,
+    requestedRecord,
+    "contract_request_update_conversation",
+  );
+  await addEventBestEffort(
+    input.store,
+    createEvent(input.conversation.id, "contract_acceptance_requested", {
+      proposalId: proposal.proposalId,
+      termsVersion: CONTRACT_TERMS_VERSION,
+      termsUrlConfigured: Boolean(config.contractUrl),
+    }),
+    "contract_acceptance_requested",
+  );
+
+  return {
+    handled: true,
+    conversation: await getConversationByIdBestEffort(
+      input.store,
+      input.conversation.id,
+      requestedRecord,
+      "contract_request_return_read",
+    ),
+    reply: buildContractAcceptanceRequest(config),
+  };
+}
+
 async function confirmConversationReservation(input: {
   store: ConversationStore;
   conversation: ConversationRecord;
+  message: string;
   deps?: WhatsAppReservationBridgeDeps;
 }): Promise<{ conversation: ConversationRecord; reply: string }> {
   const latest = (await input.store.getById(input.conversation.id)) ?? input.conversation;
-  const confirmation = await confirmPendingReservationProposal({
+  const contractGate = await resolveContractAcceptanceGate({
+    store: input.store,
     conversation: latest,
+    message: input.message,
+    deps: input.deps,
+  });
+  if (contractGate.handled) {
+    return {
+      conversation: contractGate.conversation,
+      reply: contractGate.reply,
+    };
+  }
+
+  const conversationForConfirmation = contractGate.conversation;
+  const confirmation = await confirmPendingReservationProposal({
+    conversation: conversationForConfirmation,
     deps: input.deps,
   });
   await addEventBestEffort(
     input.store,
-    createEvent(latest.id, "reservation_confirmation_checked", {
+    createEvent(conversationForConfirmation.id, "reservation_confirmation_checked", {
       kind: confirmation.kind,
       ...confirmation.eventPayload,
     }),
     "reservation_confirmation_checked",
   );
 
-  const latestAfterEvent = (await input.store.getById(latest.id)) ?? latest;
+  const latestAfterEvent =
+    (await input.store.getById(conversationForConfirmation.id)) ?? conversationForConfirmation;
   const updatedRecord: ConversationRecord = {
     ...latestAfterEvent,
     pendingReservationProposal:
@@ -1265,19 +1431,29 @@ async function confirmConversationReservation(input: {
   if (confirmation.kind === "confirmed" && confirmation.reservation) {
     await addEventBestEffort(
       input.store,
-      createEvent(latest.id, "reservation_confirmed_from_whatsapp", {
+      createEvent(conversationForConfirmation.id, "reservation_confirmed_from_whatsapp", {
         reservationIdSummary: summarizeReservationId(confirmation.reservation.reservationId),
         proposalId: confirmation.proposal?.proposalId,
       }),
       "reservation_confirmed_from_whatsapp",
     );
+    if (getClientRequestsConfig().confirmationTemplateEnabled) {
+      await addEventBestEffort(
+        input.store,
+        createEvent(conversationForConfirmation.id, "confirmation_template_sent", {
+          reservationIdSummary: summarizeReservationId(confirmation.reservation.reservationId),
+          mode: "whatsapp_reply",
+        }),
+        "confirmation_template_sent",
+      );
+    }
   }
 
   if (confirmation.clientDirectoryUpsert) {
     await addEventBestEffort(
       input.store,
       createEvent(
-        latest.id,
+        conversationForConfirmation.id,
         clientUpsertEventType(confirmation.clientDirectoryUpsert),
         sanitizeClientUpsertPayload(confirmation.clientDirectoryUpsert),
       ),
@@ -1288,7 +1464,7 @@ async function confirmConversationReservation(input: {
   if (confirmation.handoff) {
     await addEventBestEffort(
       input.store,
-      createEvent(latest.id, "human_requested", {
+      createEvent(conversationForConfirmation.id, "human_requested", {
         matchedFrom: "reservation_bridge",
         reason: confirmation.kind,
       }),
@@ -1299,7 +1475,7 @@ async function confirmConversationReservation(input: {
   return {
     conversation: await getConversationByIdBestEffort(
       input.store,
-      latest.id,
+      conversationForConfirmation.id,
       nextRecord,
       "reservation_confirmation_final_read",
     ),
@@ -1487,11 +1663,43 @@ export async function handleInboundWhatsApp(
 
     if (
       latestBeforeFlow.reservationFlow?.status === "pending_confirmation" &&
+      latestBeforeFlow.pendingReservationProposal?.contractAcceptanceRequestedAt &&
+      (isExplicitContractAcceptance(safeBody) || isExplicitContractRejection(safeBody))
+    ) {
+      const confirmed = await confirmConversationReservation({
+        store,
+        conversation: latestBeforeFlow,
+        message: safeBody,
+        deps: reservationBridgeDeps,
+      });
+      const botReply = await addBotMessageBestEffort(
+        store,
+        latestBeforeFlow.id,
+        confirmed.reply,
+        "reservation_flow_contract_acceptance_reply",
+      );
+
+      return {
+        conversation: await getConversationByIdBestEffort(
+          store,
+          latestBeforeFlow.id,
+          confirmed.conversation,
+          "reservation_flow_contract_acceptance_return_read",
+        ),
+        inbound,
+        botReply,
+        twiml: buildTwilioMessageResponse(confirmed.reply),
+      };
+    }
+
+    if (
+      latestBeforeFlow.reservationFlow?.status === "pending_confirmation" &&
       isAffirmativeConfirmationUtterance(safeBody)
     ) {
       const confirmed = await confirmConversationReservation({
         store,
         conversation: latestBeforeFlow,
+        message: safeBody,
         deps: reservationBridgeDeps,
       });
       const botReply = await addBotMessageBestEffort(
@@ -1609,6 +1817,37 @@ export async function handleInboundWhatsApp(
   }
 
   const latestBeforePlan = (await store.getById(freshWithClient.id)) ?? freshWithClient;
+  if (
+    latestBeforePlan.pendingReservationProposal?.contractAcceptanceRequestedAt &&
+    (isExplicitContractAcceptance(safeBody) || isExplicitContractRejection(safeBody))
+  ) {
+    const confirmation = await confirmConversationReservation({
+      store,
+      conversation: latestBeforePlan,
+      message: safeBody,
+      deps: reservationBridgeDeps,
+    });
+
+    const botReply = await addBotMessageBestEffort(
+      store,
+      freshWithClient.id,
+      confirmation.reply,
+      "contract_acceptance_reply",
+    );
+
+    return {
+      conversation: await getConversationByIdBestEffort(
+        store,
+        freshWithClient.id,
+        confirmation.conversation,
+        "contract_acceptance_reply_return_read",
+      ),
+      inbound,
+      botReply,
+      twiml: buildTwilioMessageResponse(confirmation.reply),
+    };
+  }
+
   const intelligenceNow = reservationBridgeDeps?.now?.() ?? new Date();
   const quoteOutcome = buildQuoteOutcome(latestBeforePlan, safeBody, intelligenceNow);
   if (quoteOutcome) {
@@ -1773,6 +2012,7 @@ export async function handleInboundWhatsApp(
     const confirmation = await confirmConversationReservation({
       store,
       conversation: (await store.getById(freshWithClient.id)) ?? freshWithClient,
+      message: safeBody,
       deps: reservationBridgeDeps,
     });
 

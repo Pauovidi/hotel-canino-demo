@@ -19,6 +19,10 @@ import type {
   ConversationRecord,
   PendingReservationProposal,
 } from "./types";
+import {
+  buildReservationConfirmationTemplate,
+  getClientRequestsConfig,
+} from "./client-requests";
 
 const PROPOSAL_TTL_MS = 2 * 60 * 60 * 1000;
 
@@ -353,6 +357,10 @@ function buildProposalReply(proposal: PendingReservationProposal): string {
 }
 
 function buildConfirmationReply(proposal: PendingReservationProposal): string {
+  if (getClientRequestsConfig().confirmationTemplateEnabled) {
+    return buildReservationConfirmationTemplate(proposal);
+  }
+
   if (proposal.checkInTime && proposal.price !== undefined) {
     return `Reserva confirmada para ${proposal.petName}. Te esperamos el ${formatSingleDate(
       proposal.checkIn,
@@ -522,6 +530,17 @@ function toReservationRecord(input: {
         : input.proposal.ownerEmail || input.proposal.ownerName
           ? "new"
           : "unknown",
+    termsAccepted: input.proposal.termsAccepted,
+    termsAcceptedAt: input.proposal.termsAcceptedAt,
+    termsVersion: input.proposal.termsVersion,
+    termsSource: input.proposal.termsSource,
+    termsUrl: input.proposal.termsUrl,
+    confirmationTemplateSentAt: getClientRequestsConfig().confirmationTemplateEnabled
+      ? input.nowIso
+      : undefined,
+    confirmationTemplateMode: getClientRequestsConfig().confirmationTemplateEnabled
+      ? "whatsapp_reply"
+      : undefined,
     reviewFlags: [],
     availability: mapLegacyAvailabilityToDomain(input.availability, false),
     pricing: input.proposal.pricing,

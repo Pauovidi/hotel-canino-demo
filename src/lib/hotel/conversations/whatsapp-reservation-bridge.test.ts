@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { buildEntryLogRecord } from "@/lib/hotel/application/entry-log";
 import type { ReservationRecord } from "@/lib/hotel/domain/contracts";
@@ -24,6 +24,12 @@ import type {
   ConversationSnapshot,
   Message,
 } from "./types";
+
+const previousEnv = { ...process.env };
+
+afterEach(() => {
+  process.env = { ...previousEnv };
+});
 
 class MemoryConversationStore implements ConversationStore {
   private snapshot: ConversationSnapshot = createEmptyConversationSnapshot();
@@ -1942,6 +1948,145 @@ describe("WhatsApp reservation bridge", () => {
       gestetStatus: "procesado Gestet",
       clientStatus: "nuevo cliente añadido",
     });
+  });
+
+  it("requests contract acceptance before confirming when the contract gate is enabled", async () => {
+    process.env.HOTEL_CONTRACT_ACCEPTANCE_REQUIRED = "true";
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+
+    await createNewClientPricedProposal({
+      store,
+      deps,
+      prefix: "SM_BRIDGE_CONTRACT_REQUEST_1",
+    });
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "Sí, confirma",
+        messageSid: "SM_BRIDGE_CONTRACT_REQUEST_2",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(counters.checks).toBe(1);
+    expect(counters.writes).toBe(0);
+    expect(counters.reservations).toHaveLength(0);
+    expect(result.botReply?.body).toContain(
+      "https://somosmuyperros.com/contrato-de-admision-e-ingreso/",
+    );
+    expect(result.botReply?.body).toContain("responde: acepto");
+    expect(result.conversation.pendingReservationProposal).toMatchObject({
+      termsAccepted: false,
+      termsVersion: "admision-ingreso-2026-06-22",
+      termsSource: "whatsapp_link",
+    });
+    expect(
+      result.conversation.events.some(
+        (event) => event.eventType === "contract_acceptance_requested",
+      ),
+    ).toBe(true);
+  });
+
+  it("confirms only after explicit contract acceptance and stores acceptance metadata", async () => {
+    process.env.HOTEL_CONTRACT_ACCEPTANCE_REQUIRED = "true";
+    process.env.HOTEL_CONFIRMATION_TEMPLATE_ENABLED = "true";
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+
+    await createNewClientPricedProposal({
+      store,
+      deps,
+      prefix: "SM_BRIDGE_CONTRACT_ACCEPT_1",
+    });
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "Sí, confirma",
+        messageSid: "SM_BRIDGE_CONTRACT_ACCEPT_2",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    const confirmed = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "acepto",
+        messageSid: "SM_BRIDGE_CONTRACT_ACCEPT_3",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(counters.checks).toBe(2);
+    expect(counters.writes).toBe(1);
+    expect(counters.reservations).toHaveLength(1);
+    expect(confirmed.conversation.pendingReservationProposal).toMatchObject({
+      status: "confirmed",
+      termsAccepted: true,
+      termsVersion: "admision-ingreso-2026-06-22",
+      termsSource: "whatsapp_link",
+      termsUrl: "https://somosmuyperros.com/contrato-de-admision-e-ingreso/",
+    });
+    expect(counters.reservations[0]).toMatchObject({
+      termsAccepted: true,
+      termsVersion: "admision-ingreso-2026-06-22",
+      termsSource: "whatsapp_link",
+      termsUrl: "https://somosmuyperros.com/contrato-de-admision-e-ingreso/",
+      confirmationTemplateMode: "whatsapp_reply",
+    });
+    expect(confirmed.botReply?.body).toContain("Reserva confirmada.");
+    expect(confirmed.botReply?.body).toContain("Mascota/s: Kira QA");
+    expect(
+      confirmed.conversation.events.some((event) => event.eventType === "contract_accepted"),
+    ).toBe(true);
+    expect(
+      confirmed.conversation.events.some(
+        (event) => event.eventType === "confirmation_template_sent",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not treat a generic confirmation as contract acceptance", async () => {
+    process.env.HOTEL_CONTRACT_ACCEPTANCE_REQUIRED = "true";
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+
+    await createNewClientPricedProposal({
+      store,
+      deps,
+      prefix: "SM_BRIDGE_CONTRACT_GENERIC_1",
+    });
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "Sí, confirma",
+        messageSid: "SM_BRIDGE_CONTRACT_GENERIC_2",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "confirmo",
+        messageSid: "SM_BRIDGE_CONTRACT_GENERIC_3",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(counters.writes).toBe(0);
+    expect(counters.reservations).toHaveLength(0);
+    expect(result.botReply?.body).toContain("responde: acepto");
+    expect(result.conversation.pendingReservationProposal?.status).toBe("proposed");
+    expect(result.conversation.pendingReservationProposal?.termsAccepted).toBe(false);
   });
 
   it.each([
