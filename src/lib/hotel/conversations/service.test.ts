@@ -368,6 +368,128 @@ describe("conversation service", () => {
     expect(result.botReply?.body).not.toContain("¿Ya eres cliente");
   });
 
+  it("uses the only safe known pet for a recognized client", async () => {
+    const store = new MemoryConversationStore();
+    const directory = createStaticClientDirectory([
+      {
+        nombre: "Pau QA",
+        telefonoMovil: "+34 600 009 991",
+        telefonoNormalizado: "34600009991",
+        email: "pau.qa@example.test",
+        mascotas: ["Kira"],
+        mascotasCount: 1,
+        mascotasMatchStatus: "exact",
+        rowNumber: 7,
+        sheetName: "CLIENTES",
+      },
+    ]);
+
+    const result = await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "quiero reservar" },
+      store,
+      directory,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      clientKind: "habitual",
+      status: "collecting_dates",
+      petName: "Kira",
+      petCount: 1,
+    });
+    expect(result.botReply?.body).toContain("Tengo registrada a Kira");
+    expect(result.botReply?.body).toContain("Qué fechas necesitas");
+    expect(result.botReply?.body).not.toContain("Dime el nombre de tu mascota");
+  });
+
+  it("asks which pet for a recognized client with multiple safe pets", async () => {
+    const store = new MemoryConversationStore();
+    const directory = createStaticClientDirectory([
+      {
+        nombre: "Pau QA",
+        telefonoMovil: "+34 600 009 991",
+        telefonoNormalizado: "34600009991",
+        email: "pau.qa@example.test",
+        mascotas: ["Kira", "Thor"],
+        mascotasCount: 2,
+        mascotasMatchStatus: "exact_or_token",
+        rowNumber: 7,
+        sheetName: "CLIENTES",
+      },
+    ]);
+
+    const result = await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "quiero reservar" },
+      store,
+      directory,
+    );
+
+    expect(result.conversation.reservationFlow?.status).toBe("collecting_pet");
+    expect(result.botReply?.body).toContain("Tengo registradas a Kira y Thor");
+    expect(result.botReply?.body).toContain("para alguna de ellas o para otra mascota");
+  });
+
+  it.each(["ambiguous", "manual_review"] as const)(
+    "asks pet name when known client pet status is %s",
+    async (mascotasMatchStatus) => {
+    const store = new MemoryConversationStore();
+    const directory = createStaticClientDirectory([
+      {
+        nombre: "Pau QA",
+        telefonoMovil: "+34 600 009 991",
+        telefonoNormalizado: "34600009991",
+        email: "pau.qa@example.test",
+        mascotas: ["Kira"],
+        mascotasCount: 1,
+        mascotasMatchStatus,
+        rowNumber: 7,
+        sheetName: "CLIENTES",
+      },
+    ]);
+
+    const result = await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "quiero reservar" },
+      store,
+      directory,
+    );
+
+    expect(result.conversation.reservationFlow?.status).toBe("collecting_pet");
+    expect(result.conversation.reservationFlow?.petName).toBeUndefined();
+    expect(result.botReply?.body).toContain("Dime el nombre de tu mascota");
+    },
+  );
+
+  it("respects a different pet named by the user after assuming one known pet", async () => {
+    const store = new MemoryConversationStore();
+    const directory = createStaticClientDirectory([
+      {
+        nombre: "Pau QA",
+        telefonoMovil: "+34 600 009 991",
+        telefonoNormalizado: "34600009991",
+        email: "pau.qa@example.test",
+        mascotas: ["Kira"],
+        mascotasCount: 1,
+        mascotasMatchStatus: "exact",
+        rowNumber: 7,
+        sheetName: "CLIENTES",
+      },
+    ]);
+
+    await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "quiero reservar" },
+      store,
+      directory,
+    );
+    const correction = await handleInboundWhatsApp(
+      { from: "whatsapp:+34600009991", body: "sería para Thor" },
+      store,
+      directory,
+    );
+
+    expect(correction.conversation.reservationFlow?.petName).toBe("Thor");
+    expect(correction.conversation.reservationFlow?.status).toBe("collecting_dates");
+    expect(correction.botReply?.body).toContain("Qué fechas");
+  });
+
   it("asks for email when a strong phone match has no CLIENTES email", async () => {
     const store = new MemoryConversationStore();
     const directory = createStaticClientDirectory([

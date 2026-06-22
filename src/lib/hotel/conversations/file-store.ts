@@ -167,6 +167,23 @@ function normalizeRecord(value: unknown): ConversationRecord | undefined {
         : undefined,
     clientName: typeof record.clientName === "string" ? record.clientName : undefined,
     clientEmail: typeof record.clientEmail === "string" ? record.clientEmail : undefined,
+    clientPets: Array.isArray(record.clientPets)
+      ? record.clientPets.filter((pet): pet is string => typeof pet === "string")
+      : undefined,
+    clientPetsCount:
+      typeof record.clientPetsCount === "number" && Number.isFinite(record.clientPetsCount)
+        ? record.clientPetsCount
+        : undefined,
+    clientPetsMatchStatus:
+      record.clientPetsMatchStatus === "exact" ||
+      record.clientPetsMatchStatus === "exact_or_token" ||
+      record.clientPetsMatchStatus === "ambiguous" ||
+      record.clientPetsMatchStatus === "missing" ||
+      record.clientPetsMatchStatus === "manual_review"
+        ? record.clientPetsMatchStatus
+        : undefined,
+    clientPetsMeta:
+      typeof record.clientPetsMeta === "string" ? record.clientPetsMeta : undefined,
     clientWarnings: Array.isArray(record.clientWarnings)
       ? record.clientWarnings.filter((warning): warning is string => typeof warning === "string")
       : [],

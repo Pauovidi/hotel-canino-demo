@@ -804,6 +804,10 @@ function applyClientIdentity(
     clientMatchType: identity.matchType,
     clientName: strongIdentity && client?.nombre ? client.nombre : undefined,
     clientEmail: strongIdentity ? client?.email : undefined,
+    clientPets: strongIdentity ? client?.mascotas : undefined,
+    clientPetsCount: strongIdentity ? client?.mascotasCount : undefined,
+    clientPetsMatchStatus: strongIdentity ? client?.mascotasMatchStatus : undefined,
+    clientPetsMeta: strongIdentity ? client?.mascotasMeta : undefined,
     clientWarnings: warnings,
     clientSource: strongIdentity || identity.status === "blocked" || identity.status === "ambiguous"
       ? identity.source

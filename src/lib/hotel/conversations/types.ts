@@ -223,6 +223,10 @@ export interface Conversation {
   clientMatchType?: ConversationClientMatchType;
   clientName?: string;
   clientEmail?: string;
+  clientPets?: string[];
+  clientPetsCount?: number;
+  clientPetsMatchStatus?: "exact" | "exact_or_token" | "ambiguous" | "missing" | "manual_review";
+  clientPetsMeta?: string;
   clientWarnings?: string[];
   clientSource?: "google_sheets_client_directory";
   clientSheetName?: string;

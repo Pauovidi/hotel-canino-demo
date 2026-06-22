@@ -1,7 +1,12 @@
 import { google, type sheets_v4 } from "googleapis";
 import { getSheetsAdapterContextFromEnv } from "@/lib/hotel/config";
 import { isTruthyCell, normalizeEmail, normalizePhone } from "./normalize";
-import type { ClientDirectory, ClientDirectoryReadResult, ClientRecord } from "./types";
+import type {
+  ClientDirectory,
+  ClientDirectoryReadResult,
+  ClientPetsMatchStatus,
+  ClientRecord,
+} from "./types";
 import { CLIENTS_SHEET_HEADERS } from "./types";
 
 const GOOGLE_SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"] as const;
@@ -62,7 +67,7 @@ export async function readGoogleSheetsClientDirectoryLiveHealth(
     const { client, spreadsheetId } = await createSheetsClient();
     const response = await client.spreadsheets.values.get({
       spreadsheetId,
-      range: quoteSheetRange(sheetName, "A1:M1"),
+      range: quoteSheetRange(sheetName, "A1:Z1"),
       majorDimension: "ROWS",
       valueRenderOption: "FORMATTED_VALUE",
     });
@@ -118,7 +123,51 @@ function readCell(row: string[], index: number): string {
   return String(row[index] ?? "").trim();
 }
 
-export function mapClientRow(row: string[], rowNumber: number, sheetName: string): ClientRecord {
+function readHeaderCell(row: string[], headerRow: string[] | undefined, header: string): string {
+  const index = headerRow?.findIndex(
+    (value) => value.trim().toLowerCase() === header.toLowerCase(),
+  );
+  return index !== undefined && index >= 0 ? readCell(row, index) : "";
+}
+
+function parsePets(value: string): string[] | undefined {
+  const pets = Array.from(
+    new Set(
+      value
+        .split(";")
+        .map((pet) => pet.trim())
+        .filter(Boolean),
+    ),
+  );
+  return pets.length > 0 ? pets : undefined;
+}
+
+function parsePetsCount(value: string, pets?: string[]): number | undefined {
+  const count = Number.parseInt(value, 10);
+  if (Number.isFinite(count) && count >= 0) {
+    return count;
+  }
+
+  return pets?.length;
+}
+
+function parsePetsMatchStatus(value: string): ClientPetsMatchStatus | undefined {
+  const normalized = value.trim().toLowerCase();
+  return normalized === "exact" ||
+    normalized === "exact_or_token" ||
+    normalized === "ambiguous" ||
+    normalized === "missing" ||
+    normalized === "manual_review"
+    ? normalized
+    : undefined;
+}
+
+export function mapClientRow(
+  row: string[],
+  rowNumber: number,
+  sheetName: string,
+  headerRow?: string[],
+): ClientRecord {
   const telefonoFijo = readCell(row, 5);
   const telefonoMovil = readCell(row, 6);
   const telefonoNormalizado =
@@ -128,6 +177,12 @@ export function mapClientRow(row: string[], rowNumber: number, sheetName: string
     undefined;
   const rawEmail = readCell(row, 8);
   const email = normalizeEmail(rawEmail) ?? (rawEmail || undefined);
+  const mascotasRaw = readHeaderCell(row, headerRow, "MASCOTAS");
+  const mascotas = parsePets(mascotasRaw);
+  const mascotasCount = parsePetsCount(
+    readHeaderCell(row, headerRow, "MASCOTAS_COUNT"),
+    mascotas,
+  );
 
   return {
     activo: isTruthyCell(readCell(row, 0)),
@@ -142,6 +197,15 @@ export function mapClientRow(row: string[], rowNumber: number, sheetName: string
     bloqueadoNoReservar: isTruthyCell(readCell(row, 10)),
     origen: readCell(row, 11) || undefined,
     updatedAt: readCell(row, 12) || undefined,
+    mascotas,
+    mascotasRaw: mascotasRaw || undefined,
+    mascotasCount,
+    mascotasMeta: readHeaderCell(row, headerRow, "MASCOTAS_META") || undefined,
+    mascotasMatchStatus: parsePetsMatchStatus(
+      readHeaderCell(row, headerRow, "MASCOTAS_MATCH_STATUS"),
+    ),
+    mascotasSource: readHeaderCell(row, headerRow, "MASCOTAS_SOURCE") || undefined,
+    mascotasUpdatedAt: readHeaderCell(row, headerRow, "MASCOTAS_UPDATED_AT") || undefined,
     rowNumber,
     sheetName,
   };
@@ -186,7 +250,7 @@ export class GoogleSheetsClientDirectory implements ClientDirectory {
       const { client, spreadsheetId } = await createSheetsClient();
       const response = await client.spreadsheets.values.get({
         spreadsheetId,
-        range: quoteSheetRange(this.sheetName, "A:M"),
+        range: quoteSheetRange(this.sheetName, "A:Z"),
         majorDimension: "ROWS",
         valueRenderOption: "FORMATTED_VALUE",
       });
@@ -203,7 +267,7 @@ export class GoogleSheetsClientDirectory implements ClientDirectory {
       return {
         records: rows
           .slice(1)
-          .map((row, index) => mapClientRow(row, index + 2, this.sheetName))
+          .map((row, index) => mapClientRow(row, index + 2, this.sheetName, rows[0]))
           .filter((record) => record.nombre || record.telefonoNormalizado || record.email),
         warnings: [],
       };

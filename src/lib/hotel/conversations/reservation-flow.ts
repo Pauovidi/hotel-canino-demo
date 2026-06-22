@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { ClientDirectoryService, normalizeEmail, type ClientDirectory } from "@/lib/hotel/clients";
+import {
+  ClientDirectoryService,
+  normalizeEmail,
+  type ClientDirectory,
+  type ClientRecord,
+} from "@/lib/hotel/clients";
 import { getHotelFeatureFlags, getHotelRuntimeConfig } from "@/lib/hotel/config";
 import type { PricingQuote as DomainPricingQuote } from "@/lib/hotel/domain/contracts";
 import { HOTEL_SLOT_WINDOWS, type HotelSlot } from "@/lib/hotel/domain/slots";
@@ -131,6 +136,66 @@ function knownClientIntro(conversation: ConversationRecord): string {
 
 function knownClientPetPrompt(conversation: ConversationRecord): string {
   return `${knownClientIntro(conversation)} Dime el nombre de tu mascota o mascotas y las fechas de la reserva.`;
+}
+
+function safeClientPets(input: {
+  pets?: string[];
+  count?: number;
+  status?: "exact" | "exact_or_token" | "ambiguous" | "missing" | "manual_review";
+}): string[] {
+  const pets = Array.isArray(input.pets)
+    ? input.pets.map((pet) => pet.trim()).filter(Boolean)
+    : [];
+
+  if ((input.status !== "exact" && input.status !== "exact_or_token") || pets.length === 0) {
+    return [];
+  }
+
+  if (input.count !== undefined && input.count !== pets.length) {
+    return [];
+  }
+
+  return pets;
+}
+
+function safeKnownClientPets(conversation: ConversationRecord): string[] {
+  return safeClientPets({
+    pets: conversation.clientPets,
+    count: conversation.clientPetsCount,
+    status: conversation.clientPetsMatchStatus,
+  });
+}
+
+function safeClientRecordPets(client?: ClientRecord): string[] {
+  return safeClientPets({
+    pets: client?.mascotas,
+    count: client?.mascotasCount,
+    status: client?.mascotasMatchStatus,
+  });
+}
+
+function formatPetList(pets: string[]): string {
+  if (pets.length <= 1) {
+    return pets[0] ?? "";
+  }
+
+  return `${pets.slice(0, -1).join(", ")} y ${pets.at(-1)}`;
+}
+
+function knownClientPetAwarePrompt(conversation: ConversationRecord): string {
+  const pets = safeKnownClientPets(conversation);
+  const name = firstName(clientDisplayName(conversation));
+  const intro = name ? `Genial, ${name}.` : "Genial.";
+
+  if (pets.length === 1) {
+    return `${intro} Tengo registrada a ${pets[0]}. ¿Qué fechas necesitas para la reserva?`;
+  }
+
+  if (pets.length > 1) {
+    return `${intro} Tengo registradas a ${formatPetList(pets)}. ¿La reserva sería para alguna de ellas o para otra mascota?`;
+  }
+
+  return knownClientPetPrompt(conversation);
 }
 
 function knownClientEmailPrompt(conversation: ConversationRecord): string {
@@ -832,6 +897,18 @@ function isUnknownPetNames(message: string): boolean {
   return /^(no lo se|no lo se aun|no lo se todavia|aun no lo se|todavia no lo se)$/.test(normalized);
 }
 
+function extractExplicitPetCorrection(message: string): string | undefined {
+  const value = compact(message);
+  const normalized = normalizeText(value);
+  if (/^(?:manana|tarde|me da igual|las dos|ambas|cualquiera|la que sea)\b/.test(normalized)) {
+    return undefined;
+  }
+
+  const match = value.match(/^(?:ser[ií]a\s+para|es\s+para|para|se\s+llama|es)\s+(.+)$/iu);
+  const candidate = compact(match?.[1]?.replace(PET_DETAIL_STOP_PATTERN, "") ?? "");
+  return candidate || undefined;
+}
+
 function formatPetNames(names: string[]): string {
   if (names.length <= 1) {
     return names[0] ?? "";
@@ -1225,16 +1302,23 @@ export function startReservationFlow(input: {
 }): ReservationFlowOutcome {
   const now = input.now ?? new Date();
   const recognizedClient = isRecognizedDirectoryClient(input.conversation);
+  const knownPets = recognizedClient ? safeKnownClientPets(input.conversation) : [];
+  const singleKnownPet = knownPets.length === 1 ? knownPets[0] : undefined;
   const flow: ConversationReservationFlow = {
     flowId: `reservation_flow_${randomUUID()}`,
     status: recognizedClient
       ? input.conversation.clientEmail
-        ? "collecting_pet"
+        ? singleKnownPet
+          ? "collecting_dates"
+          : "collecting_pet"
         : "asking_existing_email"
       : "asking_client_kind",
     clientKind: recognizedClient ? "habitual" : "unknown",
     email: recognizedClient ? input.conversation.clientEmail : undefined,
     ownerName: recognizedClient ? clientDisplayName(input.conversation) : undefined,
+    petName: singleKnownPet,
+    petNames: singleKnownPet ? [singleKnownPet] : undefined,
+    petCount: singleKnownPet ? 1 : undefined,
     availabilityStatus: "pending",
     createdAt: nowIso(now),
     updatedAt: nowIso(now),
@@ -1244,7 +1328,7 @@ export function startReservationFlow(input: {
     conversation: syncConversationFromFlow(input.conversation, flow),
     reply: recognizedClient
       ? input.conversation.clientEmail
-        ? knownClientPetPrompt(input.conversation)
+        ? knownClientPetAwarePrompt(input.conversation)
         : knownClientEmailPrompt(input.conversation)
       : nextCollectionReply(flow),
     eventType: recognizedClient
@@ -1255,6 +1339,7 @@ export function startReservationFlow(input: {
       clientKind: flow.clientKind,
       matchType: input.conversation.clientMatchType,
       needsEmail: recognizedClient && !input.conversation.clientEmail,
+      knownPetsCount: knownPets.length,
     },
   };
 }
@@ -1284,13 +1369,22 @@ export async function advanceReservationFlow(input: {
     };
 
     if (flow.status === "asking_client_kind") {
+      const knownPets = safeKnownClientPets(input.conversation);
+      const singleKnownPet = knownPets.length === 1 ? knownPets[0] : undefined;
       const nextFlow: ConversationReservationFlow = {
         ...flow,
-        status: input.conversation.clientEmail ? "collecting_pet" : "asking_existing_email",
+        status: input.conversation.clientEmail
+          ? singleKnownPet
+            ? "collecting_dates"
+            : "collecting_pet"
+          : "asking_existing_email",
+        petName: singleKnownPet ?? flow.petName,
+        petNames: singleKnownPet ? [singleKnownPet] : flow.petNames,
+        petCount: singleKnownPet ? 1 : flow.petCount,
         updatedAt: nowIso(now),
       };
       const reply = input.conversation.clientEmail
-        ? knownClientPetPrompt(input.conversation)
+        ? knownClientPetAwarePrompt(input.conversation)
         : knownClientEmailPrompt(input.conversation);
       return {
         conversation: syncConversationFromFlow(input.conversation, nextFlow),
@@ -1365,10 +1459,15 @@ export async function advanceReservationFlow(input: {
         };
       }
 
+      const knownPets = safeKnownClientPets(input.conversation);
+      const singleKnownPet = knownPets.length === 1 ? knownPets[0] : undefined;
       const nextFlow: ConversationReservationFlow = {
         ...flow,
         email: normalizedEmail,
-        status: "collecting_pet",
+        status: singleKnownPet ? "collecting_dates" : "collecting_pet",
+        petName: singleKnownPet ?? flow.petName,
+        petNames: singleKnownPet ? [singleKnownPet] : flow.petNames,
+        petCount: singleKnownPet ? 1 : flow.petCount,
         updatedAt: nowIso(now),
       };
       const conversation = syncConversationFromFlow(
@@ -1384,7 +1483,10 @@ export async function advanceReservationFlow(input: {
       );
       return {
         conversation,
-        reply: "Gracias. Dime el nombre de tu mascota o mascotas y las fechas de la reserva.",
+        reply:
+          nextFlow.petName && nextFlow.status === "collecting_dates"
+            ? `Gracias. Tengo registrada a ${nextFlow.petName}. ¿Qué fechas necesitas para la reserva?`
+            : "Gracias. Dime el nombre de tu mascota o mascotas y las fechas de la reserva.",
         eventType: "reservation_flow_known_client_email_collected",
         eventPayload: { matchType: input.conversation.clientMatchType },
       };
@@ -1428,12 +1530,17 @@ export async function advanceReservationFlow(input: {
 
     if (identity.status === "known") {
       const client = identity.client;
+      const knownPets = safeClientRecordPets(client);
+      const singleKnownPet = knownPets.length === 1 ? knownPets[0] : undefined;
       flow = {
         ...flow,
         clientKind: "habitual",
         email,
         ownerName: client?.nombre ?? flow.ownerName,
-        status: "collecting_pet",
+        status: singleKnownPet ? "collecting_dates" : "collecting_pet",
+        petName: singleKnownPet ?? flow.petName,
+        petNames: singleKnownPet ? [singleKnownPet] : flow.petNames,
+        petCount: singleKnownPet ? 1 : flow.petCount,
       };
       const conversation = syncConversationFromFlow(
         {
@@ -1443,6 +1550,10 @@ export async function advanceReservationFlow(input: {
           clientMatchType: "email",
           clientName: client?.nombre,
           clientEmail: email,
+          clientPets: client?.mascotas,
+          clientPetsCount: client?.mascotasCount,
+          clientPetsMatchStatus: client?.mascotasMatchStatus,
+          clientPetsMeta: client?.mascotasMeta,
           clientSource: identity.source,
           clientSheetName: client?.sheetName,
           clientSheetRow: client?.rowNumber,
@@ -1452,7 +1563,10 @@ export async function advanceReservationFlow(input: {
       );
       return {
         conversation,
-        reply: "Genial. Dime el nombre o los nombres de tu mascota/s, y después vemos fechas y horarios.",
+        reply:
+          flow.petName && flow.status === "collecting_dates"
+            ? `Genial. Tengo registrada a ${flow.petName}. ¿Qué fechas necesitas para la reserva?`
+            : "Genial. Dime el nombre o los nombres de tu mascota/s, y después vemos fechas y horarios.",
         eventType: "reservation_flow_existing_client_email_match",
         eventPayload: { matchType: "email", status: "known" },
       };
@@ -1587,13 +1701,24 @@ export async function advanceReservationFlow(input: {
   // Opportunistically extract details from richer answers once the client branch is known.
   const canReadReservationDetails =
     current.status === "collecting_pet" || current.status === "collecting_dates";
+  const petDetailsFromMessage = extractPetDetails(input.message);
+  const explicitPetCorrection = extractExplicitPetCorrection(input.message);
+  const dateDetailsFromMessage = parseDatesAndTimes(input.message, now);
   const canUpdatePetName =
-    current.status === "collecting_pet" || (canReadReservationDetails && !flow.petName);
+    current.status === "collecting_pet" || Boolean(explicitPetCorrection);
+  const petPatch = explicitPetCorrection
+    ? {
+        petName: explicitPetCorrection,
+        petNames: [explicitPetCorrection],
+        petCount: 1,
+        petCountInconsistency: undefined,
+      }
+    : petDetailsFromMessage;
   flow = {
     ...flow,
     email: extractEmail(input.message) ?? flow.email,
-    ...(canUpdatePetName ? defined(extractPetDetails(input.message)) : {}),
-    ...(canReadReservationDetails ? defined(parseDatesAndTimes(input.message, now)) : {}),
+    ...(canUpdatePetName ? defined(petPatch) : {}),
+    ...(canReadReservationDetails ? defined(dateDetailsFromMessage) : {}),
   };
 
   flow = updateStage(flow);
@@ -1632,7 +1757,16 @@ export async function advanceReservationFlow(input: {
 
   return {
     conversation,
-    reply: `${visitPrefix}${hasDatesAndNeedsTimes(flow) && flow.timePreferencePrompted ? TIME_CONTEXT_FALLBACK : nextCollectionReply(flow)}`,
+    reply: `${visitPrefix}${
+      explicitPetCorrection &&
+      flow.status === "collecting_dates" &&
+      !flow.checkInDate &&
+      !flow.checkOutDate
+        ? `Perfecto, sería para ${flow.petName}. ¿Qué fechas necesitas para la reserva?`
+        : hasDatesAndNeedsTimes(flow) && flow.timePreferencePrompted
+          ? TIME_CONTEXT_FALLBACK
+          : nextCollectionReply(flow)
+    }`,
     eventType: "reservation_flow_updated",
     eventPayload: {
       status: flow.status,

@@ -20,6 +20,12 @@ export type ClientDirectorySource = typeof CLIENT_DIRECTORY_SOURCE;
 export type ClientMatchStatus = "known" | "unknown" | "ambiguous" | "blocked";
 export type ClientMatchConfidence = "strong" | "medium" | "weak" | "none";
 export type ClientMatchType = "phone" | "email" | "name" | "none";
+export type ClientPetsMatchStatus =
+  | "exact"
+  | "exact_or_token"
+  | "ambiguous"
+  | "missing"
+  | "manual_review";
 
 export interface ClientRecord {
   activo?: boolean;
@@ -34,6 +40,13 @@ export interface ClientRecord {
   bloqueadoNoReservar?: boolean;
   origen?: string;
   updatedAt?: string;
+  mascotas?: string[];
+  mascotasRaw?: string;
+  mascotasCount?: number;
+  mascotasMeta?: string;
+  mascotasMatchStatus?: ClientPetsMatchStatus;
+  mascotasSource?: string;
+  mascotasUpdatedAt?: string;
   rowNumber?: number;
   sheetName?: string;
 }
