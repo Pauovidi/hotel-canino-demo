@@ -23,6 +23,8 @@ export type ClientMatchType = "phone" | "email" | "name" | "none";
 export type ClientPetsMatchStatus =
   | "exact"
   | "exact_or_token"
+  | "token_subset_unique"
+  | "probable_high_unique_token"
   | "ambiguous"
   | "missing"
   | "manual_review";

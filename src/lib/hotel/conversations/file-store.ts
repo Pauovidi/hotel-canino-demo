@@ -177,6 +177,8 @@ function normalizeRecord(value: unknown): ConversationRecord | undefined {
     clientPetsMatchStatus:
       record.clientPetsMatchStatus === "exact" ||
       record.clientPetsMatchStatus === "exact_or_token" ||
+      record.clientPetsMatchStatus === "token_subset_unique" ||
+      record.clientPetsMatchStatus === "probable_high_unique_token" ||
       record.clientPetsMatchStatus === "ambiguous" ||
       record.clientPetsMatchStatus === "missing" ||
       record.clientPetsMatchStatus === "manual_review"

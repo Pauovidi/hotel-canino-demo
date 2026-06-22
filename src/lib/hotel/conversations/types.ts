@@ -225,7 +225,14 @@ export interface Conversation {
   clientEmail?: string;
   clientPets?: string[];
   clientPetsCount?: number;
-  clientPetsMatchStatus?: "exact" | "exact_or_token" | "ambiguous" | "missing" | "manual_review";
+  clientPetsMatchStatus?:
+    | "exact"
+    | "exact_or_token"
+    | "token_subset_unique"
+    | "probable_high_unique_token"
+    | "ambiguous"
+    | "missing"
+    | "manual_review";
   clientPetsMeta?: string;
   clientWarnings?: string[];
   clientSource?: "google_sheets_client_directory";

@@ -141,13 +141,25 @@ function knownClientPetPrompt(conversation: ConversationRecord): string {
 function safeClientPets(input: {
   pets?: string[];
   count?: number;
-  status?: "exact" | "exact_or_token" | "ambiguous" | "missing" | "manual_review";
+  status?:
+    | "exact"
+    | "exact_or_token"
+    | "token_subset_unique"
+    | "probable_high_unique_token"
+    | "ambiguous"
+    | "missing"
+    | "manual_review";
 }): string[] {
   const pets = Array.isArray(input.pets)
     ? input.pets.map((pet) => pet.trim()).filter(Boolean)
     : [];
 
-  if ((input.status !== "exact" && input.status !== "exact_or_token") || pets.length === 0) {
+  const safeStatus =
+    input.status === "exact" ||
+    input.status === "exact_or_token" ||
+    input.status === "token_subset_unique" ||
+    input.status === "probable_high_unique_token";
+  if (!safeStatus || pets.length === 0) {
     return [];
   }
 

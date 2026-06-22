@@ -155,6 +155,8 @@ function parsePetsMatchStatus(value: string): ClientPetsMatchStatus | undefined 
   const normalized = value.trim().toLowerCase();
   return normalized === "exact" ||
     normalized === "exact_or_token" ||
+    normalized === "token_subset_unique" ||
+    normalized === "probable_high_unique_token" ||
     normalized === "ambiguous" ||
     normalized === "missing" ||
     normalized === "manual_review"

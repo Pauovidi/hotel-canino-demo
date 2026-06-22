@@ -368,7 +368,9 @@ describe("conversation service", () => {
     expect(result.botReply?.body).not.toContain("¿Ya eres cliente");
   });
 
-  it("uses the only safe known pet for a recognized client", async () => {
+  it.each(["exact", "token_subset_unique", "probable_high_unique_token"] as const)(
+    "uses the only safe known pet for a recognized client with status %s",
+    async (mascotasMatchStatus) => {
     const store = new MemoryConversationStore();
     const directory = createStaticClientDirectory([
       {
@@ -378,7 +380,7 @@ describe("conversation service", () => {
         email: "pau.qa@example.test",
         mascotas: ["Kira"],
         mascotasCount: 1,
-        mascotasMatchStatus: "exact",
+        mascotasMatchStatus,
         rowNumber: 7,
         sheetName: "CLIENTES",
       },
@@ -399,7 +401,8 @@ describe("conversation service", () => {
     expect(result.botReply?.body).toContain("Tengo registrada a Kira");
     expect(result.botReply?.body).toContain("Qué fechas necesitas");
     expect(result.botReply?.body).not.toContain("Dime el nombre de tu mascota");
-  });
+    },
+  );
 
   it("asks which pet for a recognized client with multiple safe pets", async () => {
     const store = new MemoryConversationStore();
@@ -411,7 +414,7 @@ describe("conversation service", () => {
         email: "pau.qa@example.test",
         mascotas: ["Kira", "Thor"],
         mascotasCount: 2,
-        mascotasMatchStatus: "exact_or_token",
+        mascotasMatchStatus: "probable_high_unique_token",
         rowNumber: 7,
         sheetName: "CLIENTES",
       },
@@ -428,7 +431,7 @@ describe("conversation service", () => {
     expect(result.botReply?.body).toContain("para alguna de ellas o para otra mascota");
   });
 
-  it.each(["ambiguous", "manual_review"] as const)(
+  it.each(["ambiguous", "missing", "manual_review"] as const)(
     "asks pet name when known client pet status is %s",
     async (mascotasMatchStatus) => {
     const store = new MemoryConversationStore();
