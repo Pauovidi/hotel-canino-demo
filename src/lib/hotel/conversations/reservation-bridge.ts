@@ -23,6 +23,10 @@ import {
   buildReservationConfirmationTemplate,
   getClientRequestsConfig,
 } from "./client-requests";
+import {
+  canRenderReservationConfirmationTemplate,
+  reservationTemplateInputFromProposal,
+} from "./client-templates";
 
 const PROPOSAL_TTL_MS = 2 * 60 * 60 * 1000;
 
@@ -740,6 +744,28 @@ export async function confirmPendingReservationProposal(input: {
       eventPayload: {
         proposalId: proposal.proposalId,
         reason: "proposal_expired",
+      },
+    };
+  }
+
+  if (
+    getClientRequestsConfig().confirmationTemplateEnabled &&
+    !canRenderReservationConfirmationTemplate(reservationTemplateInputFromProposal(proposal))
+  ) {
+    return {
+      kind: "failed",
+      handoff: true,
+      reply:
+        "No puedo confirmar la reserva sin precio cerrado. Lo revisa una persona del equipo y te contestamos por aquí.",
+      proposal: {
+        ...proposal,
+        status: "failed",
+        failureReason: "confirmation_template_price_missing",
+      },
+      eventPayload: {
+        proposalId: proposal.proposalId,
+        reason: "confirmation_template_price_missing",
+        legacyConfirmationBlocked: true,
       },
     };
   }

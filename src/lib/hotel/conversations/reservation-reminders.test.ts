@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { ReservationRecord } from "@/lib/hotel/domain/contracts";
 import {
+  buildPositivePostStayReviewReply,
   selectPostStayFollowupCandidates,
   selectPrearrivalReminderCandidates,
 } from "./reservation-reminders";
@@ -58,6 +59,7 @@ describe("reservation reminder and followup selectors", () => {
       dryRun: true,
       petName: "Kira",
     });
+    expect(candidates[0].message).toContain("Le recordamos que tiene una reserva");
   });
 
   it("selects post-stay followups only in dry-run mode when enabled", () => {
@@ -65,7 +67,13 @@ describe("reservation reminder and followup selectors", () => {
     process.env.HOTEL_POST_STAY_FOLLOWUPS_DRY_RUN = "true";
 
     const candidates = selectPostStayFollowupCandidates(
-      [reservation({ checkInDate: "2026-06-20", checkOutDate: "2026-06-21" })],
+      [
+        reservation({
+          clientKind: "new",
+          checkInDate: "2026-06-20",
+          checkOutDate: "2026-06-21",
+        }),
+      ],
       new Date("2026-06-22T10:00:00.000Z"),
     );
 
@@ -75,5 +83,30 @@ describe("reservation reminder and followup selectors", () => {
       dryRun: true,
       petName: "Kira",
     });
+    expect(candidates[0].message).toContain("después de su estancia");
+  });
+
+  it("skips habitual clients for post-stay followups by default", () => {
+    process.env.HOTEL_POST_STAY_FOLLOWUPS_ENABLED = "true";
+
+    const candidates = selectPostStayFollowupCandidates(
+      [
+        reservation({
+          clientKind: "habitual",
+          checkInDate: "2026-06-20",
+          checkOutDate: "2026-06-21",
+        }),
+      ],
+      new Date("2026-06-22T10:00:00.000Z"),
+    );
+
+    expect(candidates).toEqual([]);
+  });
+
+  it("builds the positive review request only for positive post-stay replies", () => {
+    expect(buildPositivePostStayReviewReply("todo perfecto")).toContain(
+      "https://g.page/r/CbNKrJ36PLSeEBE/review",
+    );
+    expect(buildPositivePostStayReviewReply("ha venido nervioso")).toBeUndefined();
   });
 });

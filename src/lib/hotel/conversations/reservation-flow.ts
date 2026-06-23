@@ -12,6 +12,7 @@ import { quoteStayPrice } from "@/lib/hotel/pricing/engine";
 import type { PricingQuote } from "@/lib/hotel/pricing/types";
 import { buildGoogleSheetAdapter, buildMockSheetAdapter } from "@/lib/hotel/sheets";
 import type { WhatsAppReservationBridgeDeps } from "./reservation-bridge";
+import { renderReservationDeniedTemplate } from "./client-templates";
 import type {
   ConversationRecord,
   ConversationReservationFlow,
@@ -251,8 +252,17 @@ function isoDate(year: number, month: number, day: number): string | undefined {
 
 function normalizeYear(rawYear: string | undefined, now: Date, month: number, day: number): number {
   if (rawYear) {
+    const normalized = normalizeText(rawYear);
+    if (normalized === "este ano") {
+      return now.getUTCFullYear();
+    }
+    if (normalized === "ano que viene" || normalized === "el ano que viene") {
+      return now.getUTCFullYear() + 1;
+    }
     const numeric = Number.parseInt(rawYear, 10);
-    return numeric < 100 ? 2000 + numeric : numeric;
+    if (Number.isFinite(numeric)) {
+      return numeric < 100 ? 2000 + numeric : numeric;
+    }
   }
 
   const year = now.getUTCFullYear();
@@ -463,6 +473,7 @@ function buildTimePatch(
     checkOutTime,
     checkOutSlot: slotFromTime(checkOutTime),
     timePreferencePrompted: undefined,
+    pendingSharedTimeConfirmation: undefined,
   };
 }
 
@@ -494,6 +505,33 @@ function resolveAwaitingTimeInput(
   const morning = isMorningPreference(message);
   const afternoon = isAfternoonPreference(message);
   const indifferent = isIndifferentTimePreference(message);
+  const normalized = normalizeText(message);
+  const contextualAffirmative =
+    isYes(message) || /^(vale|ok|okay|de acuerdo|correcto|perfecto|adelante)$/.test(normalized);
+  const ambiguousFirstHour = /^primera hora$/.test(normalized);
+
+  if (flow.pendingSharedTimeConfirmation && contextualAffirmative) {
+    return {
+      patch: buildTimePatch(
+        flow.pendingSharedTimeConfirmation,
+        flow.pendingSharedTimeConfirmation,
+      ),
+      eventPayload: {
+        source: "shared_time_confirmation",
+        checkInTime: flow.pendingSharedTimeConfirmation,
+        checkOutTime: flow.pendingSharedTimeConfirmation,
+      },
+    };
+  }
+
+  if (ambiguousFirstHour) {
+    return {
+      patch: { timePreferencePrompted: true },
+      reply: "¿Primera hora de la mañana o primera hora de la tarde?",
+      eventType: "reservation_flow_waiting_time_preference",
+      eventPayload: { preference: "first_hour_ambiguous" },
+    };
+  }
 
   if (indifferent && !flow.timePreferencePrompted) {
     return {
@@ -516,8 +554,17 @@ function resolveAwaitingTimeInput(
     const outOfRange = [explicit.checkInTime, explicit.checkOutTime].filter(isOutsideReceptionDay);
     if (outOfRange.length > 0) {
       return {
-        patch: { timePreferencePrompted: true },
-        reply: buildTimeOutOfRangeReply(outOfRange),
+        patch:
+          explicit.checkInTime === explicit.checkOutTime
+            ? {
+                timePreferencePrompted: true,
+                pendingSharedTimeConfirmation: explicit.checkInTime,
+              }
+            : { timePreferencePrompted: true },
+        reply:
+          explicit.checkInTime === explicit.checkOutTime
+            ? `He entendido ${explicit.checkInTime}, pero puede quedar fuera del horario habitual. ¿Confirmas que usemos las ${explicit.checkInTime} tanto para la entrada como para la salida?`
+            : buildTimeOutOfRangeReply(outOfRange),
         eventType: "reservation_flow_time_out_of_range",
         eventPayload: { outOfRangeTimes: outOfRange },
       };
@@ -539,8 +586,8 @@ function resolveAwaitingTimeInput(
     const outOfRange = [sharedTime].filter(isOutsideReceptionDay);
     if (outOfRange.length > 0) {
       return {
-        patch: { timePreferencePrompted: true },
-        reply: buildTimeOutOfRangeReply(outOfRange),
+        patch: { timePreferencePrompted: true, pendingSharedTimeConfirmation: sharedTime },
+        reply: `He entendido ${sharedTime}, pero puede quedar fuera del horario habitual. ¿Confirmas que usemos las ${sharedTime} tanto para la entrada como para la salida?`,
         eventType: "reservation_flow_time_out_of_range",
         eventPayload: { outOfRangeTimes: outOfRange },
       };
@@ -595,10 +642,17 @@ function resolveAwaitingTimeInput(
   if (looseTimes.length >= 2) {
     const [checkInTime, checkOutTime] = looseTimes;
     const outOfRange = [checkInTime, checkOutTime].filter(isOutsideReceptionDay);
+    const uniqueOutOfRange = Array.from(new Set(outOfRange));
     if (outOfRange.length > 0) {
       return {
-        patch: { timePreferencePrompted: true },
-        reply: buildTimeOutOfRangeReply(outOfRange),
+        patch:
+          uniqueOutOfRange.length === 1
+            ? { timePreferencePrompted: true, pendingSharedTimeConfirmation: uniqueOutOfRange[0] }
+            : { timePreferencePrompted: true },
+        reply:
+          uniqueOutOfRange.length === 1
+            ? `He entendido ${uniqueOutOfRange[0]}, pero puede quedar fuera del horario habitual. ¿Confirmas que usemos las ${uniqueOutOfRange[0]} tanto para la entrada como para la salida?`
+            : buildTimeOutOfRangeReply(outOfRange),
         eventType: "reservation_flow_time_out_of_range",
         eventPayload: { outOfRangeTimes: outOfRange },
       };
@@ -610,8 +664,17 @@ function resolveAwaitingTimeInput(
   }
 
   if (looseTimes.length === 1) {
+    if (isOutsideReceptionDay(looseTimes[0])) {
+      return {
+        patch: { timePreferencePrompted: true, pendingSharedTimeConfirmation: looseTimes[0] },
+        reply: `He entendido ${looseTimes[0]}, pero puede quedar fuera del horario habitual. ¿Confirmas que usemos las ${looseTimes[0]} tanto para la entrada como para la salida?`,
+        eventType: "reservation_flow_time_out_of_range",
+        eventPayload: { outOfRangeTimes: [looseTimes[0]] },
+      };
+    }
+
     return {
-      patch: { timePreferencePrompted: true },
+      patch: { timePreferencePrompted: true, pendingSharedTimeConfirmation: looseTimes[0] },
       reply: `¿Ponemos las ${looseTimes[0]} tanto para la entrada como para la salida?`,
       eventType: "reservation_flow_waiting_shared_time_confirmation",
       eventPayload: { time: looseTimes[0] },
@@ -790,7 +853,7 @@ function parseDatesAndTimes(message: string, now: Date): Partial<ConversationRes
   }
 
   const monthRangeWithTimes = normalized.match(
-    /\b(?:del|desde)\s+(\d{1,2})(?:\s+de\s+([a-z]+))?(?:\s+a\s+las?\s+|\s+por\s+la\s+)(\d{1,2}(?::\d{2})?|manana|tarde)\s+(?:al|hasta)\s+(\d{1,2})(?:\s+de\s+([a-z]+))?(?:\s+de\s+(\d{4}))?(?:\s+a\s+las?\s+|\s+por\s+la\s+)(\d{1,2}(?::\d{2})?|manana|tarde)\b/,
+    /\b(?:del|desde)\s+(\d{1,2})(?:\s+de\s+([a-z]+))?(?:\s+a\s+las?\s+|\s+por\s+la\s+)(\d{1,2}(?::\d{2})?|manana|tarde)\s+(?:al|hasta)\s+(\d{1,2})(?:\s+de\s+([a-z]+))?(?:\s+de\s+(\d{4}|este\s+ano|el\s+ano\s+que\s+viene|ano\s+que\s+viene))?(?:\s+a\s+las?\s+|\s+por\s+la\s+)(\d{1,2}(?::\d{2})?|manana|tarde)\b/,
   );
 
   if (monthRangeWithTimes) {
@@ -807,7 +870,7 @@ function parseDatesAndTimes(message: string, now: Date): Partial<ConversationRes
   }
 
   const monthRange = normalized.match(
-    /\b(?:del|desde)\s+(\d{1,2})(?:\s+de\s+([a-z]+))?\s+(?:al|hasta)\s+(\d{1,2})(?:\s+de\s+([a-z]+))?(?:\s+de\s+(\d{4}))?\b/,
+    /\b(?:del|desde)\s+(\d{1,2})(?:\s+de\s+([a-z]+))?\s+(?:al|hasta)\s+(\d{1,2})(?:\s+de\s+([a-z]+))?(?:\s+de\s+(\d{4}|este\s+ano|el\s+ano\s+que\s+viene|ano\s+que\s+viene))?\b/,
   );
 
   if (monthRange && !result.checkInDate) {
@@ -821,11 +884,24 @@ function parseDatesAndTimes(message: string, now: Date): Partial<ConversationRes
     }
   }
 
+  const numericDateRange = normalized.match(
+    /\b(\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\s*(?:a|al|hasta|-)\s*(\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\b/,
+  );
+  if (numericDateRange && !result.checkInDate) {
+    result.checkInDate = parseNumericDate(numericDateRange[1], now);
+    result.checkOutDate = parseNumericDate(numericDateRange[2], now);
+  }
+
   if (result.checkInDate && result.checkOutDate && (!result.checkInTime || !result.checkOutTime)) {
     const labeledTimes = extractLabeledTimeMentions(normalized);
     if (labeledTimes.length >= 2) {
       result.checkInTime ??= labeledTimes[0];
       result.checkOutTime ??= labeledTimes[1];
+    }
+    const sharedTime = extractSharedEntryExitTime(normalized);
+    if (sharedTime) {
+      result.checkInTime ??= sharedTime;
+      result.checkOutTime ??= sharedTime;
     }
   }
 
@@ -1230,7 +1306,7 @@ async function buildAvailableProposal(input: {
   flow: ConversationReservationFlow;
   inboundMessageId: string;
   deps?: WhatsAppReservationBridgeDeps;
-}): Promise<{ flow: ConversationReservationFlow; proposal?: PendingReservationProposal; reply: string; eventPayload: Record<string, unknown> }> {
+}): Promise<{ flow: ConversationReservationFlow; proposal?: PendingReservationProposal; reply: string; eventPayload: Record<string, unknown>; eventType?: string }> {
   const adapter = await (input.deps?.buildSheetAdapter ?? getDefaultBuildSheetAdapter())();
   const availability = await adapter.checkAvailability({
     entryDate: input.flow.checkInDate!,
@@ -1248,8 +1324,20 @@ async function buildAvailableProposal(input: {
         availabilityStatus: "unavailable",
         updatedAt: nowIso(input.deps?.now?.() ?? new Date()),
       },
-      reply: "Lo siento, para esas fechas no tenemos disponibilidad. ¿Quieres probar con otras fechas?",
-      eventPayload: { availability: "unavailable", conflictCount: availability.conflicts.length },
+      reply: renderReservationDeniedTemplate({
+        clientName: input.flow.ownerName ?? input.conversation.clientName,
+        petNames: input.flow.petNames?.length
+          ? input.flow.petNames
+          : [input.flow.petName ?? "tu mascota"],
+        waitlistSupported: false,
+      }),
+      eventType: "reservation_denied_template_dry_run",
+      eventPayload: {
+        availability: "unavailable",
+        conflictCount: availability.conflicts.length,
+        template: "reservation_denied",
+        dryRun: true,
+      },
     };
   }
 
@@ -1700,10 +1788,12 @@ export async function advanceReservationFlow(input: {
       };
     }
 
-    flow = {
-      ...flow,
-      ...defined(awaitingTime?.patch ?? parseDatesAndTimes(input.message, now)),
-    };
+    flow = awaitingTime?.patch
+      ? { ...flow, ...awaitingTime.patch }
+      : {
+          ...flow,
+          ...defined(parseDatesAndTimes(input.message, now)),
+        };
   }
 
   if (flow.status === "collecting_notes") {
@@ -1763,7 +1853,7 @@ export async function advanceReservationFlow(input: {
         pendingReservationProposal: availability.proposal ?? input.conversation.pendingReservationProposal,
       },
       reply: `${visitPrefix}${availability.reply}`,
-      eventType: "reservation_flow_availability_checked",
+      eventType: availability.eventType ?? "reservation_flow_availability_checked",
       eventPayload: availability.eventPayload,
     };
   }

@@ -65,9 +65,9 @@ describe("client request helpers", () => {
       termsAcceptedAt: "2026-06-22T10:10:00.000Z",
     });
 
-    expect(rendered).toContain("Reserva confirmada.");
-    expect(rendered).toContain("Mascota/s: Kira");
-    expect(rendered).toContain("Precio: 90 EUR");
-    expect(rendered).toContain("Gracias por confiar en Somos Muy Perros.");
+    expect(rendered).toContain("🛑‼ *ATENCIÓN LEER HASTA EL FINAL*🛑‼");
+    expect(rendered).toContain("Mascotas: Kira");
+    expect(rendered).toContain("El coste de la estancia es de *90€*");
+    expect(rendered).toContain("El pago se realiza a la llegada y en efectivo.");
   });
 });

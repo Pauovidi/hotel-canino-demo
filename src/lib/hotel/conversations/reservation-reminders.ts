@@ -1,5 +1,10 @@
 import type { ReservationRecord } from "@/lib/hotel/domain/contracts";
 import { getClientRequestsConfig } from "./client-requests";
+import {
+  renderPostStayFollowupTemplate,
+  renderPositiveReviewRequestTemplate,
+  renderPrearrivalReminderTemplate,
+} from "./client-templates";
 
 export type ClientRequestJobKind = "prearrival_reminder" | "post_stay_followup";
 
@@ -27,26 +32,51 @@ function formatDate(value: string): string {
   }).format(dateAtUtc(value));
 }
 
+function petNames(reservation: ReservationRecord): string[] {
+  return reservation.petNames?.length
+    ? reservation.petNames
+    : [reservation.petName ?? "tu mascota"];
+}
+
+function entryText(reservation: ReservationRecord): string {
+  const date = formatDate(reservation.checkInDate);
+  return reservation.checkInTime ? `${date} a las ${reservation.checkInTime}` : date;
+}
+
 function isConfirmed(reservation: ReservationRecord): boolean {
   return reservation.status === "confirmada" || reservation.workflowState === "confirmed";
 }
 
 export function buildPrearrivalReminderMessage(reservation: ReservationRecord): string {
-  const petName = reservation.petName ?? "tu mascota";
-  return [
-    `Hola, os recordamos que ${petName} entra en Somos Muy Perros el ${formatDate(
-      reservation.checkInDate,
-    )}.`,
-    "Si necesitais cambiar cualquier detalle, responded a este mensaje y el equipo lo revisara.",
-  ].join("\n");
+  return renderPrearrivalReminderTemplate({
+    clientName: reservation.ownerName,
+    petNames: petNames(reservation),
+    entryText: entryText(reservation),
+  });
 }
 
 export function buildPostStayFollowupMessage(reservation: ReservationRecord): string {
-  const petName = reservation.petName ?? "tu mascota";
-  return [
-    `Hola, esperamos que ${petName} haya descansado bien despues de su estancia en Somos Muy Perros.`,
-    "Gracias por confiar en nosotros. Si necesitais cualquier cosa, estamos por aqui.",
-  ].join("\n");
+  return renderPostStayFollowupTemplate({
+    clientName: reservation.ownerName,
+    petNames: petNames(reservation),
+  });
+}
+
+export function isPositivePostStayReply(message: string): boolean {
+  const normalized = message
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return /^(si|sí|todo bien|muy bien|genial|perfecto|fenomenal|estupendo|muy contentos|todo perfecto)\b/.test(
+    normalized,
+  );
+}
+
+export function buildPositivePostStayReviewReply(message: string): string | undefined {
+  return isPositivePostStayReply(message) ? renderPositiveReviewRequestTemplate() : undefined;
 }
 
 export function selectPrearrivalReminderCandidates(
@@ -91,6 +121,10 @@ export function selectPostStayFollowupCandidates(
 
   return reservations
     .filter((reservation) => isConfirmed(reservation))
+    .filter(
+      (reservation) =>
+        !config.postStayFollowupOnlyNewClients || reservation.clientKind === "new",
+    )
     .filter((reservation) => !reservation.postStayFollowupSentAt)
     .filter((reservation) => {
       const checkoutTime = dateAtUtc(reservation.checkOutDate).getTime();

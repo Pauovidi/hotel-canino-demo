@@ -36,6 +36,8 @@ describe("health route", () => {
     process.env.HOTEL_LLM_NLU_ENABLED = "false";
     process.env.HOTEL_LLM_NLU_SHADOW = "true";
     process.env.HOTEL_LLM_NLU_DECISION_MODE = "shadow";
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_MODEL;
     process.env.HOTEL_CONVERSATIONS_SHEET_NAME = "CONVERSATIONS";
     process.env.HOTEL_CLIENTS_SHEET_NAME = "CLIENTES";
     process.env.HOTEL_CLIENTS_CACHE_TTL_MS = "12345";
@@ -60,17 +62,20 @@ describe("health route", () => {
     expect(json.persistence.runtimeTarget).toBe("easypanel");
     expect(json.persistence.ready).toBe(true);
     expect(json.persistence.conversationStoreProvider).toBe("google_sheets");
-    expect(json.runtimeSafety).toEqual({
-      sheets: {
-        writeEnabled: false,
-        dryRun: true,
-      },
-      llmNlu: {
+    expect(json.runtimeSafety.sheets).toEqual({
+      writeEnabled: false,
+      dryRun: true,
+    });
+    expect(json.runtimeSafety.llmNlu).toEqual(
+      expect.objectContaining({
         enabled: false,
         shadow: true,
         decisionMode: "shadow",
-      },
-    });
+        assistiveSafe: false,
+        openaiConfigured: false,
+        modelConfigured: false,
+      }),
+    );
     expect(json.conversationStore).toEqual(
       expect.objectContaining({
         provider: "google_sheets",
@@ -122,6 +127,7 @@ describe("health route", () => {
     process.env.HOTEL_SHEETS_WRITE_ENABLED = "false";
     process.env.HOTEL_SHEETS_DRY_RUN = "true";
     process.env.HOTEL_LLM_NLU_ENABLED = "false";
+    delete process.env.OPENAI_API_KEY;
     process.env.DATABASE_URL = "postgres://user:password@example.test/db";
     postgresReadinessMock.checkPostgresConversationSchema.mockResolvedValue({
       databaseUrlConfigured: true,
@@ -157,7 +163,35 @@ describe("health route", () => {
       dryRun: true,
     });
     expect(json.runtimeSafety.llmNlu.enabled).toBe(false);
+    expect(json.runtimeSafety.llmNlu.openaiConfigured).toBe(false);
     expect(serialized).not.toContain("password@example");
+  });
+
+  it("reports missing OpenAI configuration for enabled LLM NLU without exposing keys", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.HOTEL_LLM_NLU_ENABLED = "true";
+    process.env.HOTEL_LLM_NLU_DECISION_MODE = "assistive_safe";
+    process.env.HOTEL_LLM_NLU_SHADOW = "false";
+    delete process.env.OPENAI_API_KEY;
+    process.env.OPENAI_MODEL = "gpt-test";
+
+    const response = await GET();
+    const json = await response.json();
+    const serialized = JSON.stringify(json);
+
+    expect(response.status).toBe(200);
+    expect(json.runtimeSafety.llmNlu).toEqual(
+      expect.objectContaining({
+        enabled: true,
+        shadow: false,
+        decisionMode: "assistive_safe",
+        assistiveSafe: true,
+        openaiConfigured: false,
+        modelConfigured: true,
+      }),
+    );
+    expect(json.runtimeSafety.llmNlu.warning).toContain("OPENAI_API_KEY");
+    expect(serialized).not.toContain("gpt-test-secret");
   });
 
   it("marks postgres persistence not ready when required tables are missing", async () => {

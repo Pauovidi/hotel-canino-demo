@@ -1417,11 +1417,30 @@ describe("WhatsApp reservation bridge", () => {
       checkInDate: "2026-12-29",
       checkOutDate: "2026-12-30",
       timePreferencePrompted: true,
+      pendingSharedTimeConfirmation: "11:00",
     });
     expect(result.conversation.reservationFlow?.checkInTime).toBeUndefined();
     expect(result.conversation.reservationFlow?.checkOutTime).toBeUndefined();
     expect(result.botReply?.body).toContain("tanto para la entrada como para la salida");
     expect(counters.checks).toBe(0);
+
+    const accepted = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "de acuerdo",
+        messageSid: "SM_BRIDGE_SINGLE_TIME_CONTEXT_ACCEPTED",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(accepted.conversation.reservationFlow).toMatchObject({
+      status: "collecting_notes",
+      checkInTime: "11:00",
+      checkOutTime: "11:00",
+      pendingSharedTimeConfirmation: undefined,
+    });
   });
 
   it.each([
@@ -1491,12 +1510,30 @@ describe("WhatsApp reservation bridge", () => {
       checkInDate: "2026-12-29",
       checkOutDate: "2026-12-30",
       timePreferencePrompted: true,
+      pendingSharedTimeConfirmation: "22:00",
     });
     expect(result.conversation.reservationFlow?.checkInTime).toBeUndefined();
     expect(result.botReply?.body).toContain("He entendido 22:00");
-    expect(result.botReply?.body).toContain("primera hora de la mañana");
+    expect(result.botReply?.body).toContain("Confirmas que usemos las 22:00");
     expect(result.botReply?.body).not.toContain("no te he entendido");
     expect(counters.checks).toBe(0);
+
+    const accepted = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "de acuerdo",
+        messageSid: "SM_BRIDGE_CONTEXT_PM_OUT_OF_RANGE_ACCEPTED",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(accepted.conversation.reservationFlow).toMatchObject({
+      status: "collecting_notes",
+      checkInTime: "22:00",
+      checkOutTime: "22:00",
+    });
   });
 
   it("completes times when dates are already present in context", async () => {
@@ -1540,6 +1577,139 @@ describe("WhatsApp reservation bridge", () => {
       checkInTime: "12:00",
       checkOutDate: "2026-12-31",
       checkOutTime: "18:00",
+    });
+    expect(counters.checks).toBe(0);
+  });
+
+  it("parses numeric date ranges without asking for the same dates again", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-06-01T10:00:00.000Z"),
+    };
+
+    await collectNewClientPet({
+      store,
+      deps: timedDeps,
+      prefix: "SM_BRIDGE_NUMERIC_DATE_RANGE",
+    });
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "25-12-2026 a 26-12-2026",
+        messageSid: "SM_BRIDGE_NUMERIC_DATE_RANGE_DATES",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_dates",
+      checkInDate: "2026-12-25",
+      checkOutDate: "2026-12-26",
+    });
+    expect(result.botReply?.body).toContain("Me falta la hora de entrada");
+    expect(result.botReply?.body).not.toContain("fecha y hora de entrada");
+    expect(counters.checks).toBe(0);
+  });
+
+  it("parses natural date ranges for this year plus shared entry and exit time", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-06-01T10:00:00.000Z"),
+    };
+
+    await collectNewClientPet({
+      store,
+      deps: timedDeps,
+      prefix: "SM_BRIDGE_NATURAL_DATE_SHARED_TIME",
+    });
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "Del 25 al 26 de Diciembre de este año. A las 10 h. entrada y salida",
+        messageSid: "SM_BRIDGE_NATURAL_DATE_SHARED_TIME_DATES",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_notes",
+      checkInDate: "2026-12-25",
+      checkOutDate: "2026-12-26",
+      checkInTime: "10:00",
+      checkOutTime: "10:00",
+    });
+    expect(result.botReply?.body).toContain("alimentación");
+    expect(counters.checks).toBe(0);
+  });
+
+  it("asks for morning or afternoon when the customer only says primera hora", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-06-01T10:00:00.000Z"),
+    };
+
+    await collectNewClientDatesWithoutTimes({
+      store,
+      deps: timedDeps,
+      prefix: "SM_BRIDGE_FIRST_HOUR_AMBIGUOUS",
+    });
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "primera hora",
+        messageSid: "SM_BRIDGE_FIRST_HOUR_AMBIGUOUS_RESULT",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_dates",
+      timePreferencePrompted: true,
+    });
+    expect(result.botReply?.body).toContain("mañana o primera hora de la tarde");
+    expect(counters.checks).toBe(0);
+  });
+
+  it("uses 16:30 for primera hora de la tarde", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-06-01T10:00:00.000Z"),
+    };
+
+    await collectNewClientDatesWithoutTimes({
+      store,
+      deps: timedDeps,
+      prefix: "SM_BRIDGE_FIRST_AFTERNOON",
+    });
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "primera hora de la tarde",
+        messageSid: "SM_BRIDGE_FIRST_AFTERNOON_RESULT",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_notes",
+      checkInTime: "16:30",
+      checkOutTime: "16:30",
     });
     expect(counters.checks).toBe(0);
   });
@@ -1990,6 +2160,40 @@ describe("WhatsApp reservation bridge", () => {
     ).toBe(true);
   });
 
+  it("treats acepto before the contract as proposal confirmation, not terms acceptance", async () => {
+    process.env.HOTEL_CONTRACT_ACCEPTANCE_REQUIRED = "true";
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+
+    await createNewClientPricedProposal({
+      store,
+      deps,
+      prefix: "SM_BRIDGE_CONTRACT_ACCEPT_BEFORE_LINK_1",
+    });
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "acepto",
+        messageSid: "SM_BRIDGE_CONTRACT_ACCEPT_BEFORE_LINK_2",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(counters.writes).toBe(0);
+    expect(result.botReply?.body).toContain(
+      "https://somosmuyperros.com/contrato-de-admision-e-ingreso/",
+    );
+    expect(result.conversation.pendingReservationProposal).toMatchObject({
+      status: "proposed",
+      termsAccepted: false,
+    });
+    expect(
+      result.conversation.events.some((event) => event.eventType === "contract_link_sent"),
+    ).toBe(true);
+  });
+
   it("confirms only after explicit contract acceptance and stores acceptance metadata", async () => {
     process.env.HOTEL_CONTRACT_ACCEPTANCE_REQUIRED = "true";
     process.env.HOTEL_CONFIRMATION_TEMPLATE_ENABLED = "true";
@@ -2039,14 +2243,21 @@ describe("WhatsApp reservation bridge", () => {
       termsUrl: "https://somosmuyperros.com/contrato-de-admision-e-ingreso/",
       confirmationTemplateMode: "whatsapp_reply",
     });
-    expect(confirmed.botReply?.body).toContain("Reserva confirmada.");
-    expect(confirmed.botReply?.body).toContain("Mascota/s: Kira QA");
+    expect(confirmed.botReply?.body).toContain("🛑‼ *ATENCIÓN LEER HASTA EL FINAL*🛑‼");
+    expect(confirmed.botReply?.body).toContain("Mascotas: Kira QA");
+    expect(confirmed.botReply?.body).toContain("El coste de la estancia es de *60€*");
+    expect(confirmed.botReply?.body).not.toContain("Reserva confirmada. Cliente:");
     expect(
       confirmed.conversation.events.some((event) => event.eventType === "contract_accepted"),
     ).toBe(true);
     expect(
       confirmed.conversation.events.some(
         (event) => event.eventType === "confirmation_template_sent",
+      ),
+    ).toBe(true);
+    expect(
+      confirmed.conversation.events.some(
+        (event) => event.eventType === "reservation_confirmed_after_terms",
       ),
     ).toBe(true);
   });
@@ -2087,6 +2298,27 @@ describe("WhatsApp reservation bridge", () => {
     expect(result.botReply?.body).toContain("responde: acepto");
     expect(result.conversation.pendingReservationProposal?.status).toBe("proposed");
     expect(result.conversation.pendingReservationProposal?.termsAccepted).toBe(false);
+  });
+
+  it("uses the safe denied reservation template when availability is unavailable", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps({ availabilitySequence: [false] });
+
+    const result = await createNewClientPricedProposal({
+      store,
+      deps,
+      prefix: "SM_BRIDGE_DENIED_TEMPLATE",
+    });
+
+    expect(counters.writes).toBe(0);
+    expect(result.botReply?.body).toContain("no tenemos disponibilidad");
+    expect(result.botReply?.body).toContain("podemos dejarlo anotado para que el equipo lo revise");
+    expect(result.botReply?.body).not.toContain("la hemos anotado en nuestra lista de espera");
+    expect(
+      result.conversation.events.some(
+        (event) => event.eventType === "reservation_denied_template_dry_run",
+      ),
+    ).toBe(true);
   });
 
   it.each([

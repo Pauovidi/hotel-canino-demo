@@ -1340,6 +1340,15 @@ async function resolveContractAcceptanceGate(input: {
     }),
     "contract_acceptance_requested",
   );
+  await addEventBestEffort(
+    input.store,
+    createEvent(input.conversation.id, "contract_link_sent", {
+      proposalId: proposal.proposalId,
+      termsVersion: CONTRACT_TERMS_VERSION,
+      termsUrlConfigured: Boolean(config.contractUrl),
+    }),
+    "contract_link_sent",
+  );
 
   return {
     handled: true,
@@ -1386,6 +1395,16 @@ async function confirmConversationReservation(input: {
     }),
     "reservation_confirmation_checked",
   );
+  if (confirmation.eventPayload?.legacyConfirmationBlocked) {
+    await addEventBestEffort(
+      input.store,
+      createEvent(conversationForConfirmation.id, "legacy_confirmation_blocked", {
+        proposalId: confirmation.proposal?.proposalId,
+        reason: confirmation.eventPayload.reason,
+      }),
+      "legacy_confirmation_blocked",
+    );
+  }
 
   const latestAfterEvent =
     (await input.store.getById(conversationForConfirmation.id)) ?? conversationForConfirmation;
@@ -1445,6 +1464,17 @@ async function confirmConversationReservation(input: {
           mode: "whatsapp_reply",
         }),
         "confirmation_template_sent",
+      );
+    }
+    if (confirmation.proposal?.termsAccepted) {
+      await addEventBestEffort(
+        input.store,
+        createEvent(conversationForConfirmation.id, "reservation_confirmed_after_terms", {
+          reservationIdSummary: summarizeReservationId(confirmation.reservation.reservationId),
+          proposalId: confirmation.proposal.proposalId,
+          termsVersion: confirmation.proposal.termsVersion,
+        }),
+        "reservation_confirmed_after_terms",
       );
     }
   }
@@ -1694,6 +1724,37 @@ export async function handleInboundWhatsApp(
 
     if (
       latestBeforeFlow.reservationFlow?.status === "pending_confirmation" &&
+      latestBeforeFlow.pendingReservationProposal?.status === "proposed" &&
+      isExplicitContractAcceptance(safeBody)
+    ) {
+      const confirmed = await confirmConversationReservation({
+        store,
+        conversation: latestBeforeFlow,
+        message: safeBody,
+        deps: reservationBridgeDeps,
+      });
+      const botReply = await addBotMessageBestEffort(
+        store,
+        latestBeforeFlow.id,
+        confirmed.reply,
+        "reservation_flow_contract_request_reply",
+      );
+
+      return {
+        conversation: await getConversationByIdBestEffort(
+          store,
+          latestBeforeFlow.id,
+          confirmed.conversation,
+          "reservation_flow_contract_request_return_read",
+        ),
+        inbound,
+        botReply,
+        twiml: buildTwilioMessageResponse(confirmed.reply),
+      };
+    }
+
+    if (
+      latestBeforeFlow.reservationFlow?.status === "pending_confirmation" &&
       isAffirmativeConfirmationUtterance(safeBody)
     ) {
       const confirmed = await confirmConversationReservation({
@@ -1841,6 +1902,37 @@ export async function handleInboundWhatsApp(
         freshWithClient.id,
         confirmation.conversation,
         "contract_acceptance_reply_return_read",
+      ),
+      inbound,
+      botReply,
+      twiml: buildTwilioMessageResponse(confirmation.reply),
+    };
+  }
+
+  if (
+    latestBeforePlan.pendingReservationProposal?.status === "proposed" &&
+    isExplicitContractAcceptance(safeBody)
+  ) {
+    const confirmation = await confirmConversationReservation({
+      store,
+      conversation: latestBeforePlan,
+      message: safeBody,
+      deps: reservationBridgeDeps,
+    });
+
+    const botReply = await addBotMessageBestEffort(
+      store,
+      freshWithClient.id,
+      confirmation.reply,
+      "contract_request_reply",
+    );
+
+    return {
+      conversation: await getConversationByIdBestEffort(
+        store,
+        freshWithClient.id,
+        confirmation.conversation,
+        "contract_request_reply_return_read",
       ),
       inbound,
       botReply,

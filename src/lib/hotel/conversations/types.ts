@@ -54,6 +54,7 @@ export interface ConversationReservationFlow {
   checkOutTime?: string;
   checkOutSlot?: "morning" | "afternoon";
   timePreferencePrompted?: boolean;
+  pendingSharedTimeConfirmation?: string;
   foodNotes?: string;
   medicationNotes?: string;
   notes?: string;

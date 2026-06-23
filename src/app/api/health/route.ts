@@ -35,15 +35,26 @@ function shouldCheckClientsLive(request?: Request): boolean {
 }
 
 function readRuntimeSafetyHealth() {
+  const llmNluEnabled = process.env.HOTEL_LLM_NLU_ENABLED === "true";
+  const openaiConfigured = Boolean(process.env.OPENAI_API_KEY?.trim());
+  const decisionMode = process.env.HOTEL_LLM_NLU_DECISION_MODE?.trim() || "shadow";
+
   return {
     sheets: {
       writeEnabled: process.env.HOTEL_SHEETS_WRITE_ENABLED === "true",
       dryRun: process.env.HOTEL_SHEETS_DRY_RUN !== "false",
     },
     llmNlu: {
-      enabled: process.env.HOTEL_LLM_NLU_ENABLED === "true",
+      enabled: llmNluEnabled,
       shadow: process.env.HOTEL_LLM_NLU_SHADOW !== "false",
-      decisionMode: process.env.HOTEL_LLM_NLU_DECISION_MODE?.trim() || "shadow",
+      decisionMode,
+      assistiveSafe: decisionMode === "assistive_safe",
+      openaiConfigured,
+      modelConfigured: Boolean(process.env.OPENAI_MODEL?.trim()),
+      warning:
+        llmNluEnabled && !openaiConfigured
+          ? "HOTEL_LLM_NLU_ENABLED=true pero OPENAI_API_KEY no está configurada."
+          : undefined,
     },
   };
 }

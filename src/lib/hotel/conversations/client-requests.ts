@@ -1,3 +1,7 @@
+import {
+  renderReservationConfirmationTemplate,
+  reservationTemplateInputFromProposal,
+} from "./client-templates";
 import type { PendingReservationProposal } from "./types";
 
 export const DEFAULT_CONTRACT_URL =
@@ -12,6 +16,7 @@ export interface ClientRequestsConfig {
   postStayFollowupsEnabled: boolean;
   reminderDryRun: boolean;
   followupDryRun: boolean;
+  postStayFollowupOnlyNewClients: boolean;
   welcomeDogPersonaEnabled: boolean;
   welcomeStickerDryRun: boolean;
   welcomeStickerMediaUrl?: string;
@@ -31,6 +36,16 @@ function readStringEnv(name: string, fallback: string): string {
   return value || fallback;
 }
 
+function readBooleanEnvAliases(names: string[], fallback: boolean): boolean {
+  for (const name of names) {
+    if (process.env[name] !== undefined) {
+      return readBooleanEnv(name, fallback);
+    }
+  }
+
+  return fallback;
+}
+
 export function getClientRequestsConfig(): ClientRequestsConfig {
   return {
     contractUrl: readStringEnv("HOTEL_CONTRACT_URL", DEFAULT_CONTRACT_URL),
@@ -42,13 +57,26 @@ export function getClientRequestsConfig(): ClientRequestsConfig {
       "HOTEL_CONFIRMATION_TEMPLATE_ENABLED",
       false,
     ),
-    reservationRemindersEnabled: readBooleanEnv(
-      "HOTEL_RESERVATION_REMINDERS_ENABLED",
+    reservationRemindersEnabled: readBooleanEnvAliases(
+      ["HOTEL_RESERVATION_REMINDERS_ENABLED", "HOTEL_RESERVATION_REMINDER_ENABLED"],
       false,
     ),
-    postStayFollowupsEnabled: readBooleanEnv("HOTEL_POST_STAY_FOLLOWUPS_ENABLED", false),
-    reminderDryRun: readBooleanEnv("HOTEL_RESERVATION_REMINDERS_DRY_RUN", true),
-    followupDryRun: readBooleanEnv("HOTEL_POST_STAY_FOLLOWUPS_DRY_RUN", true),
+    postStayFollowupsEnabled: readBooleanEnvAliases(
+      ["HOTEL_POST_STAY_FOLLOWUPS_ENABLED", "HOTEL_POST_STAY_FOLLOWUP_ENABLED"],
+      false,
+    ),
+    reminderDryRun: readBooleanEnvAliases(
+      ["HOTEL_RESERVATION_REMINDERS_DRY_RUN", "HOTEL_RESERVATION_REMINDER_DRY_RUN"],
+      true,
+    ),
+    followupDryRun: readBooleanEnvAliases(
+      ["HOTEL_POST_STAY_FOLLOWUPS_DRY_RUN", "HOTEL_POST_STAY_FOLLOWUP_DRY_RUN"],
+      true,
+    ),
+    postStayFollowupOnlyNewClients: readBooleanEnv(
+      "HOTEL_POST_STAY_FOLLOWUP_ONLY_NEW_CLIENTS",
+      true,
+    ),
     welcomeDogPersonaEnabled: readBooleanEnv("HOTEL_WELCOME_DOG_PERSONA_ENABLED", false),
     welcomeStickerDryRun: readBooleanEnv("HOTEL_WELCOME_STICKER_DRY_RUN", true),
     welcomeStickerMediaUrl: process.env.HOTEL_WELCOME_STICKER_MEDIA_URL?.trim() || undefined,
@@ -90,45 +118,15 @@ export function isExplicitContractRejection(message: string): boolean {
 
 export function buildContractAcceptanceRequest(config = getClientRequestsConfig()): string {
   return [
-    "Antes de confirmar la reserva, necesitamos que leas y aceptes el contrato de admision e ingreso y las condiciones del hotel:",
+    "Antes de confirmar la reserva, necesitamos que leas y aceptes el contrato de admisión e ingreso y las condiciones del hotel:",
     config.contractUrl,
     "",
-    "Cuando lo hayas leido, responde: acepto",
+    "Cuando lo hayas leído, responde: acepto",
   ].join("\n");
-}
-
-function formatDate(value: string): string {
-  return new Intl.DateTimeFormat("es-ES", {
-    day: "numeric",
-    month: "long",
-    timeZone: "UTC",
-  }).format(new Date(`${value}T00:00:00.000Z`));
-}
-
-function formatSlot(slot: PendingReservationProposal["checkInSlot"]): string {
-  return slot === "morning" ? "manana" : "tarde";
 }
 
 export function buildReservationConfirmationTemplate(
   proposal: PendingReservationProposal,
 ): string {
-  const petNames = proposal.petNames?.length
-    ? proposal.petNames.join(", ")
-    : proposal.petName;
-  const owner = proposal.ownerName ?? proposal.clientName;
-
-  return [
-    "Reserva confirmada.",
-    "",
-    owner ? `Cliente: ${owner}` : undefined,
-    `Mascota/s: ${petNames}`,
-    `Entrada: ${formatDate(proposal.checkIn)} (${formatSlot(proposal.checkInSlot)})`,
-    `Salida: ${formatDate(proposal.checkOut)} (${formatSlot(proposal.checkOutSlot)})`,
-    proposal.price !== undefined ? `Precio: ${proposal.price} EUR` : undefined,
-    "",
-    "Gracias por confiar en Somos Muy Perros.",
-    "Si necesitas cambiar cualquier detalle, escribenos por aqui y el equipo lo revisara.",
-  ]
-    .filter((line): line is string => line !== undefined)
-    .join("\n");
+  return renderReservationConfirmationTemplate(reservationTemplateInputFromProposal(proposal));
 }
