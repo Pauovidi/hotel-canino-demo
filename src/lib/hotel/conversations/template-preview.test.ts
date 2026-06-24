@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { buildTemplatePreviewResult } from "./template-preview";
+import {
+  buildStatelessTemplatePreviewResult,
+  buildTemplatePreviewResult,
+  TEMPLATE_PREVIEW_DISABLED_REPLY,
+} from "./template-preview";
 import type { ConversationRecord } from "./types";
 
 function conversation(): ConversationRecord {
@@ -93,6 +97,23 @@ describe("template preview commands", () => {
     );
 
     expect(result?.kind).toBe("disabled");
-    expect(result?.reply).toContain("pruebas internas");
+    expect(result?.reply).toBe(TEMPLATE_PREVIEW_DISABLED_REPLY);
+  });
+
+  it("renders a confirmation preview with minimal stateless sample data", () => {
+    expect(() =>
+      buildStatelessTemplatePreviewResult(
+        "plantilla confirmación",
+        { NODE_ENV: "test" } as NodeJS.ProcessEnv,
+      ),
+    ).not.toThrow();
+
+    const result = buildStatelessTemplatePreviewResult(
+      "plantilla confirmación",
+      { NODE_ENV: "test" } as NodeJS.ProcessEnv,
+    );
+
+    expect(result?.reply).toContain("*Hola* Pau");
+    expect(result?.reply).toContain("El coste de la estancia es de *30€*");
   });
 });

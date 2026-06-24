@@ -117,6 +117,17 @@ Supported commands:
 
 Successful previews record `template_preview_rendered`.
 
+Twilio webhook safety:
+
+- Preview commands are handled before conversation store, client directory,
+  NLU, FAQ routing, human mode and fallback routing.
+- If preview is disabled in the current environment, the webhook returns
+  `La vista previa de plantillas está desactivada en este entorno.`
+- If a template renderer throws, the webhook returns
+  `No he podido mostrar esa plantilla ahora mismo. Lo revisa el equipo.` and
+  records/logs `template_preview_failed` when persistence is available.
+- Unexpected webhook errors return safe TwiML instead of timing out.
+
 ## Out of scope
 
 This branch does not deploy, does not change Twilio/Vercel/DNS settings, does

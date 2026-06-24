@@ -19,6 +19,11 @@ import {
   isConversationResetCommand,
   type ConversationIntent,
 } from "@/lib/hotel/conversations/nlu";
+import {
+  buildStatelessTemplatePreviewResult,
+  isTemplatePreviewCommand,
+  TEMPLATE_PREVIEW_FAILED_REPLY,
+} from "@/lib/hotel/conversations/template-preview";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -130,6 +135,32 @@ function safeErrorPayload(error: unknown) {
   };
 }
 
+function buildTemplatePreviewWebhookTwiml(
+  body: string,
+): { kind: string; twiml: string } | undefined {
+  if (!isTemplatePreviewCommand(body)) {
+    return undefined;
+  }
+
+  try {
+    const result = buildStatelessTemplatePreviewResult(body);
+    if (!result) {
+      return undefined;
+    }
+
+    return {
+      kind: result.kind,
+      twiml: buildTwilioMessageResponse(result.reply),
+    };
+  } catch (error) {
+    console.warn("template_preview_failed", safeErrorPayload(error));
+    return {
+      kind: "failed",
+      twiml: buildTwilioMessageResponse(TEMPLATE_PREVIEW_FAILED_REPLY),
+    };
+  }
+}
+
 function sanitizeClientIdentityLog(identity?: ClientIdentityResult): Record<string, unknown> {
   return {
     clientStatus: identity?.status ?? "lookup_failed",
@@ -216,6 +247,15 @@ function buildStoreFailureTwiml(
 }
 
 export async function POST(request: Request) {
+  try {
+    return await handlePost(request);
+  } catch (error) {
+    console.error("twilio_webhook_unexpected_error", safeErrorPayload(error));
+    return twilioXmlResponse(buildTwilioMessageResponse(STORE_DEGRADED_CRITICAL_REPLY));
+  }
+}
+
+async function handlePost(request: Request) {
   if (!validateWebhookToken(request)) {
     return twilioXmlResponse(undefined, 401);
   }
@@ -257,6 +297,16 @@ export async function POST(request: Request) {
     });
 
     return twilioXmlResponse(twiml);
+  }
+
+  const templatePreviewTwiml = buildTemplatePreviewWebhookTwiml(body);
+  if (templatePreviewTwiml) {
+    console.info("twilio_webhook_template_preview_prerouter_replied", {
+      kind: templatePreviewTwiml.kind,
+      hasTwimlMessage: templatePreviewTwiml.twiml.includes("<Message>"),
+    });
+
+    return twilioXmlResponse(templatePreviewTwiml.twiml);
   }
 
   console.info("twilio_webhook_received", {

@@ -26,7 +26,10 @@ import {
   isExplicitContractAcceptance,
   isExplicitContractRejection,
 } from "./client-requests";
-import { buildTemplatePreviewResult } from "./template-preview";
+import {
+  buildTemplatePreviewResult,
+  TEMPLATE_PREVIEW_FAILED_REPLY,
+} from "./template-preview";
 import {
   advanceReservationChangeFlow,
   isReservationChangeFlowActive,
@@ -517,6 +520,80 @@ async function sendBotOutcome(input: {
     inbound: input.inbound,
     botReply,
     twiml: buildTwilioMessageResponse(input.reply),
+  };
+}
+
+async function handleTemplatePreviewCommand(input: {
+  store: ConversationStore;
+  conversation: ConversationRecord;
+  inbound: Message;
+  safeBody: string;
+}): Promise<InboundResult | undefined> {
+  let templatePreview: ReturnType<typeof buildTemplatePreviewResult>;
+
+  try {
+    templatePreview = buildTemplatePreviewResult(input.safeBody, input.conversation);
+  } catch (error) {
+    console.warn("template_preview_failed", safeConversationStoreError(error));
+    await addEventBestEffort(
+      input.store,
+      createEvent(input.conversation.id, "template_preview_failed", safeConversationStoreError(error)),
+      "template_preview_failed",
+    );
+    const botReply = await addBotMessageBestEffort(
+      input.store,
+      input.conversation.id,
+      TEMPLATE_PREVIEW_FAILED_REPLY,
+      "template_preview_failed_reply",
+    );
+
+    return {
+      conversation: await getConversationByIdBestEffort(
+        input.store,
+        input.conversation.id,
+        input.conversation,
+        "template_preview_failed_return_read",
+      ),
+      inbound: input.inbound,
+      botReply,
+      twiml: buildTwilioMessageResponse(TEMPLATE_PREVIEW_FAILED_REPLY),
+    };
+  }
+
+  if (!templatePreview) {
+    return undefined;
+  }
+
+  await addEventBestEffort(
+    input.store,
+    createEvent(
+      input.conversation.id,
+      templatePreview.kind === "disabled"
+        ? "template_preview_disabled"
+        : "template_preview_rendered",
+      templatePreview.eventPayload,
+    ),
+    templatePreview.kind === "disabled"
+      ? "template_preview_disabled"
+      : "template_preview_rendered",
+  );
+  const botReply = await addBotMessageBestEffort(
+    input.store,
+    input.conversation.id,
+    templatePreview.reply,
+    "template_preview_reply",
+  );
+
+  return {
+    conversation: await getConversationByIdBestEffort(
+      input.store,
+      input.conversation.id,
+      input.conversation,
+      "template_preview_return_read",
+    ),
+    inbound: input.inbound,
+    botReply,
+    twiml: buildTwilioMessageResponse(templatePreview.reply),
   };
 }
 
@@ -1596,28 +1673,14 @@ export async function handleInboundWhatsApp(
     };
   }
 
-  const templatePreview = buildTemplatePreviewResult(safeBody, freshAfterInbound);
-  if (templatePreview) {
-    if (templatePreview.kind !== "disabled") {
-      await store.addEvent(
-        createEvent(freshAfterInbound.id, "template_preview_rendered", templatePreview.eventPayload),
-      );
-    }
-    const botReply = await store.addMessage(
-      createMessage({
-        conversationId: freshAfterInbound.id,
-        direction: "outbound",
-        senderType: "bot",
-        body: templatePreview.reply,
-      }),
-    );
-
-    return {
-      conversation: (await store.getById(freshAfterInbound.id)) ?? freshAfterInbound,
-      inbound,
-      botReply,
-      twiml: buildTwilioMessageResponse(templatePreview.reply),
-    };
+  const templatePreviewOutcome = await handleTemplatePreviewCommand({
+    store,
+    conversation: freshAfterInbound,
+    inbound,
+    safeBody,
+  });
+  if (templatePreviewOutcome) {
+    return templatePreviewOutcome;
   }
 
   if (freshWithClient.mode === "human") {

@@ -11,6 +11,7 @@ import {
 import type { SheetAdapter, SheetsWriteResult } from "@/lib/hotel/sheets/types";
 import { handleInboundWhatsApp, listConversationDashboard } from "./service";
 import { buildConversationReplyPlan } from "./nlu";
+import { TEMPLATE_PREVIEW_FAILED_REPLY } from "./template-preview";
 import {
   createEmptyConversationSnapshot,
   filterConversationRecords,
@@ -2460,7 +2461,61 @@ describe("WhatsApp reservation bridge", () => {
     ).toBe(true);
     expect(counters.writes).toBe(0);
     expect(counters.reservations).toHaveLength(0);
-    expect(counters.clientUpserts).toHaveLength(0);
+  expect(counters.clientUpserts).toHaveLength(0);
+  });
+
+  it("returns a safe reply when template preview rendering fails", async () => {
+    const store = new MemoryConversationStore();
+    const from = "whatsapp:+34600009992";
+    const created = await handleInboundWhatsApp(
+      {
+        from,
+        body: "hola",
+        messageSid: "SM_BRIDGE_TEMPLATE_PREVIEW_FAILURE_SETUP",
+      },
+      store,
+      createStaticClientDirectory([]),
+    );
+    await store.replaceConversation({
+      ...created.conversation,
+      pendingReservationProposal: {
+        proposalId: "proposal_preview_missing_price",
+        conversationId: created.conversation.id,
+        phoneNormalized: created.conversation.phoneNormalized,
+        clientStatus: "unknown",
+        clientName: "Pau QA",
+        petName: "Pipo QA",
+        petNames: ["Pipo QA"],
+        checkIn: "2026-12-25",
+        checkOut: "2026-12-26",
+        checkInSlot: "morning",
+        checkOutSlot: "morning",
+        petCount: 1,
+        requestedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        status: "proposed",
+        source: "whatsapp",
+        createdFromMessageId: "msg_preview_missing_price",
+      },
+    });
+
+    const result = await handleInboundWhatsApp(
+      {
+        from,
+        body: "plantilla confirmación",
+        messageSid: "SM_BRIDGE_TEMPLATE_PREVIEW_FAILURE",
+      },
+      store,
+      createStaticClientDirectory([]),
+    );
+
+    expect(result.botReply?.body).toBe(TEMPLATE_PREVIEW_FAILED_REPLY);
+    expect(result.twiml).toBe(
+      `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${TEMPLATE_PREVIEW_FAILED_REPLY}</Message></Response>`,
+    );
+    expect(
+      result.conversation.events.some((event) => event.eventType === "template_preview_failed"),
+    ).toBe(true);
   });
 
   it("renders all template previews through WhatsApp", async () => {

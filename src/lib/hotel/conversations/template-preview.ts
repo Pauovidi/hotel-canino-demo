@@ -30,6 +30,12 @@ export interface TemplatePreviewResult {
   eventPayload: Record<string, unknown>;
 }
 
+export const TEMPLATE_PREVIEW_DISABLED_REPLY =
+  "La vista previa de plantillas está desactivada en este entorno.";
+
+export const TEMPLATE_PREVIEW_FAILED_REPLY =
+  "No he podido mostrar esa plantilla ahora mismo. Lo revisa el equipo.";
+
 const TEMPLATE_ORDER: TemplatePreviewKind[] = [
   "confirmation",
   "reminder",
@@ -96,6 +102,10 @@ function detectTemplateKind(message: string): TemplatePreviewKind | "all" | unde
   }
 
   return undefined;
+}
+
+export function isTemplatePreviewCommand(message: string): boolean {
+  return detectTemplateKind(message) !== undefined;
 }
 
 function isSandboxEnvironment(env: NodeJS.ProcessEnv): boolean {
@@ -245,7 +255,7 @@ export function buildTemplatePreviewResult(
   if (!isPreviewAllowed(config, env)) {
     return {
       kind: "disabled",
-      reply: "Esta función está disponible solo para pruebas internas.",
+      reply: TEMPLATE_PREVIEW_DISABLED_REPLY,
       eventPayload: {
         enabled: false,
         requestedTemplate: kind,
@@ -262,4 +272,37 @@ export function buildTemplatePreviewResult(
       source: "template_preview_command",
     },
   };
+}
+
+function buildPreviewOnlyConversation(config: ClientRequestsConfig): ConversationRecord {
+  return {
+    id: "template_preview_stateless",
+    phoneE164: "+34000000000",
+    phoneNormalized: "34000000000",
+    displayName: config.templatePreviewSampleClientName,
+    customerName: config.templatePreviewSampleClientName,
+    clientName: config.templatePreviewSampleClientName,
+    clientPets: config.templatePreviewSamplePets,
+    sourceType: "whatsapp",
+    mode: "bot",
+    humanRequested: false,
+    unreadCount: 0,
+    createdAt: "2026-06-24T00:00:00.000Z",
+    updatedAt: "2026-06-24T00:00:00.000Z",
+    messages: [],
+    events: [],
+  };
+}
+
+export function buildStatelessTemplatePreviewResult(
+  message: string,
+  env: NodeJS.ProcessEnv = process.env,
+  config = getClientRequestsConfig(),
+): TemplatePreviewResult | undefined {
+  return buildTemplatePreviewResult(
+    message,
+    buildPreviewOnlyConversation(config),
+    env,
+    config,
+  );
 }

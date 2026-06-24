@@ -22,6 +22,7 @@ import {
   handleInboundWhatsApp,
   normalizePhone,
 } from "./service";
+import { TEMPLATE_PREVIEW_DISABLED_REPLY } from "./template-preview";
 import { verifyPanelAuthorization } from "./auth";
 import { getConversationStore, resetConversationStoreForTests } from "./file-store";
 
@@ -34,6 +35,14 @@ describe("conversations security", () => {
     resetConversationStoreForTests();
     delete process.env.TWILIO_WEBHOOK_AUTH_TOKEN;
     delete process.env.VERCEL_ENV;
+    delete process.env.HOTEL_LLM_NLU_ENABLED;
+    delete process.env.HOTEL_LLM_NLU_DECISION_MODE;
+    delete process.env.HOTEL_LLM_NLU_SHADOW;
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.HOTEL_TEMPLATE_PREVIEW_ENABLED;
+    delete process.env.HOTEL_TEMPLATE_PREVIEW_ALLOW_IN_SANDBOX;
+    delete process.env.TWILIO_WHATSAPP_PROVIDER_MODE;
+    delete process.env.HOTEL_WHATSAPP_PROVIDER_MODE;
     delete process.env.HOTEL_CONVERSATIONS_STORE_DIR;
     delete process.env.HOTEL_CONVERSATIONS_STORE_PATH;
     delete process.env.HOTEL_PANEL_USERNAME;
@@ -714,6 +723,189 @@ describe("conversations security", () => {
       '<?xml version="1.0" encoding="UTF-8"?><Response><Message>Reiniciado.</Message></Response>',
     );
     expect(text).not.toContain("hemos recibido tu mensaje");
+  });
+
+  it("returns reset TwiML with LLM NLU env enabled before any assistive routing", async () => {
+    tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-twilio-reset-llm-env-"));
+    process.env.HOTEL_CONVERSATIONS_STORE_DIR = tempDir;
+    process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+    process.env.HOTEL_LLM_NLU_ENABLED = "true";
+    process.env.HOTEL_LLM_NLU_DECISION_MODE = "assistive_safe";
+    process.env.HOTEL_LLM_NLU_SHADOW = "false";
+    process.env.OPENAI_API_KEY = "test-openai-key";
+    resetConversationStoreForTests();
+
+    const response = await postTwilioWebhook(
+      new Request("https://example.test/api/twilio/whatsapp?token=expected-token", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          From: "whatsapp:+34600000018",
+          To: "whatsapp:+14155238886",
+          Body: "reiniciar",
+          MessageSid: "SM_RESET_LLM_ENV",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?><Response><Message>Reiniciado.</Message></Response>',
+    );
+  });
+
+  it("returns template preview TwiML before directory and store routing", async () => {
+    process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+    process.env.HOTEL_TEMPLATE_PREVIEW_ENABLED = "true";
+    setTwilioClientDirectoryForTests({
+      async listClients() {
+        throw new Error("client directory should not run for pre-router preview");
+      },
+    });
+
+    const response = await postTwilioWebhook(
+      new Request("https://example.test/api/twilio/whatsapp?token=expected-token", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          From: "whatsapp:+34600000019",
+          To: "whatsapp:+14155238886",
+          Body: "plantilla confirmación",
+          MessageSid: "SM_TEMPLATE_PREVIEW_ROUTE",
+        }),
+      }),
+    );
+    const text = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("text/xml");
+    expect(text).toContain("<Response><Message>");
+    expect(text).toContain("Vista previa de plantilla: confirmación");
+    expect(text).toContain("*Hola* Pau");
+    expect(text).not.toContain("ATENCIÓN LEER HASTA EL FINAL");
+  });
+
+  it("does not silence template preview commands when preview is disabled", async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    process.env.VERCEL_ENV = "production";
+    process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+    process.env.HOTEL_TEMPLATE_PREVIEW_ENABLED = "false";
+    process.env.HOTEL_TEMPLATE_PREVIEW_ALLOW_IN_SANDBOX = "false";
+    process.env.TWILIO_WHATSAPP_PROVIDER_MODE = "real";
+
+    try {
+      const response = await postTwilioWebhook(
+        new Request("https://example.test/api/twilio/whatsapp?token=expected-token", {
+          method: "POST",
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({
+            From: "whatsapp:+34600000020",
+            To: "whatsapp:+14155238886",
+            Body: "plantilla confirmación",
+            MessageSid: "SM_TEMPLATE_PREVIEW_DISABLED",
+          }),
+        }),
+      );
+      const text = await response.text();
+
+      expect(response.status).toBe(200);
+      expect(text).toContain("<Response><Message>");
+      expect(text).toContain(TEMPLATE_PREVIEW_DISABLED_REPLY);
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
+  });
+
+  it.each([
+    ["plantilla recordatorio", "Le recordamos que tiene una reserva"],
+    ["plantilla feedback", "después de su estancia con nosotros"],
+    ["plantilla reseña", "https://g.page/r/CbNKrJ36PLSeEBE/review"],
+    ["plantilla baño", "15€ para perros pequeños"],
+    ["plantilla denegación", "no tenemos disponibilidad"],
+  ])("returns TwiML for template preview command: %s", async (body, expected) => {
+    process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+    process.env.HOTEL_TEMPLATE_PREVIEW_ENABLED = "true";
+
+    const response = await postTwilioWebhook(
+      new Request("https://example.test/api/twilio/whatsapp?token=expected-token", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          From: "whatsapp:+34600000021",
+          To: "whatsapp:+14155238886",
+          Body: body,
+          MessageSid: `SM_TEMPLATE_${body.replace(/\s+/g, "_")}`,
+        }),
+      }),
+    );
+    const text = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(text).toContain("<Response><Message>");
+    expect(text).toContain("Vista previa de plantilla:");
+    expect(text).toContain(expected);
+  });
+
+  it("returns deterministic TwiML when assistive NLU env is enabled and external fetch fails", async () => {
+    tempDir = mkdtempSync(path.join(os.tmpdir(), "hotel-twilio-llm-fallback-"));
+    process.env.HOTEL_CONVERSATIONS_STORE_DIR = tempDir;
+    process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+    process.env.HOTEL_LLM_NLU_ENABLED = "true";
+    process.env.HOTEL_LLM_NLU_DECISION_MODE = "assistive_safe";
+    process.env.HOTEL_LLM_NLU_SHADOW = "false";
+    process.env.OPENAI_API_KEY = "test-openai-key";
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("mock OpenAI timeout"));
+    resetConversationStoreForTests();
+
+    const response = await postTwilioWebhook(
+      new Request("https://example.test/api/twilio/whatsapp?token=expected-token", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          From: "whatsapp:+34600000022",
+          To: "whatsapp:+14155238886",
+          Body: "hola buenas tardes",
+          MessageSid: "SM_LLM_FALLBACK",
+        }),
+      }),
+    );
+    const text = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(text).toContain("<Response><Message>");
+    expect(text).toContain("Buenas tardes.");
+    expect(text).not.toContain("hemos recibido tu mensaje");
+  });
+
+  it("returns safe TwiML for unexpected webhook parsing errors", async () => {
+    process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
+
+    const response = await postTwilioWebhook(
+      new Request("https://example.test/api/twilio/whatsapp?token=expected-token", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: "{",
+      }),
+    );
+    const text = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("text/xml");
+    expect(text).toContain("<Response><Message>");
+    expect(text).toContain("Ahora mismo no puedo consultar correctamente la conversación");
   });
 
   it.each([
