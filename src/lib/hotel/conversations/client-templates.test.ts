@@ -22,11 +22,13 @@ describe("SMP client templates", () => {
       price: 30,
     });
 
-    expect(rendered).toContain("🛑‼ *ATENCIÓN LEER HASTA EL FINAL*🛑‼");
+    expect(rendered).not.toContain("ATENCIÓN LEER HASTA EL FINAL");
+    expect(rendered.startsWith("*Hola* Pau")).toBe(true);
     expect(rendered).toContain("*Hola* Pau");
     expect(rendered).toContain("Mascotas: PIPO");
     expect(rendered).toContain("El coste de la estancia es de *30€*");
     expect(rendered).toContain("El pago se realiza a la llegada y en efectivo.");
+    expect(rendered).toContain("Avísanos cuando vengas de camino: 682 621 177");
     expect(rendered).toContain("https://goo.gl/maps/4M6YHVRhJTFeHPjq9");
     expect(rendered).not.toContain("Reserva confirmada. Cliente:");
   });

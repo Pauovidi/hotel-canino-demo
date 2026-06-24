@@ -20,6 +20,14 @@ export interface ClientRequestsConfig {
   welcomeDogPersonaEnabled: boolean;
   welcomeStickerDryRun: boolean;
   welcomeStickerMediaUrl?: string;
+  templatePreviewEnabled: boolean;
+  templatePreviewAllowInSandbox: boolean;
+  templatePreviewAdminOnly: boolean;
+  templatePreviewSampleClientName: string;
+  templatePreviewSamplePets: string[];
+  templatePreviewSamplePrice: string;
+  templatePreviewSampleEntry: string;
+  templatePreviewSampleExit: string;
 }
 
 function readBooleanEnv(name: string, fallback: boolean): boolean {
@@ -80,6 +88,35 @@ export function getClientRequestsConfig(): ClientRequestsConfig {
     welcomeDogPersonaEnabled: readBooleanEnv("HOTEL_WELCOME_DOG_PERSONA_ENABLED", false),
     welcomeStickerDryRun: readBooleanEnv("HOTEL_WELCOME_STICKER_DRY_RUN", true),
     welcomeStickerMediaUrl: process.env.HOTEL_WELCOME_STICKER_MEDIA_URL?.trim() || undefined,
+    templatePreviewEnabled: readBooleanEnv("HOTEL_TEMPLATE_PREVIEW_ENABLED", false),
+    templatePreviewAllowInSandbox: readBooleanEnv(
+      "HOTEL_TEMPLATE_PREVIEW_ALLOW_IN_SANDBOX",
+      true,
+    ),
+    templatePreviewAdminOnly: readBooleanEnv("HOTEL_TEMPLATE_PREVIEW_ADMIN_ONLY", true),
+    templatePreviewSampleClientName: readStringEnv(
+      "HOTEL_TEMPLATE_PREVIEW_SAMPLE_CLIENT_NAME",
+      "Pau",
+    ),
+    templatePreviewSamplePets: readStringEnv(
+      "HOTEL_TEMPLATE_PREVIEW_SAMPLE_PETS",
+      "PIPO",
+    )
+      .split(/\s*,\s*/)
+      .map((pet) => pet.trim())
+      .filter(Boolean),
+    templatePreviewSamplePrice: readStringEnv(
+      "HOTEL_TEMPLATE_PREVIEW_SAMPLE_PRICE",
+      "30€",
+    ),
+    templatePreviewSampleEntry: readStringEnv(
+      "HOTEL_TEMPLATE_PREVIEW_SAMPLE_ENTRY",
+      "Viernes, 25 de Diciembre de 2026 a las 10:00",
+    ),
+    templatePreviewSampleExit: readStringEnv(
+      "HOTEL_TEMPLATE_PREVIEW_SAMPLE_EXIT",
+      "Sábado, 26 de Diciembre de 2026 a las 10:00",
+    ),
   };
 }
 
@@ -107,6 +144,20 @@ export function isExplicitContractAcceptance(message: string): boolean {
   );
 }
 
+export function isContextualContractAcceptance(message: string): boolean {
+  const normalized = normalizeMessage(message);
+  return [
+    "esta bien",
+    "esta ok",
+    "ok",
+    "vale",
+    "de acuerdo",
+    "perfecto",
+    "correcto",
+    "si",
+  ].includes(normalized);
+}
+
 export function isExplicitContractRejection(message: string): boolean {
   const normalized = normalizeMessage(message);
   return (
@@ -121,7 +172,7 @@ export function buildContractAcceptanceRequest(config = getClientRequestsConfig(
     "Antes de confirmar la reserva, necesitamos que leas y aceptes el contrato de admisión e ingreso y las condiciones del hotel:",
     config.contractUrl,
     "",
-    "Cuando lo hayas leído, responde: acepto",
+    "¿Confirmas que lo has leído y aceptas las condiciones?",
   ].join("\n");
 }
 

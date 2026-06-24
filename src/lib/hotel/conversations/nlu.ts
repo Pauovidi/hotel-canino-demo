@@ -195,6 +195,8 @@ export function isAffirmativeConfirmationUtterance(message: string): boolean {
       "confirmo reserva",
       "confirmo la reserva",
       "de acuerdo",
+      "esta bien",
+      "esta ok",
       "anotala",
       "anotala por favor",
       "deja la reserva anotada",

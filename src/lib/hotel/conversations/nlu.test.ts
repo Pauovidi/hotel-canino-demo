@@ -84,6 +84,8 @@ describe("conversation NLU", () => {
     "sí confirma",
     "si confirma",
     "de acuerdo",
+    "está bien",
+    "está ok",
     "correcto",
     "anótala",
     "si por favor",

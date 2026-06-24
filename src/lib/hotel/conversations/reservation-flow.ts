@@ -507,7 +507,10 @@ function resolveAwaitingTimeInput(
   const indifferent = isIndifferentTimePreference(message);
   const normalized = normalizeText(message);
   const contextualAffirmative =
-    isYes(message) || /^(vale|ok|okay|de acuerdo|correcto|perfecto|adelante)$/.test(normalized);
+    isYes(message) ||
+    /^(vale|ok|okay|de acuerdo|correcto|perfecto|adelante|esta bien|esta ok|confirmo)$/.test(
+      normalized,
+    );
   const ambiguousFirstHour = /^primera hora$/.test(normalized);
 
   if (flow.pendingSharedTimeConfirmation && contextualAffirmative) {
@@ -1113,7 +1116,7 @@ function extractPetDetails(message: string): Partial<ConversationReservationFlow
 
 function extractNotes(message: string): Partial<ConversationReservationFlow> {
   const normalized = normalizeText(message);
-  if (/^(no|ninguna|sin medicacion|sin medicacion especial|sin notas)/.test(normalized)) {
+  if (/^(no|ninguna|nada|sin medicacion|sin medicacion especial|sin notas|esta bien|esta ok)$/.test(normalized)) {
     return { notes: "Sin notas adicionales" };
   }
 

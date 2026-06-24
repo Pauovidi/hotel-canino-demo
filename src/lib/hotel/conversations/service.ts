@@ -22,9 +22,11 @@ import {
   buildContractAcceptanceRequest,
   CONTRACT_TERMS_VERSION,
   getClientRequestsConfig,
+  isContextualContractAcceptance,
   isExplicitContractAcceptance,
   isExplicitContractRejection,
 } from "./client-requests";
+import { buildTemplatePreviewResult } from "./template-preview";
 import {
   advanceReservationChangeFlow,
   isReservationChangeFlowActive,
@@ -1242,7 +1244,10 @@ async function resolveContractAcceptanceGate(input: {
     ...patch,
   });
 
-  if (isExplicitContractAcceptance(input.message) && proposal.contractAcceptanceRequestedAt) {
+  if (
+    proposal.contractAcceptanceRequestedAt &&
+    (isExplicitContractAcceptance(input.message) || isContextualContractAcceptance(input.message))
+  ) {
     const acceptedProposal = buildProposalPatch({
       termsAccepted: true,
       termsAcceptedAt: nowValueIso,
@@ -1591,6 +1596,30 @@ export async function handleInboundWhatsApp(
     };
   }
 
+  const templatePreview = buildTemplatePreviewResult(safeBody, freshAfterInbound);
+  if (templatePreview) {
+    if (templatePreview.kind !== "disabled") {
+      await store.addEvent(
+        createEvent(freshAfterInbound.id, "template_preview_rendered", templatePreview.eventPayload),
+      );
+    }
+    const botReply = await store.addMessage(
+      createMessage({
+        conversationId: freshAfterInbound.id,
+        direction: "outbound",
+        senderType: "bot",
+        body: templatePreview.reply,
+      }),
+    );
+
+    return {
+      conversation: (await store.getById(freshAfterInbound.id)) ?? freshAfterInbound,
+      inbound,
+      botReply,
+      twiml: buildTwilioMessageResponse(templatePreview.reply),
+    };
+  }
+
   if (freshWithClient.mode === "human") {
     await store.addEvent(createEvent(freshWithClient.id, "auto_reply_skipped_human_mode"));
     return {
@@ -1694,7 +1723,9 @@ export async function handleInboundWhatsApp(
     if (
       latestBeforeFlow.reservationFlow?.status === "pending_confirmation" &&
       latestBeforeFlow.pendingReservationProposal?.contractAcceptanceRequestedAt &&
-      (isExplicitContractAcceptance(safeBody) || isExplicitContractRejection(safeBody))
+      (isExplicitContractAcceptance(safeBody) ||
+        isContextualContractAcceptance(safeBody) ||
+        isExplicitContractRejection(safeBody))
     ) {
       const confirmed = await confirmConversationReservation({
         store,
@@ -1880,7 +1911,9 @@ export async function handleInboundWhatsApp(
   const latestBeforePlan = (await store.getById(freshWithClient.id)) ?? freshWithClient;
   if (
     latestBeforePlan.pendingReservationProposal?.contractAcceptanceRequestedAt &&
-    (isExplicitContractAcceptance(safeBody) || isExplicitContractRejection(safeBody))
+    (isExplicitContractAcceptance(safeBody) ||
+      isContextualContractAcceptance(safeBody) ||
+      isExplicitContractRejection(safeBody))
   ) {
     const confirmation = await confirmConversationReservation({
       store,

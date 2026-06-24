@@ -8,6 +8,9 @@ export interface ReservationTemplateInput {
   checkInTime?: string;
   checkOutTime?: string;
   price?: number;
+  entryText?: string;
+  exitText?: string;
+  priceText?: string;
 }
 
 function fallbackName(value?: string): string {
@@ -50,9 +53,9 @@ export function reservationTemplateInputFromProposal(
 }
 
 export function canRenderReservationConfirmationTemplate(
-  input: Pick<ReservationTemplateInput, "price">,
+  input: Pick<ReservationTemplateInput, "price" | "priceText">,
 ): boolean {
-  return typeof input.price === "number" && Number.isFinite(input.price);
+  return Boolean(input.priceText?.trim()) || (typeof input.price === "number" && Number.isFinite(input.price));
 }
 
 export function renderReservationConfirmationTemplate(
@@ -63,15 +66,13 @@ export function renderReservationConfirmationTemplate(
   }
 
   return [
-    "🛑‼ *ATENCIÓN LEER HASTA EL FINAL*🛑‼",
-    "",
     `*Hola* ${fallbackName(input.clientName)}`,
     "¡Tu reserva ha sido confirmada! ✅",
-    `Entrada: ${formatStayPoint(input.checkIn, input.checkInTime)}`,
-    `Salida: ${formatStayPoint(input.checkOut, input.checkOutTime)}`,
+    `Entrada: ${input.entryText?.trim() || formatStayPoint(input.checkIn, input.checkInTime)}`,
+    `Salida: ${input.exitText?.trim() || formatStayPoint(input.checkOut, input.checkOutTime)}`,
     `Mascotas: ${formatPetNames(input.petNames)}`,
     "",
-    `El coste de la estancia es de *${formatPrice(input.price!)}*`,
+    `El coste de la estancia es de *${input.priceText?.trim() || formatPrice(input.price!)}*`,
     "",
     "🔴 Cualquier cambio en los horarios puede tener coste adicional.",
     "🔴 El pago se realiza a la llegada y en efectivo.",

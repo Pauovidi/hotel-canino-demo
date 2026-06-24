@@ -54,7 +54,9 @@ describe("client request helpers", () => {
 
   it("builds the contract request with the configured link", () => {
     expect(buildContractAcceptanceRequest()).toContain(DEFAULT_CONTRACT_URL);
-    expect(buildContractAcceptanceRequest()).toContain("responde: acepto");
+    expect(buildContractAcceptanceRequest()).toContain(
+      "¿Confirmas que lo has leído y aceptas las condiciones?",
+    );
   });
 
   it("renders the post-acceptance reservation confirmation template", () => {
@@ -65,7 +67,8 @@ describe("client request helpers", () => {
       termsAcceptedAt: "2026-06-22T10:10:00.000Z",
     });
 
-    expect(rendered).toContain("🛑‼ *ATENCIÓN LEER HASTA EL FINAL*🛑‼");
+    expect(rendered).not.toContain("ATENCIÓN LEER HASTA EL FINAL");
+    expect(rendered.startsWith("*Hola* Laura")).toBe(true);
     expect(rendered).toContain("Mascotas: Kira");
     expect(rendered).toContain("El coste de la estancia es de *90€*");
     expect(rendered).toContain("El pago se realiza a la llegada y en efectivo.");

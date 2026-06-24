@@ -22,6 +22,15 @@ confirmation bridge reports a successful reservation write and, when required,
 after terms acceptance. Failed writes continue to return the existing safe
 human-review copy and do not say that the reservation is confirmed.
 
+The confirmation template now starts directly with:
+
+```text
+*Hola* {clientName}
+¡Tu reserva ha sido confirmada! ✅
+```
+
+The old `ATENCIÓN LEER HASTA EL FINAL` header is intentionally removed.
+
 If `HOTEL_CONFIRMATION_TEMPLATE_ENABLED=true` and no price is available, the
 legacy/generic confirmation is blocked and the conversation is handed to the
 team instead of inventing a price.
@@ -74,6 +83,39 @@ This branch does not set or print secrets and does not let NLU execute critical
 actions. The backend state machine remains the authority for reservations,
 contract acceptance, availability, prices, writes, modifications, and
 cancellations.
+
+## Template preview
+
+Template preview is a safe test-only render path for WhatsApp Sandbox/panel
+checks. It does not create reservations, confirm reservations, write Sheets,
+enqueue reminders, or send extra messages beyond the normal reply to the command.
+
+Flags:
+
+- `HOTEL_TEMPLATE_PREVIEW_ENABLED=false`
+- `HOTEL_TEMPLATE_PREVIEW_ALLOW_IN_SANDBOX=true`
+- `HOTEL_TEMPLATE_PREVIEW_ADMIN_ONLY=true`
+- `HOTEL_TEMPLATE_PREVIEW_SAMPLE_CLIENT_NAME=Pau`
+- `HOTEL_TEMPLATE_PREVIEW_SAMPLE_PETS=PIPO`
+- `HOTEL_TEMPLATE_PREVIEW_SAMPLE_PRICE=30€`
+- `HOTEL_TEMPLATE_PREVIEW_SAMPLE_ENTRY=Viernes, 25 de Diciembre de 2026 a las 10:00`
+- `HOTEL_TEMPLATE_PREVIEW_SAMPLE_EXIT=Sábado, 26 de Diciembre de 2026 a las 10:00`
+
+Supported commands:
+
+- `muéstrame la plantilla de confirmación`
+- `plantilla confirmación`
+- `plantilla recordatorio`
+- `plantilla feedback`
+- `plantilla post estancia`
+- `plantilla reseña`
+- `plantilla baño`
+- `plantilla denegación`
+- `muéstrame todas las plantillas`
+- `/preview plantilla confirmacion`
+- `/preview templates`
+
+Successful previews record `template_preview_rendered`.
 
 ## Out of scope
 

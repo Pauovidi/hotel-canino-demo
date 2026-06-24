@@ -1427,7 +1427,7 @@ describe("WhatsApp reservation bridge", () => {
     const accepted = await handleInboundWhatsApp(
       {
         from: "whatsapp:+34600009991",
-        body: "de acuerdo",
+        body: "está bien",
         messageSid: "SM_BRIDGE_SINGLE_TIME_CONTEXT_ACCEPTED",
       },
       store,
@@ -1441,6 +1441,49 @@ describe("WhatsApp reservation bridge", () => {
       checkOutTime: "11:00",
       pendingSharedTimeConfirmation: undefined,
     });
+  });
+
+  it("does not treat esta bien as an observation note", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-06-01T10:00:00.000Z"),
+    };
+
+    await collectNewClientDatesWithoutTimes({
+      store,
+      deps: timedDeps,
+      prefix: "SM_BRIDGE_OBSERVATION_ESTA_BIEN",
+    });
+    const times = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "A las 10 h entrada y salida",
+        messageSid: "SM_BRIDGE_OBSERVATION_ESTA_BIEN_TIMES",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+    expect(times.conversation.reservationFlow?.status).toBe("collecting_notes");
+
+    const notes = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "está bien",
+        messageSid: "SM_BRIDGE_OBSERVATION_ESTA_BIEN_NOTES",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(notes.conversation.reservationFlow).toMatchObject({
+      status: "collecting_visit",
+      notes: "Sin notas adicionales",
+    });
+    expect(counters.checks).toBe(0);
   });
 
   it.each([
@@ -2147,7 +2190,7 @@ describe("WhatsApp reservation bridge", () => {
     expect(result.botReply?.body).toContain(
       "https://somosmuyperros.com/contrato-de-admision-e-ingreso/",
     );
-    expect(result.botReply?.body).toContain("responde: acepto");
+    expect(result.botReply?.body).toContain("¿Confirmas que lo has leído y aceptas las condiciones?");
     expect(result.conversation.pendingReservationProposal).toMatchObject({
       termsAccepted: false,
       termsVersion: "admision-ingreso-2026-06-22",
@@ -2158,6 +2201,77 @@ describe("WhatsApp reservation bridge", () => {
         (event) => event.eventType === "contract_acceptance_requested",
       ),
     ).toBe(true);
+  });
+
+  it("uses esta bien as reservation proposal acceptance and then requests contract", async () => {
+    process.env.HOTEL_CONTRACT_ACCEPTANCE_REQUIRED = "true";
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+
+    await createNewClientPricedProposal({
+      store,
+      deps,
+      prefix: "SM_BRIDGE_CONTRACT_ESTA_BIEN_PROPOSAL_1",
+    });
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "está bien",
+        messageSid: "SM_BRIDGE_CONTRACT_ESTA_BIEN_PROPOSAL_2",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(counters.writes).toBe(0);
+    expect(result.botReply?.body).toContain("contrato de admisión");
+    expect(result.botReply?.body).toContain("¿Confirmas que lo has leído y aceptas las condiciones?");
+    expect(result.conversation.pendingReservationProposal).toMatchObject({
+      status: "proposed",
+      termsAccepted: false,
+    });
+  });
+
+  it("uses esta bien as terms acceptance only after the explicit contract question", async () => {
+    process.env.HOTEL_CONTRACT_ACCEPTANCE_REQUIRED = "true";
+    process.env.HOTEL_CONFIRMATION_TEMPLATE_ENABLED = "true";
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+
+    await createNewClientPricedProposal({
+      store,
+      deps,
+      prefix: "SM_BRIDGE_CONTRACT_ESTA_BIEN_TERMS_1",
+    });
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "está bien",
+        messageSid: "SM_BRIDGE_CONTRACT_ESTA_BIEN_TERMS_2",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+    const confirmed = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "está bien",
+        messageSid: "SM_BRIDGE_CONTRACT_ESTA_BIEN_TERMS_3",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(counters.writes).toBe(1);
+    expect(confirmed.conversation.pendingReservationProposal).toMatchObject({
+      status: "confirmed",
+      termsAccepted: true,
+    });
+    expect(confirmed.botReply?.body).toContain("¡Tu reserva ha sido confirmada!");
+    expect(confirmed.botReply?.body).not.toContain("ATENCIÓN LEER HASTA EL FINAL");
   });
 
   it("treats acepto before the contract as proposal confirmation, not terms acceptance", async () => {
@@ -2243,7 +2357,8 @@ describe("WhatsApp reservation bridge", () => {
       termsUrl: "https://somosmuyperros.com/contrato-de-admision-e-ingreso/",
       confirmationTemplateMode: "whatsapp_reply",
     });
-    expect(confirmed.botReply?.body).toContain("🛑‼ *ATENCIÓN LEER HASTA EL FINAL*🛑‼");
+    expect(confirmed.botReply?.body).not.toContain("ATENCIÓN LEER HASTA EL FINAL");
+    expect(confirmed.botReply?.body.startsWith("*Hola* Ana QA")).toBe(true);
     expect(confirmed.botReply?.body).toContain("Mascotas: Kira QA");
     expect(confirmed.botReply?.body).toContain("El coste de la estancia es de *60€*");
     expect(confirmed.botReply?.body).not.toContain("Reserva confirmada. Cliente:");
@@ -2295,7 +2410,7 @@ describe("WhatsApp reservation bridge", () => {
 
     expect(counters.writes).toBe(0);
     expect(counters.reservations).toHaveLength(0);
-    expect(result.botReply?.body).toContain("responde: acepto");
+    expect(result.botReply?.body).toContain("¿Confirmas que lo has leído y aceptas las condiciones?");
     expect(result.conversation.pendingReservationProposal?.status).toBe("proposed");
     expect(result.conversation.pendingReservationProposal?.termsAccepted).toBe(false);
   });
@@ -2319,6 +2434,56 @@ describe("WhatsApp reservation bridge", () => {
         (event) => event.eventType === "reservation_denied_template_dry_run",
       ),
     ).toBe(true);
+  });
+
+  it("renders template preview through WhatsApp without creating reservations or writes", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "muéstrame la plantilla de confirmación",
+        messageSid: "SM_BRIDGE_TEMPLATE_PREVIEW_CONFIRMATION",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(result.botReply?.body).toContain("Vista previa de plantilla: confirmación");
+    expect(result.botReply?.body).toContain("*Hola* Pau");
+    expect(result.botReply?.body).not.toContain("ATENCIÓN LEER HASTA EL FINAL");
+    expect(result.conversation.pendingReservationProposal).toBeUndefined();
+    expect(
+      result.conversation.events.some((event) => event.eventType === "template_preview_rendered"),
+    ).toBe(true);
+    expect(counters.writes).toBe(0);
+    expect(counters.reservations).toHaveLength(0);
+    expect(counters.clientUpserts).toHaveLength(0);
+  });
+
+  it("renders all template previews through WhatsApp", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "muéstrame todas las plantillas",
+        messageSid: "SM_BRIDGE_TEMPLATE_PREVIEW_ALL",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(result.botReply?.body).toContain("Vista previa de plantilla: todas");
+    expect(result.botReply?.body).toContain("--- confirmación ---");
+    expect(result.botReply?.body).toContain("--- recordatorio ---");
+    expect(result.botReply?.body).toContain("--- baño ---");
+    expect(counters.writes).toBe(0);
+    expect(counters.reservations).toHaveLength(0);
   });
 
   it.each([
