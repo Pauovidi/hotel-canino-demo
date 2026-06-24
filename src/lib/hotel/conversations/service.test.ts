@@ -1457,4 +1457,232 @@ describe("conversation service", () => {
     );
     expect(result.botReply?.body).not.toContain("Perdona, no te he entendido bien");
   });
+
+  it("asks for a photo and manual review when bath reply mentions long hair", async () => {
+    const store = new MemoryConversationStore();
+    await store.seed([
+      {
+        id: "conv_bath_long",
+        phoneE164: "+34612340001",
+        phoneNormalized: "34612340001",
+        sourceType: "whatsapp",
+        mode: "bot",
+        humanRequested: false,
+        unreadCount: 0,
+        createdAt: "2026-06-24T10:00:00.000Z",
+        updatedAt: "2026-06-24T10:00:00.000Z",
+        pendingBathOffer: {
+          flowId: "bath_1",
+          conversationId: "conv_bath_long",
+          reservationId: "res_bath_1",
+          status: "scheduled",
+          petNames: ["PIPO"],
+          createdAt: "2026-06-24T10:00:00.000Z",
+          updatedAt: "2026-06-24T10:00:00.000Z",
+        },
+        messages: [],
+        events: [],
+      },
+    ]);
+
+    const result = await handleInboundWhatsApp(
+      { from: "+34612340001", body: "sí, pero tiene pelo largo y nudos" },
+      store,
+    );
+
+    expect(result.botReply?.body).toContain("necesitamos una foto");
+    expect(result.conversation.pendingBathOffer?.status).toBe("awaiting_photo");
+    expect(result.conversation.requiresManualReview).toBe(true);
+    expect(result.conversation.events.some((event) => event.eventType === "bath_photo_requested")).toBe(true);
+    expect(result.conversation.events.some((event) => event.eventType === "bath_manual_review")).toBe(true);
+  });
+
+  it("marks bath photo replies for reception review", async () => {
+    const store = new MemoryConversationStore();
+    await store.seed([
+      {
+        id: "conv_bath_photo",
+        phoneE164: "+34612340002",
+        phoneNormalized: "34612340002",
+        sourceType: "whatsapp",
+        mode: "bot",
+        humanRequested: false,
+        unreadCount: 0,
+        createdAt: "2026-06-24T10:00:00.000Z",
+        updatedAt: "2026-06-24T10:00:00.000Z",
+        pendingBathOffer: {
+          flowId: "bath_2",
+          conversationId: "conv_bath_photo",
+          reservationId: "res_bath_2",
+          status: "awaiting_photo",
+          petNames: ["PIPO"],
+          createdAt: "2026-06-24T10:00:00.000Z",
+          updatedAt: "2026-06-24T10:00:00.000Z",
+        },
+        messages: [],
+        events: [],
+      },
+    ]);
+
+    const result = await handleInboundWhatsApp(
+      {
+        from: "+34612340002",
+        body: "[WhatsApp con 1 adjunto]",
+        rawPayload: { NumMedia: "1" },
+      },
+      store,
+    );
+
+    expect(result.botReply?.body).toBe(
+      "Gracias. Lo revisa recepción y te confirmamos el precio por aquí.",
+    );
+    expect(result.conversation.pendingBathOffer?.status).toBe("manual_review");
+    expect(result.conversation.mode).toBe("human");
+    expect(result.conversation.events.some((event) => event.eventType === "bath_photo_received")).toBe(true);
+  });
+
+  it("quotes short-hair bath prices by size and allows decline", async () => {
+    const quoteStore = new MemoryConversationStore();
+    await quoteStore.seed([
+      {
+        id: "conv_bath_quote",
+        phoneE164: "+34612340003",
+        phoneNormalized: "34612340003",
+        sourceType: "whatsapp",
+        mode: "bot",
+        humanRequested: false,
+        unreadCount: 0,
+        createdAt: "2026-06-24T10:00:00.000Z",
+        updatedAt: "2026-06-24T10:00:00.000Z",
+        pendingBathOffer: {
+          flowId: "bath_3",
+          conversationId: "conv_bath_quote",
+          reservationId: "res_bath_3",
+          status: "scheduled",
+          petNames: ["PIPO"],
+          createdAt: "2026-06-24T10:00:00.000Z",
+          updatedAt: "2026-06-24T10:00:00.000Z",
+        },
+        messages: [],
+        events: [],
+      },
+    ]);
+    const quoted = await handleInboundWhatsApp(
+      { from: "+34612340003", body: "pelo corto pequeño" },
+      quoteStore,
+    );
+
+    expect(quoted.botReply?.body).toContain("15€");
+    expect(quoted.conversation.pendingBathOffer?.status).toBe("quoted");
+    expect(quoted.conversation.events.some((event) => event.eventType === "bath_price_quoted")).toBe(true);
+
+    const declineStore = new MemoryConversationStore();
+    await declineStore.seed([
+      {
+        id: "conv_bath_decline",
+        phoneE164: "+34612340004",
+        phoneNormalized: "34612340004",
+        sourceType: "whatsapp",
+        mode: "bot",
+        humanRequested: false,
+        unreadCount: 0,
+        createdAt: "2026-06-24T10:00:00.000Z",
+        updatedAt: "2026-06-24T10:00:00.000Z",
+        pendingBathOffer: {
+          flowId: "bath_4",
+          conversationId: "conv_bath_decline",
+          reservationId: "res_bath_4",
+          status: "offered",
+          petNames: ["PIPO"],
+          createdAt: "2026-06-24T10:00:00.000Z",
+          updatedAt: "2026-06-24T10:00:00.000Z",
+        },
+        messages: [],
+        events: [],
+      },
+    ]);
+    const declined = await handleInboundWhatsApp(
+      { from: "+34612340004", body: "no gracias" },
+      declineStore,
+    );
+
+    expect(declined.botReply?.body).toBe("De acuerdo, no añadimos baño.");
+    expect(declined.conversation.pendingBathOffer?.status).toBe("declined");
+  });
+
+  it("requests positive review only after positive post-stay feedback", async () => {
+    const store = new MemoryConversationStore();
+    await store.seed([
+      {
+        id: "conv_post_positive",
+        phoneE164: "+34612340005",
+        phoneNormalized: "34612340005",
+        sourceType: "whatsapp",
+        mode: "bot",
+        humanRequested: false,
+        unreadCount: 0,
+        createdAt: "2026-06-24T10:00:00.000Z",
+        updatedAt: "2026-06-24T10:00:00.000Z",
+        pendingPostStayFollowup: {
+          flowId: "post_1",
+          conversationId: "conv_post_positive",
+          reservationId: "res_post_1",
+          status: "awaiting_feedback",
+          petNames: ["PIPO"],
+          createdAt: "2026-06-24T10:00:00.000Z",
+          updatedAt: "2026-06-24T10:00:00.000Z",
+        },
+        messages: [],
+        events: [],
+      },
+    ]);
+
+    const result = await handleInboundWhatsApp(
+      { from: "+34612340005", body: "todo perfecto" },
+      store,
+    );
+
+    expect(result.botReply?.body).toContain("https://g.page/r/CbNKrJ36PLSeEBE/review");
+    expect(result.conversation.pendingPostStayFollowup?.status).toBe("positive_review_requested");
+    expect(result.conversation.events.some((event) => event.eventType === "post_stay_positive_review_requested")).toBe(true);
+  });
+
+  it("hands negative post-stay feedback to the team without asking for review", async () => {
+    const store = new MemoryConversationStore();
+    await store.seed([
+      {
+        id: "conv_post_negative",
+        phoneE164: "+34612340006",
+        phoneNormalized: "34612340006",
+        sourceType: "whatsapp",
+        mode: "bot",
+        humanRequested: false,
+        unreadCount: 0,
+        createdAt: "2026-06-24T10:00:00.000Z",
+        updatedAt: "2026-06-24T10:00:00.000Z",
+        pendingPostStayFollowup: {
+          flowId: "post_2",
+          conversationId: "conv_post_negative",
+          reservationId: "res_post_2",
+          status: "awaiting_feedback",
+          petNames: ["PIPO"],
+          createdAt: "2026-06-24T10:00:00.000Z",
+          updatedAt: "2026-06-24T10:00:00.000Z",
+        },
+        messages: [],
+        events: [],
+      },
+    ]);
+
+    const result = await handleInboundWhatsApp(
+      { from: "+34612340006", body: "no, ha venido nervioso" },
+      store,
+    );
+
+    expect(result.botReply?.body).toContain("Lo revisa el equipo");
+    expect(result.botReply?.body).not.toContain("review");
+    expect(result.conversation.pendingPostStayFollowup?.status).toBe("manual_review");
+    expect(result.conversation.mode).toBe("human");
+    expect(result.conversation.events.some((event) => event.eventType === "post_stay_negative_manual_review")).toBe(true);
+  });
 });

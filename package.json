@@ -21,6 +21,7 @@
     "conversations:reset": "tsx scripts/conversations-reset.ts",
     "reminders:reservation-prearrival": "tsx scripts/reservation-prearrival-reminders.ts",
     "followups:post-stay": "tsx scripts/post-stay-followups.ts",
+    "jobs:dispatch-scheduled-messages": "tsx scripts/dispatch-scheduled-messages.ts",
     "docker:build": "docker build -t hotel-canino-demo:local .",
     "docker:run": "docker run --rm -p 3000:3000 --env-file .env.local hotel-canino-demo:local",
     "smoke:docker": "node scripts/smoke-docker.mjs",

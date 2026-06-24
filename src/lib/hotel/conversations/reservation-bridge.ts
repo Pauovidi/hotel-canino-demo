@@ -27,6 +27,7 @@ import {
   canRenderReservationConfirmationTemplate,
   reservationTemplateInputFromProposal,
 } from "./client-templates";
+import type { ScheduledMessageStore } from "./scheduled-messages";
 
 const PROPOSAL_TTL_MS = 2 * 60 * 60 * 1000;
 
@@ -54,6 +55,7 @@ export interface WhatsAppReservationBridgeDeps {
   upsertClientFromConfirmedReservation?: (
     input: ClientUpsertFromConfirmedReservationInput,
   ) => Promise<ClientUpsertFromConfirmedReservationResult>;
+  scheduledMessageStore?: ScheduledMessageStore;
 }
 
 export interface ReservationProposalOutcome {

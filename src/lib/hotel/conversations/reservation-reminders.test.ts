@@ -49,7 +49,7 @@ describe("reservation reminder and followup selectors", () => {
     process.env.HOTEL_RESERVATION_REMINDERS_DRY_RUN = "true";
 
     const candidates = selectPrearrivalReminderCandidates(
-      [reservation()],
+      [reservation({ checkInDate: "2026-06-27" })],
       new Date("2026-06-22T10:00:00.000Z"),
     );
 
@@ -60,6 +60,17 @@ describe("reservation reminder and followup selectors", () => {
       petName: "Kira",
     });
     expect(candidates[0].message).toContain("Le recordamos que tiene una reserva");
+  });
+
+  it("does not select prearrival reminders outside the configured five-day window", () => {
+    process.env.HOTEL_RESERVATION_REMINDERS_ENABLED = "true";
+
+    expect(
+      selectPrearrivalReminderCandidates(
+        [reservation({ checkInDate: "2026-06-26" })],
+        new Date("2026-06-22T10:00:00.000Z"),
+      ),
+    ).toEqual([]);
   });
 
   it("selects post-stay followups only in dry-run mode when enabled", () => {

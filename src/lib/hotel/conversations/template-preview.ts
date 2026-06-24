@@ -3,7 +3,9 @@ import {
   type ClientRequestsConfig,
 } from "./client-requests";
 import {
+  renderBathLongHairPhotoRequestTemplate,
   renderBathOfferTemplate,
+  renderBathPhotoReceivedTemplate,
   renderPositiveReviewRequestTemplate,
   renderPostStayFollowupTemplate,
   renderPrearrivalReminderTemplate,
@@ -21,6 +23,9 @@ export type TemplatePreviewKind =
   | "post_stay"
   | "positive_review"
   | "bath"
+  | "bath_long_hair"
+  | "bath_photo"
+  | "post_stay_positive"
   | "denial"
   | "welcome";
 
@@ -42,6 +47,9 @@ const TEMPLATE_ORDER: TemplatePreviewKind[] = [
   "post_stay",
   "positive_review",
   "bath",
+  "bath_long_hair",
+  "bath_photo",
+  "post_stay_positive",
   "denial",
   "welcome",
 ];
@@ -52,6 +60,9 @@ const TEMPLATE_LABELS: Record<TemplatePreviewKind, string> = {
   post_stay: "post-estancia",
   positive_review: "reseña",
   bath: "baño",
+  bath_long_hair: "baño pelo largo",
+  bath_photo: "baño foto",
+  post_stay_positive: "post-estancia positivo",
   denial: "denegación",
   welcome: "bienvenida/pre-confirmación",
 };
@@ -85,6 +96,13 @@ function detectTemplateKind(message: string): TemplatePreviewKind | "all" | unde
   if (/\b(?:recordatorio|reminder)\b/.test(normalized)) {
     return "reminder";
   }
+  if (
+    /\b(?:post estancia positivo|post-estancia positivo|feedback positivo|postestancia positivo)\b/.test(
+      normalized,
+    )
+  ) {
+    return "post_stay_positive";
+  }
   if (/\b(?:feedback|post estancia|post-estancia|postestancia)\b/.test(normalized)) {
     return "post_stay";
   }
@@ -92,6 +110,12 @@ function detectTemplateKind(message: string): TemplatePreviewKind | "all" | unde
     return "positive_review";
   }
   if (/\b(?:bano|banar|bañar)\b/.test(normalized)) {
+    if (/\b(?:foto|recepcion)\b/.test(normalized)) {
+      return "bath_photo";
+    }
+    if (/\b(?:pelo largo|nudos|corte|caniche|schnauzer)\b/.test(normalized)) {
+      return "bath_long_hair";
+    }
     return "bath";
   }
   if (/\b(?:denegacion|denegada|no disponibilidad|sin disponibilidad)\b/.test(normalized)) {
@@ -205,7 +229,13 @@ function renderTemplate(
     case "positive_review":
       return renderPositiveReviewRequestTemplate();
     case "bath":
-      return renderBathOfferTemplate();
+      return renderBathOfferTemplate({ petNames });
+    case "bath_long_hair":
+      return renderBathLongHairPhotoRequestTemplate();
+    case "bath_photo":
+      return renderBathPhotoReceivedTemplate();
+    case "post_stay_positive":
+      return renderPositiveReviewRequestTemplate();
     case "denial":
       return renderReservationDeniedTemplate({
         clientName,

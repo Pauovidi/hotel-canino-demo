@@ -13,6 +13,7 @@ import type { PricingQuote } from "@/lib/hotel/pricing/types";
 import { buildGoogleSheetAdapter, buildMockSheetAdapter } from "@/lib/hotel/sheets";
 import type { WhatsAppReservationBridgeDeps } from "./reservation-bridge";
 import { renderReservationDeniedTemplate } from "./client-templates";
+import { readScheduledMessagesConfig } from "./scheduled-messages";
 import type {
   ConversationRecord,
   ConversationReservationFlow,
@@ -887,9 +888,13 @@ function parseDatesAndTimes(message: string, now: Date): Partial<ConversationRes
     }
   }
 
-  const numericDateRange = normalized.match(
-    /\b(\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\s*(?:a|al|hasta|-)\s*(\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\b/,
-  );
+  const numericDateRange =
+    normalized.match(
+      /\b(\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\s*(?:a|al|hasta)\s*(\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\b/,
+    ) ??
+    normalized.match(
+      /\b(\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\s+-\s+(\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\b/,
+    );
   if (numericDateRange && !result.checkInDate) {
     result.checkInDate = parseNumericDate(numericDateRange[1], now);
     result.checkOutDate = parseNumericDate(numericDateRange[2], now);
@@ -917,6 +922,11 @@ function parseDatesAndTimes(message: string, now: Date): Partial<ConversationRes
 
   result.checkInTime ??= parseTime(entryTime);
   result.checkOutTime ??= parseTime(exitTime);
+  const sharedTimeWithoutDates = extractSharedEntryExitTime(normalized);
+  if (sharedTimeWithoutDates && !result.checkInTime && !result.checkOutTime) {
+    result.checkInTime = sharedTimeWithoutDates;
+    result.checkOutTime = sharedTimeWithoutDates;
+  }
   result.checkInSlot = slotFromTime(result.checkInTime);
   result.checkOutSlot = slotFromTime(result.checkOutTime);
 
@@ -1320,6 +1330,7 @@ async function buildAvailableProposal(input: {
   });
 
   if (!availability.available) {
+    const scheduledConfig = readScheduledMessagesConfig();
     return {
       flow: {
         ...input.flow,
@@ -1332,14 +1343,16 @@ async function buildAvailableProposal(input: {
         petNames: input.flow.petNames?.length
           ? input.flow.petNames
           : [input.flow.petName ?? "tu mascota"],
-        waitlistSupported: false,
+        waitlistSupported: scheduledConfig.waitlistEnabled && !scheduledConfig.waitlistDryRun,
       }),
-      eventType: "reservation_denied_template_dry_run",
+      eventType: "reservation_denied_template_sent",
       eventPayload: {
         availability: "unavailable",
         conflictCount: availability.conflicts.length,
         template: "reservation_denied",
-        dryRun: true,
+        waitlistEnabled: scheduledConfig.waitlistEnabled,
+        waitlistDryRun: scheduledConfig.waitlistDryRun,
+        waitlistCreated: scheduledConfig.waitlistEnabled && !scheduledConfig.waitlistDryRun,
       },
     };
   }
@@ -1768,6 +1781,28 @@ export async function advanceReservationFlow(input: {
   }
 
   if (flow.status === "collecting_dates") {
+    if (flow.pendingSharedTimeConfirmation && isYes(input.message)) {
+      flow = {
+        ...flow,
+        ...buildTimePatch(
+          flow.pendingSharedTimeConfirmation,
+          flow.pendingSharedTimeConfirmation,
+        ),
+      };
+    } else if (flow.pendingSharedTimeConfirmation && isNo(input.message)) {
+      return {
+        conversation: syncConversationFromFlow(input.conversation, {
+          ...flow,
+          pendingSharedTimeConfirmation: undefined,
+          timePreferencePrompted: true,
+          updatedAt: nowIso(now),
+        }),
+        reply: "De acuerdo. ¿Prefieres primera hora de la mañana o primera hora de la tarde?",
+        eventType: "reservation_flow_waiting_time_preference",
+        eventPayload: { preference: "out_of_range_rejected" },
+      };
+    }
+
     if (needsMonthForDateTimeInput(input.message)) {
       return {
         conversation: syncConversationFromFlow(input.conversation, flow),
@@ -1791,11 +1826,42 @@ export async function advanceReservationFlow(input: {
       };
     }
 
+    const dateTimePatch = parseDatesAndTimes(input.message, now);
+    const parsedTimes = [
+      dateTimePatch.checkInTime,
+      dateTimePatch.checkOutTime,
+    ].filter((time): time is string => Boolean(time));
+    const outOfRangeTimes = parsedTimes.filter(isOutsideReceptionDay);
+    if (
+      outOfRangeTimes.length > 0 &&
+      (!dateTimePatch.checkInDate || !dateTimePatch.checkOutDate) &&
+      !flow.checkInDate &&
+      !flow.checkOutDate
+    ) {
+      const uniqueOutOfRange = Array.from(new Set(outOfRangeTimes));
+      const nextFlow = {
+        ...flow,
+        timePreferencePrompted: true,
+        pendingSharedTimeConfirmation:
+          uniqueOutOfRange.length === 1 ? uniqueOutOfRange[0] : undefined,
+        updatedAt: nowIso(now),
+      };
+      return {
+        conversation: syncConversationFromFlow(input.conversation, nextFlow),
+        reply:
+          uniqueOutOfRange.length === 1
+            ? `He entendido ${uniqueOutOfRange[0]}, pero puede quedar fuera del horario habitual. ¿Confirmas que usemos las ${uniqueOutOfRange[0]} tanto para la entrada como para la salida?`
+            : buildTimeOutOfRangeReply(outOfRangeTimes),
+        eventType: "reservation_flow_time_out_of_range",
+        eventPayload: { outOfRangeTimes },
+      };
+    }
+
     flow = awaitingTime?.patch
       ? { ...flow, ...awaitingTime.patch }
       : {
           ...flow,
-          ...defined(parseDatesAndTimes(input.message, now)),
+          ...defined(dateTimePatch),
         };
   }
 
@@ -1814,12 +1880,16 @@ export async function advanceReservationFlow(input: {
 
   // Opportunistically extract details from richer answers once the client branch is known.
   const canReadReservationDetails =
-    current.status === "collecting_pet" || current.status === "collecting_dates";
+    current.status === "collecting_owner" ||
+    current.status === "collecting_pet" ||
+    current.status === "collecting_dates";
   const petDetailsFromMessage = extractPetDetails(input.message);
   const explicitPetCorrection = extractExplicitPetCorrection(input.message);
   const dateDetailsFromMessage = parseDatesAndTimes(input.message, now);
   const canUpdatePetName =
-    current.status === "collecting_pet" || Boolean(explicitPetCorrection);
+    current.status === "collecting_pet" ||
+    (current.status === "collecting_owner" && Boolean(explicitPetCorrection)) ||
+    Boolean(explicitPetCorrection);
   const petPatch = explicitPetCorrection
     ? {
         petName: explicitPetCorrection,

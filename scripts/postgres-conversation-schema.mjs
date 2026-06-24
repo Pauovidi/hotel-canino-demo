@@ -30,6 +30,26 @@ export const REQUIRED_POSTGRES_CONVERSATION_SCHEMA = {
     "created_at",
     "payload",
   ],
+  hotel_scheduled_messages: [
+    "id",
+    "type",
+    "conversation_id",
+    "reservation_id",
+    "channel",
+    "external_user_id",
+    "phone_hash",
+    "payload",
+    "scheduled_at",
+    "status",
+    "attempts",
+    "max_attempts",
+    "last_error_code",
+    "dedupe_key",
+    "dry_run",
+    "created_at",
+    "updated_at",
+    "sent_at",
+  ],
 };
 
 export const REQUIRED_TABLES = Object.keys(REQUIRED_POSTGRES_CONVERSATION_SCHEMA);

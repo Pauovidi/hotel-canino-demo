@@ -45,8 +45,11 @@ describe("SMP client templates", () => {
   });
 
   it("renders bath offer copy without sending it automatically", () => {
+    expect(renderBathOfferTemplate({ petNames: ["PIPO"] })).toContain(
+      "¿Quieres que bañemos a PIPO antes de la salida?",
+    );
     expect(renderBathOfferTemplate()).toContain("15€ para perros pequeños");
-    expect(renderBathOfferTemplate()).toContain("preguntar adjuntando una foto");
+    expect(renderBathOfferTemplate()).toContain("envíanos una foto");
   });
 
   it("renders the reservation welcome intro", () => {

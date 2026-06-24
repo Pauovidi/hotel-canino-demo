@@ -44,6 +44,9 @@ describe("template preview commands", () => {
     ["plantilla post estancia", "después de su estancia con nosotros"],
     ["plantilla reseña", "https://g.page/r/CbNKrJ36PLSeEBE/review"],
     ["plantilla baño", "15€ para perros pequeños"],
+    ["plantilla baño pelo largo", "necesitamos una foto"],
+    ["plantilla baño foto", "Lo revisa recepción"],
+    ["plantilla post-estancia positivo", "https://g.page/r/CbNKrJ36PLSeEBE/review"],
     ["plantilla denegación", "no tenemos disponibilidad"],
   ])("renders %s", (command, expected) => {
     const result = buildTemplatePreviewResult(
@@ -67,6 +70,7 @@ describe("template preview commands", () => {
     expect(result?.reply).toContain("--- confirmación ---");
     expect(result?.reply).toContain("--- recordatorio ---");
     expect(result?.reply).toContain("--- baño ---");
+    expect(result?.reply).toContain("--- baño foto ---");
   });
 
   it("blocks preview in production when disabled and outside sandbox", () => {

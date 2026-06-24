@@ -211,6 +211,39 @@ export interface PendingReservationCancellationFlow {
   failureReason?: string;
 }
 
+export type PendingBathOfferStatus =
+  | "scheduled"
+  | "offered"
+  | "awaiting_size"
+  | "awaiting_photo"
+  | "quoted"
+  | "declined"
+  | "manual_review";
+
+export interface PendingBathOfferFlow {
+  flowId: string;
+  conversationId: string;
+  reservationId?: string;
+  status: PendingBathOfferStatus;
+  petNames: string[];
+  size?: "small" | "medium" | "large";
+  quotedPrice?: number;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt?: string;
+}
+
+export interface PendingPostStayFollowupFlow {
+  flowId: string;
+  conversationId: string;
+  reservationId?: string;
+  status: "awaiting_feedback" | "positive_review_requested" | "manual_review";
+  petNames: string[];
+  createdAt: string;
+  updatedAt: string;
+  expiresAt?: string;
+}
+
 export interface Conversation {
   id: string;
   phoneE164: string;
@@ -265,6 +298,8 @@ export interface Conversation {
   pendingPriceQuoteFlow?: PendingPriceQuoteFlow;
   pendingReservationModificationFlow?: PendingReservationModificationFlow;
   pendingReservationCancellationFlow?: PendingReservationCancellationFlow;
+  pendingBathOffer?: PendingBathOfferFlow;
+  pendingPostStayFollowup?: PendingPostStayFollowupFlow;
   reservationFlow?: ConversationReservationFlow;
   archivedAt?: string;
   archivedBy?: string;

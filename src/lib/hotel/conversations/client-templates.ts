@@ -30,7 +30,7 @@ function formatStayPoint(date: string, time?: string): string {
   return time ? `${formatDate(date)} a las ${time}` : formatDate(date);
 }
 
-function formatPetNames(petNames: string[]): string {
+export function formatReservationTemplatePetNames(petNames: string[]): string {
   return petNames.map((petName) => petName.trim()).filter(Boolean).join(", ");
 }
 
@@ -70,7 +70,7 @@ export function renderReservationConfirmationTemplate(
     "¡Tu reserva ha sido confirmada! ✅",
     `Entrada: ${input.entryText?.trim() || formatStayPoint(input.checkIn, input.checkInTime)}`,
     `Salida: ${input.exitText?.trim() || formatStayPoint(input.checkOut, input.checkOutTime)}`,
-    `Mascotas: ${formatPetNames(input.petNames)}`,
+    `Mascotas: ${formatReservationTemplatePetNames(input.petNames)}`,
     "",
     `El coste de la estancia es de *${input.priceText?.trim() || formatPrice(input.price!)}*`,
     "",
@@ -89,11 +89,23 @@ export function renderReservationConfirmationTemplate(
   ].join("\n");
 }
 
-export function renderBathOfferTemplate(): string {
+export function renderBathOfferTemplate(input: { petNames?: string[] } = {}): string {
+  const pets = input.petNames?.length
+    ? formatReservationTemplatePetNames(input.petNames)
+    : "tu perro";
   return [
-    "¿Quiere que bañemos a su perro?",
-    "El precio sería de 15€ para perros pequeños, 20€ para perros medianos y 25€ para perros grandes, siempre de pelo corto. Para pelo largo, nudos o corte de razas específicas, preguntar adjuntando una foto.",
+    `¿Quieres que bañemos a ${pets} antes de la salida?`,
+    "El precio es de 15€ para perros pequeños, 20€ para perros medianos y 25€ para perros grandes, siempre que sea pelo corto.",
+    "Para pelo largo, nudos o cortes de razas específicas, envíanos una foto y lo revisa recepción.",
   ].join("\n");
+}
+
+export function renderBathLongHairPhotoRequestTemplate(): string {
+  return "Para pelo largo, nudos o cortes de razas específicas necesitamos una foto para que recepción pueda revisarlo y confirmar el precio.";
+}
+
+export function renderBathPhotoReceivedTemplate(): string {
+  return "Gracias. Lo revisa recepción y te confirmamos el precio por aquí.";
 }
 
 export function renderReservationWelcomeIntroTemplate(input: {
@@ -103,7 +115,7 @@ export function renderReservationWelcomeIntroTemplate(input: {
   return [
     `Buenos días ${fallbackName(input.clientName)} 😊`,
     "Soy Maria Jose, del Hotel Canino SomosMuyPerros.",
-    `A continuación te detallo la confirmación de la reserva de ${formatPetNames(input.petNames)}.`,
+    `A continuación te detallo la confirmación de la reserva de ${formatReservationTemplatePetNames(input.petNames)}.`,
     "Si tienes cualquier duda o necesitas algo, no dudes en decírnoslo.",
     "¡Gracias por confiar en nosotros! 🐶💕",
   ].join("\n");
@@ -121,7 +133,7 @@ export function renderReservationDeniedTemplate(input: {
   return [
     `Buenas tardes ${fallbackName(input.clientName)} 😊`,
     "Soy Rocío del Hotel Canino SomosMuyPerros.",
-    `Lamentamos informarte de que en las fechas solicitadas no tenemos disponibilidad para alojar a ${formatPetNames(input.petNames)} con nosotros.`,
+    `Lamentamos informarte de que en las fechas solicitadas no tenemos disponibilidad para alojar a ${formatReservationTemplatePetNames(input.petNames)} con nosotros.`,
     waitlistLine,
     "Sentimos las molestias y te agradecemos mucho el interés y la confianza.",
     "Un cordial saludo 👋🐾",
@@ -136,7 +148,7 @@ export function renderPrearrivalReminderTemplate(input: {
   return [
     `Estimado/a ${fallbackName(input.clientName)}.`,
     "Le recordamos que tiene una reserva en nuestro Hotel Canino.",
-    `Para sus mascotas: *${formatPetNames(input.petNames)}*`,
+    `Para sus mascotas: *${formatReservationTemplatePetNames(input.petNames)}*`,
     `El día ${input.entryText}`,
     "Por favor, avísenos con anticipación si no puede asistir o necesita modificar la reserva y *cuál será su hora de llegada* ¡Gracias!",
     "Saludos,",
@@ -148,7 +160,7 @@ export function renderPostStayFollowupTemplate(input: {
   clientName?: string;
   petNames: string[];
 }): string {
-  return `Buenos días ${fallbackName(input.clientName)}, qué tal ${formatPetNames(
+  return `Buenos días ${fallbackName(input.clientName)}, qué tal ${formatReservationTemplatePetNames(
     input.petNames,
   )} después de su estancia con nosotros ¿todo bien?`;
 }

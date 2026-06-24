@@ -5,6 +5,7 @@ import {
   renderPositiveReviewRequestTemplate,
   renderPrearrivalReminderTemplate,
 } from "./client-templates";
+import { readScheduledMessagesConfig } from "./scheduled-messages";
 
 export type ClientRequestJobKind = "prearrival_reminder" | "post_stay_followup";
 
@@ -84,20 +85,22 @@ export function selectPrearrivalReminderCandidates(
   now = new Date(),
 ): ClientRequestJobCandidate[] {
   const config = getClientRequestsConfig();
+  const scheduledConfig = readScheduledMessagesConfig();
   if (!config.reservationRemindersEnabled) {
     return [];
   }
 
-  const leadHours = Number(process.env.HOTEL_RESERVATION_REMINDER_LEAD_HOURS ?? 24);
-  const minDue = now.getTime();
-  const maxDue = now.getTime() + leadHours * 60 * 60 * 1000;
+  const daysBefore = scheduledConfig.reservationReminderDaysBefore;
+  const startOfToday = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const targetStart = startOfToday + daysBefore * DAY_MS;
+  const targetEnd = targetStart + DAY_MS;
 
   return reservations
     .filter((reservation) => isConfirmed(reservation))
     .filter((reservation) => !reservation.prearrivalReminderSentAt)
     .filter((reservation) => {
       const entryTime = dateAtUtc(reservation.checkInDate).getTime();
-      return entryTime >= minDue && entryTime <= maxDue;
+      return entryTime >= targetStart && entryTime < targetEnd;
     })
     .map((reservation) => ({
       kind: "prearrival_reminder",
@@ -115,9 +118,14 @@ export function selectPostStayFollowupCandidates(
   now = new Date(),
 ): ClientRequestJobCandidate[] {
   const config = getClientRequestsConfig();
+  const scheduledConfig = readScheduledMessagesConfig();
   if (!config.postStayFollowupsEnabled) {
     return [];
   }
+  const targetStart =
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) -
+    scheduledConfig.postStayFollowupDaysAfter * DAY_MS;
+  const targetEnd = targetStart + DAY_MS;
 
   return reservations
     .filter((reservation) => isConfirmed(reservation))
@@ -128,7 +136,7 @@ export function selectPostStayFollowupCandidates(
     .filter((reservation) => !reservation.postStayFollowupSentAt)
     .filter((reservation) => {
       const checkoutTime = dateAtUtc(reservation.checkOutDate).getTime();
-      return checkoutTime <= now.getTime() && checkoutTime >= now.getTime() - 14 * DAY_MS;
+      return checkoutTime >= targetStart && checkoutTime < targetEnd;
     })
     .map((reservation) => ({
       kind: "post_stay_followup",

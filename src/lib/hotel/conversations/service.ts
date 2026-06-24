@@ -31,6 +31,14 @@ import {
   TEMPLATE_PREVIEW_FAILED_REPLY,
 } from "./template-preview";
 import {
+  renderBathLongHairPhotoRequestTemplate,
+  renderBathPhotoReceivedTemplate,
+  renderPositiveReviewRequestTemplate,
+} from "./client-templates";
+import {
+  scheduleBathOfferAfterConfirmation,
+} from "./scheduled-messages";
+import {
   advanceReservationChangeFlow,
   isReservationChangeFlowActive,
   startReservationChangeFlow,
@@ -492,6 +500,296 @@ function buildReservationFlowResumePrompt(record: ConversationRecord): string | 
 function appendReservationResume(reply: string, record: ConversationRecord): string {
   const resume = buildReservationFlowResumePrompt(record);
   return resume ? `${reply}\n\n${resume}` : reply;
+}
+
+function normalizeOperationalText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function rawPayloadHasMedia(rawPayload: unknown): boolean {
+  if (!rawPayload || typeof rawPayload !== "object") {
+    return false;
+  }
+
+  const payload = rawPayload as Record<string, unknown>;
+  const count = Number(payload.NumMedia ?? payload.numMedia ?? 0);
+  return Number.isFinite(count) && count > 0;
+}
+
+function detectBathSize(message: string): "small" | "medium" | "large" | undefined {
+  const normalized = normalizeOperationalText(message);
+  if (/\b(pequeno|pequena|peque|mini|small)\b/.test(normalized)) {
+    return "small";
+  }
+  if (/\b(mediano|mediana|medium)\b/.test(normalized)) {
+    return "medium";
+  }
+  if (/\b(grande|gran|large)\b/.test(normalized)) {
+    return "large";
+  }
+  return undefined;
+}
+
+function bathPriceForSize(size: "small" | "medium" | "large"): number {
+  return size === "small" ? 15 : size === "medium" ? 20 : 25;
+}
+
+function hasBathAcceptance(message: string): boolean {
+  const normalized = normalizeOperationalText(message);
+  return /^(si|sí|vale|ok|quiero|quiero bano|banarlo|banar|me interesa|adelante)\b/.test(normalized);
+}
+
+function hasBathDecline(message: string): boolean {
+  const normalized = normalizeOperationalText(message);
+  return /^(no|no gracias|mejor no|sin bano|no hace falta)\b/.test(normalized);
+}
+
+function needsBathManualReview(message: string): boolean {
+  const normalized = normalizeOperationalText(message);
+  return /\b(no es de pelo corto|pelo largo|nudo|nudos|necesita corte|corte especifico|corte de raza|caniche|schnauzer)\b/.test(
+    normalized,
+  );
+}
+
+function lacksBathPhoto(message: string): boolean {
+  const normalized = normalizeOperationalText(message);
+  return /\b(no tengo foto|sin foto|no puedo mandar foto|no puedo enviar foto)\b/.test(normalized);
+}
+
+async function handlePendingBathOfferReply(input: {
+  store: ConversationStore;
+  conversation: ConversationRecord;
+  inbound: Message;
+  safeBody: string;
+  rawPayload?: unknown;
+}): Promise<InboundResult | undefined> {
+  const bath = input.conversation.pendingBathOffer;
+  if (!bath || ["quoted", "declined", "manual_review"].includes(bath.status)) {
+    return undefined;
+  }
+
+  const hasMedia = rawPayloadHasMedia(input.rawPayload);
+  const size = detectBathSize(input.safeBody);
+  const longHair = needsBathManualReview(input.safeBody);
+  const noPhoto = lacksBathPhoto(input.safeBody);
+  const normalizedBody = normalizeOperationalText(input.safeBody);
+  const scheduledWithoutBathSignal =
+    bath.status === "scheduled" &&
+    !hasMedia &&
+    !size &&
+    !longHair &&
+    !noPhoto &&
+    !/\b(bano|banar|banarlo|bañar|bañarlo)\b/.test(normalizedBody);
+  if (scheduledWithoutBathSignal) {
+    return undefined;
+  }
+  let reply: string | undefined;
+  let eventType = "bath_offer_updated";
+  let eventPayload: Record<string, unknown> = {
+    previousStatus: bath.status,
+  };
+  let nextBath = {
+    ...bath,
+    status: bath.status === "scheduled" ? "offered" : bath.status,
+    updatedAt: nowIso(),
+  };
+  let nextConversation: ConversationRecord = input.conversation;
+
+  if (hasMedia && bath.status === "awaiting_photo") {
+    reply = renderBathPhotoReceivedTemplate();
+    nextBath = { ...nextBath, status: "manual_review" };
+    nextConversation = {
+      ...input.conversation,
+      pendingBathOffer: nextBath,
+      mode: "human",
+      humanRequested: true,
+      requiresManualReview: true,
+      updatedAt: nowIso(),
+    };
+    eventType = "bath_photo_received";
+    eventPayload = { ...eventPayload, manualReview: true };
+  } else if (noPhoto && bath.status === "awaiting_photo") {
+    reply = renderBathPhotoReceivedTemplate();
+    nextBath = { ...nextBath, status: "manual_review" };
+    nextConversation = {
+      ...input.conversation,
+      pendingBathOffer: nextBath,
+      mode: "human",
+      humanRequested: true,
+      requiresManualReview: true,
+      updatedAt: nowIso(),
+    };
+    eventType = "bath_manual_review";
+    eventPayload = { ...eventPayload, reason: "no_photo_available" };
+  } else if (longHair) {
+    reply = renderBathLongHairPhotoRequestTemplate();
+    nextBath = { ...nextBath, status: "awaiting_photo" };
+    nextConversation = {
+      ...input.conversation,
+      pendingBathOffer: nextBath,
+      requiresManualReview: true,
+      updatedAt: nowIso(),
+    };
+    eventType = "bath_photo_requested";
+    eventPayload = { ...eventPayload, reason: "long_hair_or_knots" };
+  } else if (hasBathDecline(input.safeBody)) {
+    reply = "De acuerdo, no añadimos baño.";
+    nextBath = { ...nextBath, status: "declined" };
+    nextConversation = {
+      ...input.conversation,
+      pendingBathOffer: nextBath,
+      updatedAt: nowIso(),
+    };
+    eventType = "bath_declined";
+  } else if (size) {
+    const quotedPrice = bathPriceForSize(size);
+    reply = `Perfecto. Para pelo corto, el baño serían ${quotedPrice}€. Lo dejamos anotado para recepción.`;
+    nextBath = { ...nextBath, status: "quoted", size, quotedPrice };
+    nextConversation = {
+      ...input.conversation,
+      pendingBathOffer: nextBath,
+      updatedAt: nowIso(),
+    };
+    eventType = "bath_price_quoted";
+    eventPayload = { ...eventPayload, size, quotedPrice };
+  } else if (hasBathAcceptance(input.safeBody)) {
+    reply = "Perfecto. ¿Es pequeño, mediano o grande? Solo damos precio automático si es de pelo corto.";
+    nextBath = { ...nextBath, status: "awaiting_size" };
+    nextConversation = {
+      ...input.conversation,
+      pendingBathOffer: nextBath,
+      updatedAt: nowIso(),
+    };
+    eventType = "bath_size_requested";
+  } else {
+    return undefined;
+  }
+
+  await replaceConversationBestEffort(input.store, nextConversation, "bath_offer_update");
+  await addEventBestEffort(
+    input.store,
+    createEvent(input.conversation.id, eventType, eventPayload),
+    eventType,
+  );
+  if (eventType === "bath_photo_requested") {
+    await addEventBestEffort(
+      input.store,
+      createEvent(input.conversation.id, "bath_manual_review", {
+        reason: "needs_photo_price_review",
+      }),
+      "bath_manual_review",
+    );
+  }
+  const botReply = await addBotMessageBestEffort(
+    input.store,
+    input.conversation.id,
+    reply,
+    "bath_offer_reply",
+  );
+
+  return {
+    conversation: await getConversationByIdBestEffort(
+      input.store,
+      input.conversation.id,
+      nextConversation,
+      "bath_offer_return_read",
+    ),
+    inbound: input.inbound,
+    botReply,
+    twiml: buildTwilioMessageResponse(reply),
+  };
+}
+
+function isNegativePostStayReply(message: string): boolean {
+  const normalized = normalizeOperationalText(message);
+  return /\b(no|mal|regular|problema|nervioso|nerviosa|cojo|coja|enfermo|enferma|queja|preocupado|preocupada)\b/.test(
+    normalized,
+  );
+}
+
+function isPositivePostStayReplyText(message: string): boolean {
+  const normalized = normalizeOperationalText(message);
+  return /^(si|todo bien|genial|muy bien|perfecto|fenomenal|estupendo|contento|contenta|muy contentos|todo perfecto)\b/.test(
+    normalized,
+  );
+}
+
+async function handlePendingPostStayFollowupReply(input: {
+  store: ConversationStore;
+  conversation: ConversationRecord;
+  inbound: Message;
+  safeBody: string;
+}): Promise<InboundResult | undefined> {
+  const flow = input.conversation.pendingPostStayFollowup;
+  if (!flow || flow.status !== "awaiting_feedback") {
+    return undefined;
+  }
+
+  let reply: string | undefined;
+  let nextConversation: ConversationRecord | undefined;
+  let eventType: string | undefined;
+
+  if (isPositivePostStayReplyText(input.safeBody)) {
+    reply = renderPositiveReviewRequestTemplate();
+    nextConversation = {
+      ...input.conversation,
+      pendingPostStayFollowup: {
+        ...flow,
+        status: "positive_review_requested",
+        updatedAt: nowIso(),
+      },
+      updatedAt: nowIso(),
+    };
+    eventType = "post_stay_positive_review_requested";
+  } else if (isNegativePostStayReply(input.safeBody)) {
+    reply = "Gracias por avisarnos. Lo revisa el equipo y te contestamos por aquí.";
+    nextConversation = {
+      ...input.conversation,
+      pendingPostStayFollowup: {
+        ...flow,
+        status: "manual_review",
+        updatedAt: nowIso(),
+      },
+      mode: "human",
+      humanRequested: true,
+      requiresManualReview: true,
+      updatedAt: nowIso(),
+    };
+    eventType = "post_stay_negative_manual_review";
+  } else {
+    return undefined;
+  }
+
+  await replaceConversationBestEffort(input.store, nextConversation, "post_stay_followup_update");
+  await addEventBestEffort(
+    input.store,
+    createEvent(input.conversation.id, eventType),
+    eventType,
+  );
+  const botReply = await addBotMessageBestEffort(
+    input.store,
+    input.conversation.id,
+    reply,
+    "post_stay_followup_reply",
+  );
+
+  return {
+    conversation: await getConversationByIdBestEffort(
+      input.store,
+      input.conversation.id,
+      nextConversation,
+      "post_stay_followup_return_read",
+    ),
+    inbound: input.inbound,
+    botReply,
+    twiml: buildTwilioMessageResponse(reply),
+  };
 }
 
 async function sendBotOutcome(input: {
@@ -964,6 +1262,8 @@ function buildResetRecord(record: ConversationRecord): ConversationRecord {
     pendingPriceQuoteFlow: undefined,
     pendingReservationModificationFlow: undefined,
     pendingReservationCancellationFlow: undefined,
+    pendingBathOffer: undefined,
+    pendingPostStayFollowup: undefined,
     reservationFlow: undefined,
     unreadCount: 0,
     requiresManualReview:
@@ -1040,6 +1340,8 @@ export async function handleGlobalResetCommand(
         clearedPendingPriceQuoteFlow: Boolean(latest.pendingPriceQuoteFlow),
         clearedPendingModificationFlow: Boolean(latest.pendingReservationModificationFlow),
         clearedPendingCancellationFlow: Boolean(latest.pendingReservationCancellationFlow),
+        clearedPendingBathOffer: Boolean(latest.pendingBathOffer),
+        clearedPendingPostStayFollowup: Boolean(latest.pendingPostStayFollowup),
         clearedReservationFlow: Boolean(latest.reservationFlow),
         clearedHumanMode: latest.mode === "human" || latest.humanRequested,
       }),
@@ -1519,7 +1821,7 @@ async function confirmConversationReservation(input: {
       latestAfterEvent.requiresManualReview || Boolean(confirmation.handoff),
     updatedAt: nowIso(),
   };
-  const nextRecord = applyClientReservationUpsert(
+  let nextRecord = applyClientReservationUpsert(
     updatedRecord,
     confirmation.clientDirectoryUpsert,
   );
@@ -1557,6 +1859,70 @@ async function confirmConversationReservation(input: {
           termsVersion: confirmation.proposal.termsVersion,
         }),
         "reservation_confirmed_after_terms",
+      );
+    }
+    try {
+      const scheduleNow = input.deps?.now?.() ?? new Date();
+      const scheduled = await scheduleBathOfferAfterConfirmation({
+        reservation: confirmation.reservation,
+        conversation: nextRecord,
+        now: scheduleNow,
+        store: input.deps?.scheduledMessageStore,
+      });
+      if (scheduled.scheduled && scheduled.message) {
+        const latestForBath =
+          (await input.store.getById(conversationForConfirmation.id)) ?? nextRecord;
+        nextRecord = {
+          ...latestForBath,
+          pendingBathOffer: {
+            flowId: createId("bath_offer"),
+            conversationId: conversationForConfirmation.id,
+            reservationId: confirmation.reservation.reservationId,
+            status: "scheduled",
+            petNames: confirmation.reservation.petNames?.length
+              ? confirmation.reservation.petNames
+              : [confirmation.reservation.petName ?? "tu mascota"],
+            createdAt: scheduleNow.toISOString(),
+            updatedAt: scheduleNow.toISOString(),
+          },
+          updatedAt: scheduleNow.toISOString(),
+        };
+        await replaceConversationBestEffort(
+          input.store,
+          nextRecord,
+          "bath_offer_schedule_update_conversation",
+        );
+        await addEventBestEffort(
+          input.store,
+          createEvent(conversationForConfirmation.id, "bath_offer_scheduled", {
+            reservationIdSummary: summarizeReservationId(confirmation.reservation.reservationId),
+            scheduledAt: scheduled.message.scheduledAt,
+            dryRun: scheduled.dryRun,
+          }),
+          "bath_offer_scheduled",
+        );
+        if (scheduled.dryRun) {
+          await addEventBestEffort(
+            input.store,
+            createEvent(conversationForConfirmation.id, "bath_offer_dry_run", {
+              reservationIdSummary: summarizeReservationId(
+                confirmation.reservation.reservationId,
+              ),
+              scheduledAt: scheduled.message.scheduledAt,
+            }),
+            "bath_offer_dry_run",
+          );
+        }
+      }
+    } catch (error) {
+      console.warn("bath_offer_schedule_failed", safeConversationStoreError(error));
+      await addEventBestEffort(
+        input.store,
+        createEvent(conversationForConfirmation.id, "bath_offer_schedule_failed", {
+          reservationIdSummary: summarizeReservationId(confirmation.reservation.reservationId),
+          ...safeConversationStoreError(error),
+        }),
+        "bath_offer_schedule_failed",
       );
     }
   }
@@ -1681,6 +2047,27 @@ export async function handleInboundWhatsApp(
   });
   if (templatePreviewOutcome) {
     return templatePreviewOutcome;
+  }
+
+  const bathOfferOutcome = await handlePendingBathOfferReply({
+    store,
+    conversation: freshAfterInbound,
+    inbound,
+    safeBody,
+    rawPayload: payload.rawPayload,
+  });
+  if (bathOfferOutcome) {
+    return bathOfferOutcome;
+  }
+
+  const postStayOutcome = await handlePendingPostStayFollowupReply({
+    store,
+    conversation: freshAfterInbound,
+    inbound,
+    safeBody,
+  });
+  if (postStayOutcome) {
+    return postStayOutcome;
   }
 
   if (freshWithClient.mode === "human") {
@@ -1893,7 +2280,18 @@ export async function handleInboundWhatsApp(
         reservationFlow: latestBeforeFlow.reservationFlow
           ? {
               ...latestBeforeFlow.reservationFlow,
-              status: "rejected",
+              status: "collecting_dates",
+              checkInDate: undefined,
+              checkInTime: undefined,
+              checkInSlot: undefined,
+              checkOutDate: undefined,
+              checkOutTime: undefined,
+              checkOutSlot: undefined,
+              availabilityStatus: "pending",
+              price: undefined,
+              priceSource: undefined,
+              priceNeedsReview: undefined,
+              proposalId: undefined,
               updatedAt: nowIso(),
             }
           : undefined,
@@ -1903,10 +2301,11 @@ export async function handleInboundWhatsApp(
       await store.addEvent(
         createEvent(latestBeforeFlow.id, "reservation_flow_rejected", {
           reason: "customer_rejected",
+          preservedFlow: true,
         }),
       );
       const replyBody =
-        "De acuerdo, no confirmamos la reserva. Si quieres mirar otras fechas, dime cuáles.";
+        "De acuerdo, no confirmamos esa propuesta. Dime las nuevas fechas y horarios y lo reviso de nuevo.";
       const botReply = await store.addMessage(
         createMessage({
           conversationId: latestBeforeFlow.id,
