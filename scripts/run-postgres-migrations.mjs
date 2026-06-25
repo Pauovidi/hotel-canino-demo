@@ -7,6 +7,7 @@ import { checkPostgresConversationSchema, createPoolFromEnv } from "./postgres-c
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const migrationsDir = path.join(root, "db", "migrations");
+const REQUIRED_MIGRATION_FILES = ["005_scheduled_messages.sql"];
 
 async function main() {
   const pool = createPoolFromEnv();
@@ -20,6 +21,15 @@ async function main() {
     const files = (await readdir(migrationsDir))
       .filter((file) => /^\d+_.*\.sql$/.test(file))
       .sort();
+    const missingRequiredMigrations = REQUIRED_MIGRATION_FILES.filter(
+      (file) => !files.includes(file),
+    );
+    if (missingRequiredMigrations.length > 0) {
+      const error = new Error("Required migration file missing from runtime image.");
+      error.code = "required_migration_file_missing";
+      error.missingRequiredMigrations = missingRequiredMigrations;
+      throw error;
+    }
 
     for (const file of files) {
       const id = Number.parseInt(file.split("_")[0], 10);
@@ -58,8 +68,13 @@ async function main() {
         JSON.stringify({
           ok: false,
           postgresSchemaReady: false,
+          conversationSchemaReady: health.conversationSchemaReady,
+          scheduledMessagesSchemaReady: health.scheduledMessagesSchemaReady,
+          scheduledMessagesDedupeReady: health.scheduledMessagesDedupeReady,
           missingTables: health.missingTables,
           missingColumns: health.missingColumns,
+          missingScheduledTables: health.missingScheduledTables,
+          missingScheduledColumns: health.missingScheduledColumns,
         }),
       );
       process.exitCode = 1;
@@ -67,6 +82,7 @@ async function main() {
     }
 
     console.log("[ok] Postgres conversation schema ready.");
+    console.log("[ok] Postgres scheduled messages schema ready.");
   } finally {
     await pool.end().catch(() => undefined);
   }
@@ -80,6 +96,10 @@ main().catch((error) => {
       safeErrorCode:
         error && typeof error === "object" && "code" in error
           ? String(error.code).slice(0, 80)
+          : undefined,
+      missingRequiredMigrations:
+        error && typeof error === "object" && Array.isArray(error.missingRequiredMigrations)
+          ? error.missingRequiredMigrations
           : undefined,
     }),
   );
