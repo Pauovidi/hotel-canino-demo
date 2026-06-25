@@ -37,7 +37,7 @@ export default async function ConversationsAdminPage() {
 
   if (!auth.ok) {
     return (
-      <SiteShell>
+      <SiteShell headerVariant="panel">
         <section className="page-intro">
           <p className="demo-kicker">Panel protegido</p>
           <h1 className="page-title">Panel de conversaciones</h1>
@@ -57,7 +57,7 @@ export default async function ConversationsAdminPage() {
   const twilioConfig = readTwilioWhatsAppConfig();
 
   return (
-    <SiteShell compact>
+    <SiteShell compact headerVariant="panel">
       <section className="page-intro conversation-page-intro">
         <p className="demo-kicker">Operaciones</p>
         <h1 className="page-title">Panel de conversaciones</h1>

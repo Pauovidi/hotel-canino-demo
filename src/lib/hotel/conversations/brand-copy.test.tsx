@@ -69,6 +69,28 @@ describe("conversations panel visible demo copy", () => {
     expect(shellHtml).not.toMatch(/>SM</);
   });
 
+  it("renders the conversations admin shell with minimal panel navigation", () => {
+    const shellHtml = renderToStaticMarkup(
+      <SiteShell compact headerVariant="panel">
+        <section>
+          <h1>Panel de conversaciones</h1>
+        </section>
+      </SiteShell>,
+    );
+    const pageSource = readSurface("src/app/admin/conversations/page.tsx");
+
+    expect(pageSource).toContain('headerVariant="panel"');
+    expect(shellHtml).toContain("Somos Muy Perros");
+    expect(shellHtml).toContain("somos-muy-perros-logo.png");
+    expect(shellHtml).toContain("Panel conversaciones");
+    expect(shellHtml).toContain("Panel de conversaciones");
+    expect(shellHtml).not.toContain("Inicio");
+    expect(shellHtml).not.toContain("Recepción emails");
+    expect(shellHtml).not.toContain("Formulario web");
+    expect(shellHtml.toLowerCase()).not.toContain("nif");
+    expect(shellHtml.toLowerCase()).not.toContain("dni");
+  });
+
   it("renders a non-empty Somos Muy Perros inbox with mock WhatsApp notice", () => {
     const conversations = buildConversationSeed("2026-05-06T08:00:00.000Z").conversations;
     const dashboard: ConversationDashboard = {
