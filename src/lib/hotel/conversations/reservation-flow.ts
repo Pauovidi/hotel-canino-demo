@@ -344,6 +344,87 @@ function slotFromTime(time: string | undefined): HotelSlot | undefined {
   return hour < 14 ? "morning" : "afternoon";
 }
 
+function addUtcDays(now: Date, days: number): string {
+  const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function resolveFutureDayInCurrentOrNextMonth(day: number, now: Date): string | undefined {
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth() + 1;
+  const today = Date.UTC(year, now.getUTCMonth(), now.getUTCDate());
+  const currentMonthCandidate = Date.UTC(year, month - 1, day);
+  if (currentMonthCandidate >= today) {
+    return isoDate(year, month, day);
+  }
+
+  const nextMonth = month === 12 ? 1 : month + 1;
+  const nextYear = month === 12 ? year + 1 : year;
+  return isoDate(nextYear, nextMonth, day);
+}
+
+function stripRelativeDateWords(value: string): string {
+  return value
+    .replace(/\bpasado\s+manana\b/g, " ")
+    .replace(/\bmanana\b/g, " ")
+    .replace(/\b(?:este|esta|el|la)?\s*(lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/g, " ")
+    .replace(/\b(?:el\s+(?:dia\s+)?|dia\s+)\d{1,2}\b/g, " ");
+}
+
+function resolveSingleDateMention(
+  normalized: string,
+  now: Date,
+): { date?: string; label?: string } {
+  const hasMorningTimePhrase = /\b(?:por|de)\s+la\s+manana\b/.test(normalized);
+  if (/\bpasado\s+manana\b/.test(normalized)) {
+    return { date: addUtcDays(now, 2), label: "pasado mañana" };
+  }
+  if (/\bmanana\b/.test(normalized) && !hasMorningTimePhrase) {
+    return { date: addUtcDays(now, 1), label: "mañana" };
+  }
+
+  const weekdays: Record<string, number> = {
+    lunes: 1,
+    martes: 2,
+    miercoles: 3,
+    jueves: 4,
+    viernes: 5,
+    sabado: 6,
+    domingo: 0,
+  };
+  const labels: Record<string, string> = {
+    lunes: "lunes",
+    martes: "martes",
+    miercoles: "miércoles",
+    jueves: "jueves",
+    viernes: "viernes",
+    sabado: "sábado",
+    domingo: "domingo",
+  };
+  const weekday = normalized.match(/\b(?:este|esta|el|la)?\s*(lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/);
+  if (weekday) {
+    const target = weekdays[weekday[1]];
+    const base = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const delta = (target - base.getUTCDay() + 7) % 7 || 7;
+    base.setUTCDate(base.getUTCDate() + delta);
+    return {
+      date: base.toISOString().slice(0, 10),
+      label: `este ${labels[weekday[1]]}`,
+    };
+  }
+
+  const partial = normalized.match(/\b(?:el\s+(?:dia\s+)?|dia\s+)(\d{1,2})\b/);
+  if (partial && !/\b\d{1,2}(?::|\.)\d{2}\b/.test(partial[0])) {
+    const day = Number.parseInt(partial[1], 10);
+    if (day >= 1 && day <= 31) {
+      return { date: resolveFutureDayInCurrentOrNextMonth(day, now), label: `el día ${day}` };
+    }
+  }
+
+  return {};
+}
+
 function findDateInText(
   value: string,
   now: Date,
@@ -503,10 +584,12 @@ function resolveAwaitingTimeInput(
     return undefined;
   }
 
+  const normalized = normalizeText(message);
   const morning = isMorningPreference(message);
   const afternoon = isAfternoonPreference(message);
-  const indifferent = isIndifferentTimePreference(message);
-  const normalized = normalizeText(message);
+  const indifferent =
+    isIndifferentTimePreference(message) ||
+    /cuando\s+mejor\s+os\s+veng[ao]/.test(normalized);
   const contextualAffirmative =
     isYes(message) ||
     /^(vale|ok|okay|de acuerdo|correcto|perfecto|adelante|esta bien|esta ok|confirmo)$/.test(
@@ -927,6 +1010,16 @@ function parseDatesAndTimes(message: string, now: Date): Partial<ConversationRes
     result.checkInTime = sharedTimeWithoutDates;
     result.checkOutTime = sharedTimeWithoutDates;
   }
+
+  if (!result.checkInDate && !result.checkOutDate) {
+    const singleDate = resolveSingleDateMention(normalized, now);
+    if (singleDate.date) {
+      result.checkInDate = singleDate.date;
+      const timeText = stripRelativeDateWords(normalized);
+      result.checkInTime ??= findTimeInText(timeText);
+    }
+  }
+
   result.checkInSlot = slotFromTime(result.checkInTime);
   result.checkOutSlot = slotFromTime(result.checkOutTime);
 
@@ -1162,6 +1255,50 @@ function hasStayData(flow: ConversationReservationFlow): boolean {
   );
 }
 
+export type ReservationMissingField =
+  | "client_kind"
+  | "email"
+  | "owner"
+  | "pet"
+  | "check_in_date"
+  | "check_in_time"
+  | "check_out_date"
+  | "check_out_time"
+  | "notes"
+  | "visit";
+
+export function computeMissingReservationFields(flow: ConversationReservationFlow): ReservationMissingField[] {
+  if (flow.status === "asking_client_kind" || flow.clientKind === "unknown") {
+    return ["client_kind"];
+  }
+  if (flow.clientKind === "habitual" && !flow.email) {
+    return ["email"];
+  }
+  if (flow.clientKind === "new" && !hasMinimumClient(flow)) {
+    return ["owner"];
+  }
+  if (!flow.petName || !flow.petCount || Boolean(flow.petCountInconsistency)) {
+    return ["pet"];
+  }
+
+  const missing: ReservationMissingField[] = [];
+  if (!flow.checkInDate) missing.push("check_in_date");
+  if (!flow.checkInTime) missing.push("check_in_time");
+  if (!flow.checkOutDate) missing.push("check_out_date");
+  if (!flow.checkOutTime) missing.push("check_out_time");
+  if (missing.length > 0) {
+    return missing;
+  }
+
+  if (!flow.notes && !flow.foodNotes && !flow.medicationNotes) {
+    return ["notes"];
+  }
+  if (flow.wantsVisit === undefined) {
+    return ["visit"];
+  }
+  return [];
+}
+
 function buildPricingConfig() {
   const runtimeConfig = getHotelRuntimeConfig();
   const halfDaySupplement = runtimeConfig.pricing.halfDaySupplement.amount;
@@ -1258,13 +1395,19 @@ function nextCollectionReply(flow: ConversationReservationFlow): string {
       return "Tengo la hora de salida. ¿A qué hora sería la entrada?";
     }
     if (flow.checkInDate && flow.checkInTime && (!flow.checkOutDate || !flow.checkOutTime)) {
-      return "Tengo la entrada. ¿Qué día y a qué hora sería la salida?";
+      return "Perfecto, tengo la entrada. ¿Qué día y a qué hora sería la salida?";
     }
     if (flow.checkOutDate && flow.checkOutTime && (!flow.checkInDate || !flow.checkInTime)) {
       return "Tengo la salida. ¿Qué día y a qué hora sería la entrada?";
     }
     if (flow.checkInDate && flow.checkOutDate && (!flow.checkInTime || !flow.checkOutTime)) {
       return "Ya tengo las fechas. Me falta la hora de entrada y la hora de salida. ¿Me las indicas?";
+    }
+    if (flow.checkInDate && !flow.checkOutDate && !flow.checkInTime && !flow.checkOutTime) {
+      return "Entiendo que la entrada sería ese día. Me falta la salida y las horas. ¿Me las indicas?";
+    }
+    if (flow.checkInDate && !flow.checkInTime && (!flow.checkOutDate || !flow.checkOutTime)) {
+      return "Entiendo la fecha de entrada. Me falta la salida y las horas. ¿Me las indicas?";
     }
     if ((!flow.checkInDate || !flow.checkOutDate) && (flow.checkInTime || flow.checkOutTime)) {
       return "Gracias. ¿Qué fecha de entrada y qué fecha de salida serían?";
@@ -1278,6 +1421,72 @@ function nextCollectionReply(flow: ConversationReservationFlow): string {
     return "¿Quieres visitar el hotel antes de confirmar?";
   }
   return "Vale. Sigo con la reserva.";
+}
+
+export function renderNextReservationQuestion(
+  missingFields: ReservationMissingField[],
+  flow: ConversationReservationFlow,
+): string {
+  if (missingFields.length === 0) {
+    return "Vale. Sigo con la reserva.";
+  }
+  return nextCollectionReply(flow);
+}
+
+export interface ExtractedReservationSlots {
+  petName?: string;
+  petNames?: string[];
+  petCount?: number;
+  checkInDate?: string;
+  checkInTime?: string;
+  checkOutDate?: string;
+  checkOutTime?: string;
+}
+
+export function extractReservationSlotsFromMessage(
+  message: string,
+  context: { flow?: ConversationReservationFlow; now?: Date } = {},
+): ExtractedReservationSlots {
+  const dateTime = parseDatesAndTimes(message, context.now ?? new Date());
+  const petDetails = context.flow?.status === "collecting_dates" ? {} : extractPetDetails(message);
+  return defined({
+    petName: petDetails.petName,
+    petNames: petDetails.petNames,
+    petCount: petDetails.petCount,
+    checkInDate: dateTime.checkInDate,
+    checkInTime: dateTime.checkInTime,
+    checkOutDate: dateTime.checkOutDate,
+    checkOutTime: dateTime.checkOutTime,
+  });
+}
+
+export function mergeReservationSlots(
+  state: ConversationReservationFlow,
+  extractedSlots: ExtractedReservationSlots,
+): { flow: ConversationReservationFlow; appliedSlotNames: string[] } {
+  const patch: Partial<ConversationReservationFlow> = {};
+  const appliedSlotNames: string[] = [];
+
+  for (const [key, value] of Object.entries(extractedSlots)) {
+    if (value === undefined) {
+      continue;
+    }
+    const current = state[key as keyof ConversationReservationFlow];
+    if (JSON.stringify(current) !== JSON.stringify(value)) {
+      (patch as Record<string, unknown>)[key] = value;
+      appliedSlotNames.push(key);
+    }
+  }
+
+  return {
+    flow: {
+      ...state,
+      ...patch,
+      checkInSlot: slotFromTime(patch.checkInTime ?? state.checkInTime),
+      checkOutSlot: slotFromTime(patch.checkOutTime ?? state.checkOutTime),
+    },
+    appliedSlotNames,
+  };
 }
 
 function syncConversationFromFlow(conversation: ConversationRecord, flow: ConversationReservationFlow): ConversationRecord {
@@ -1484,6 +1693,7 @@ export async function advanceReservationFlow(input: {
   const now = input.deps?.now?.() ?? new Date();
   let flow: ConversationReservationFlow = { ...current, updatedAt: nowIso(now) };
   const recognizedClient = isRecognizedDirectoryClient(input.conversation);
+  let consumedContextualTimeInput = false;
 
   if (recognizedClient) {
     flow = {
@@ -1812,7 +2022,22 @@ export async function advanceReservationFlow(input: {
       };
     }
 
+    if (
+      hasDatesAndNeedsTimes(flow) &&
+      normalizeText(input.message).includes("cuando mejor") &&
+      normalizeText(input.message).includes("veng")
+    ) {
+      const nextFlow = { ...flow, timePreferencePrompted: true, updatedAt: nowIso(now) };
+      return {
+        conversation: syncConversationFromFlow(input.conversation, nextFlow),
+        reply: TIME_PREFERENCE_PROMPT,
+        eventType: "reservation_flow_waiting_time_preference",
+        eventPayload: { awaiting: "check_in_out_times", preference: "indifferent_prompted" },
+      };
+    }
+
     const awaitingTime = resolveAwaitingTimeInput(flow, input.message);
+    consumedContextualTimeInput = Boolean(awaitingTime?.patch);
     if (awaitingTime?.reply) {
       const nextFlow = { ...flow, ...awaitingTime.patch, updatedAt: nowIso(now) };
       return {
@@ -1898,11 +2123,12 @@ export async function advanceReservationFlow(input: {
         petCountInconsistency: undefined,
       }
     : petDetailsFromMessage;
+  const shouldMergeDateDetails = canReadReservationDetails && !consumedContextualTimeInput;
   flow = {
     ...flow,
     email: extractEmail(input.message) ?? flow.email,
     ...(canUpdatePetName ? defined(petPatch) : {}),
-    ...(canReadReservationDetails ? defined(dateDetailsFromMessage) : {}),
+    ...(shouldMergeDateDetails ? defined(dateDetailsFromMessage) : {}),
   };
 
   flow = updateStage(flow);
@@ -1957,6 +2183,17 @@ export async function advanceReservationFlow(input: {
       clientKind: flow.clientKind,
       hasEmail: Boolean(flow.email),
       hasStayData: hasStayData(flow),
+      missingFields: computeMissingReservationFields(flow),
+      slotNames: Object.keys(
+        defined({
+          petName: canUpdatePetName ? petPatch.petName : undefined,
+          petCount: canUpdatePetName ? petPatch.petCount : undefined,
+          checkInDate: dateDetailsFromMessage.checkInDate,
+          checkInTime: dateDetailsFromMessage.checkInTime,
+          checkOutDate: dateDetailsFromMessage.checkOutDate,
+          checkOutTime: dateDetailsFromMessage.checkOutTime,
+        }),
+      ),
     },
   };
 }

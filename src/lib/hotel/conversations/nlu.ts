@@ -399,6 +399,11 @@ export function classifyConversationIntent(message: string): ConversationNluResu
     return result(slots.checkIn || slots.checkOut ? "availability_request" : "reservation_start");
   }
 
+  if (/\b(?:diferencia\s+entre\s+hotel\s+y\s+guarderia|hotel\s+y\s+guarderia)\b/.test(normalized)) {
+    matchedSignals.push("hotel_daycare_difference");
+    return result("faq_services");
+  }
+
   if (intelligence.intent === "reservation_or_availability") {
     matchedSignals.push(...intelligence.matchedSignals);
     return result("availability_request", "medium");

@@ -46,6 +46,8 @@ import {
 import { isConcreteKnowledgeQuestion } from "@/lib/hotel/knowledge/faq";
 import {
   advanceReservationFlow,
+  computeMissingReservationFields,
+  extractReservationSlotsFromMessage,
   isExplicitNotClientClaim,
   isReservationFlowActive,
   isReservationFlowRejection,
@@ -71,6 +73,7 @@ import type {
   ConversationListFilters,
   ConversationMode,
   ConversationRecord,
+  ConversationReservationFlow,
   Message,
   PendingReservationProposal,
 } from "./types";
@@ -500,6 +503,355 @@ function buildReservationFlowResumePrompt(record: ConversationRecord): string | 
 function appendReservationResume(reply: string, record: ConversationRecord): string {
   const resume = buildReservationFlowResumePrompt(record);
   return resume ? `${reply}\n\n${resume}` : reply;
+}
+
+const RESERVATION_FLOW_CANCELLED_REPLY =
+  "De acuerdo, dejamos la reserva sin continuar. Si necesitas otra cosa, estoy por aquí.";
+
+type PendingSafeEvent = {
+  eventType: string;
+  payload?: Record<string, unknown>;
+};
+
+const RESERVATION_SLOT_KEYS = [
+  "petName",
+  "petNames",
+  "petCount",
+  "checkInDate",
+  "checkInTime",
+  "checkInSlot",
+  "checkOutDate",
+  "checkOutTime",
+  "checkOutSlot",
+  "notes",
+  "foodNotes",
+  "medicationNotes",
+  "wantsVisit",
+] as const satisfies ReadonlyArray<keyof ConversationReservationFlow>;
+
+function isReservationFlowCancelEscape(message: string): boolean {
+  const normalized = normalizeOperationalText(message);
+  return /^(ya no quiero reservar|no quiero reservar|dejalo|olvidalo|mejor no|cancelar|cancela|cancelo|abandona|abandonar)$/.test(
+    normalized,
+  );
+}
+
+function isExplicitHumanHandoffRequest(message: string): boolean {
+  const normalized = normalizeOperationalText(message);
+  return (
+    /\b(?:quiero|necesito|puedo|podria|me gustaria|prefiero)\s+(?:hablar|contactar|tratar)\s+(?:con\s+)?(?:una\s+)?(?:persona|alguien|humano|agente|operador|recepcion|responsable|equipo)\b/.test(
+      normalized,
+    ) ||
+    /\b(?:hablar|contactar|pasadme|pasame|ponedme|ponme)\s+(?:con\s+)?(?:una\s+)?(?:persona|alguien|humano|agente|operador|recepcion|responsable|equipo)\b/.test(
+      normalized,
+    ) ||
+    /\b(?:persona|humano|agente|operador|recepcion|equipo)\b/.test(normalized) ||
+    /\b(?:que\s+me\s+llamen|llamada|llamadme|llamame|urgente|emergencia)\b/.test(normalized)
+  );
+}
+
+function shouldKeepReservationSlotResolverPriority(
+  record: ConversationRecord,
+  message: string,
+): boolean {
+  if (record.reservationFlow?.status !== "collecting_dates") {
+    return false;
+  }
+  const normalized = normalizeOperationalText(message);
+  return /\b(?:me da igual|indiferente|cuando mejor|me adapto|manana|tarde|primera hora|entrada|salida|ambas|ambos|las dos|del|desde|hasta|dia)\b/.test(
+    normalized,
+  ) || /\d/.test(normalized);
+}
+
+function buildReservationFlowCancelledRecord(record: ConversationRecord): ConversationRecord {
+  return {
+    ...record,
+    pendingReservationProposal: undefined,
+    pendingReservationContext: undefined,
+    reservationFlow: undefined,
+    updatedAt: nowIso(),
+  };
+}
+
+function safeBodyKind(message: string): Record<string, unknown> {
+  const trimmed = message.trim();
+  return {
+    bodyKind: trimmed.length === 0 ? "empty" : trimmed.length <= 80 ? "short_text" : "long_text",
+    hasQuestionMark: /[¿?]/.test(message),
+    hasDigits: /\d/.test(message),
+  };
+}
+
+function changedReservationSlotNames(
+  before?: ConversationReservationFlow,
+  after?: ConversationReservationFlow,
+): string[] {
+  if (!before || !after) {
+    return [];
+  }
+
+  return RESERVATION_SLOT_KEYS.filter(
+    (key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]),
+  );
+}
+
+function lastBotReplyBody(record: ConversationRecord): string | undefined {
+  return [...record.messages]
+    .reverse()
+    .find((message) => message.direction === "outbound" && message.senderType === "bot")?.body;
+}
+
+function repeatedBotReplyCount(record: ConversationRecord, reply: string): number {
+  let count = 0;
+  for (const message of [...record.messages].reverse()) {
+    if (message.direction !== "outbound" || message.senderType !== "bot") {
+      continue;
+    }
+    if (message.body !== reply) {
+      break;
+    }
+    count += 1;
+  }
+  return count;
+}
+
+function buildLoopSafeReservationReply(record: ConversationRecord, fallback: string): string {
+  const flow = record.reservationFlow;
+  if (flow?.status === "collecting_dates") {
+    const missing = computeMissingReservationFields(flow);
+    if (flow.checkInDate && missing.some((field) => field.startsWith("check_out"))) {
+      return "Entiendo parte de la reserva. Me falta la salida y las horas. ¿Me las indicas?";
+    }
+    if ((flow.checkInTime || flow.checkOutTime) && missing.some((field) => field.endsWith("_date"))) {
+      return "Perfecto, tengo las horas. ¿Qué fecha de entrada y qué fecha de salida serían?";
+    }
+  }
+
+  const resume = buildReservationFlowResumePrompt(record);
+  return resume ? `Perdona, lo reformulo. ${resume}` : fallback;
+}
+
+function applyReservationAntiLoop(input: {
+  recordBeforeReply: ConversationRecord;
+  reply: string;
+  appliedSlotNames: string[];
+}): { reply: string; event?: PendingSafeEvent } {
+  const repeated = lastBotReplyBody(input.recordBeforeReply) === input.reply;
+  if (!repeated) {
+    return { reply: input.reply };
+  }
+
+  return {
+    reply: buildLoopSafeReservationReply(input.recordBeforeReply, input.reply),
+    event: {
+      eventType: "reservation_loop_prevented",
+      payload: {
+        repeatedCount: repeatedBotReplyCount(input.recordBeforeReply, input.reply) + 1,
+        appliedSlotNames: input.appliedSlotNames,
+        status: input.recordBeforeReply.reservationFlow?.status,
+      },
+    },
+  };
+}
+
+async function addSafeEvents(
+  store: ConversationStore,
+  conversationId: string,
+  events: PendingSafeEvent[],
+): Promise<void> {
+  for (const event of events) {
+    await store.addEvent(createEvent(conversationId, event.eventType, event.payload));
+  }
+}
+
+function readAssistiveNluConfig(): {
+  enabled: boolean;
+  assistiveSafe: boolean;
+  shadow: boolean;
+  openaiConfigured: boolean;
+  model?: string;
+} {
+  return {
+    enabled: process.env.HOTEL_LLM_NLU_ENABLED === "true",
+    assistiveSafe: process.env.HOTEL_LLM_NLU_DECISION_MODE === "assistive_safe",
+    shadow: process.env.HOTEL_LLM_NLU_SHADOW !== "false",
+    openaiConfigured: Boolean(process.env.OPENAI_API_KEY?.trim()),
+    model: process.env.OPENAI_MODEL?.trim() || undefined,
+  };
+}
+
+function extractOutputTextFromOpenAiResponse(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const response = value as { output_text?: unknown; output?: unknown };
+  if (typeof response.output_text === "string") {
+    return response.output_text;
+  }
+  if (!Array.isArray(response.output)) {
+    return undefined;
+  }
+
+  const text = response.output
+    .flatMap((item) => {
+      if (!item || typeof item !== "object" || !Array.isArray((item as { content?: unknown }).content)) {
+        return [];
+      }
+      return (item as { content: Array<{ text?: unknown }> }).content
+        .map((content) => (typeof content.text === "string" ? content.text : undefined))
+        .filter((entry): entry is string => Boolean(entry));
+    })
+    .join("\n")
+    .trim();
+  return text || undefined;
+}
+
+function safeAssistiveSlotNamesFromText(text?: string): string[] {
+  if (!text) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(text) as { slots?: Record<string, unknown> };
+    if (!parsed.slots || typeof parsed.slots !== "object") {
+      return [];
+    }
+    return Object.entries(parsed.slots)
+      .filter(([, value]) => value !== undefined && value !== null && value !== "")
+      .map(([key]) => key)
+      .filter((key) => /^[a-zA-Z_]+$/.test(key));
+  } catch {
+    return [];
+  }
+}
+
+async function buildAssistiveNluEvents(input: {
+  record: ConversationRecord;
+  message: string;
+  replyPlan: ReturnType<typeof buildConversationReplyPlan>;
+  now: Date;
+}): Promise<PendingSafeEvent[]> {
+  const config = readAssistiveNluConfig();
+  const flow = input.record.reservationFlow;
+  const pendingFields = flow ? computeMissingReservationFields(flow) : [];
+  const deterministicSlots = extractReservationSlotsFromMessage(input.message, {
+    flow,
+    now: input.now,
+  });
+  const basePayload = {
+    activeFlow: flow ? "reservation" : undefined,
+    status: flow?.status,
+    pendingFields,
+    deterministicSlotNames: Object.keys(deterministicSlots),
+    intent: input.replyPlan.intent,
+    ...safeBodyKind(input.message),
+  };
+
+  if (!config.enabled || !config.assistiveSafe || config.shadow || !config.openaiConfigured || !config.model) {
+    return [
+      {
+        eventType: "nlu_assistive_ignored_reason",
+        payload: {
+          ...basePayload,
+          reason: !config.enabled
+            ? "disabled"
+            : !config.assistiveSafe
+              ? "decision_mode_not_assistive_safe"
+              : config.shadow
+                ? "shadow_mode"
+                : !config.openaiConfigured
+                  ? "openai_not_configured"
+                  : "model_not_configured",
+        },
+      },
+      {
+        eventType: "nlu_assistive_slots_extracted",
+        payload: {
+          source: "deterministic_fallback",
+          slotNames: Object.keys(deterministicSlots),
+          pendingFields,
+        },
+      },
+    ];
+  }
+
+  const events: PendingSafeEvent[] = [
+    {
+      eventType: "nlu_assistive_called",
+      payload: basePayload,
+    },
+  ];
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
+  try {
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: config.model,
+        input: [
+          "Eres un clasificador NLU seguro para un hotel canino.",
+          "Devuelve solo JSON con globalIntent y slots. No confirmes reservas ni escribas datos.",
+          JSON.stringify({
+            message: input.message,
+            context: {
+              activeFlow: "reservation",
+              status: flow?.status,
+              pendingFields,
+              hasPet: Boolean(flow?.petName),
+              hasCheckInDate: Boolean(flow?.checkInDate),
+              hasCheckInTime: Boolean(flow?.checkInTime),
+              hasCheckOutDate: Boolean(flow?.checkOutDate),
+              hasCheckOutTime: Boolean(flow?.checkOutTime),
+            },
+          }),
+        ].join("\n"),
+        max_output_tokens: 180,
+      }),
+      signal: controller.signal,
+    });
+    const result = (await response.json().catch(() => undefined)) as unknown;
+    const outputText = extractOutputTextFromOpenAiResponse(result);
+    const assistiveSlotNames = safeAssistiveSlotNamesFromText(outputText);
+    events.push({
+      eventType: "nlu_assistive_result_received",
+      payload: {
+        ok: response.ok,
+        status: response.status,
+        hasOutput: Boolean(outputText),
+      },
+    });
+    events.push({
+      eventType: "nlu_assistive_slots_extracted",
+      payload: {
+        source: response.ok && assistiveSlotNames.length > 0 ? "assistive_safe" : "deterministic_fallback",
+        slotNames: assistiveSlotNames.length > 0 ? assistiveSlotNames : Object.keys(deterministicSlots),
+        pendingFields,
+      },
+    });
+  } catch (error) {
+    events.push({
+      eventType: "nlu_assistive_failed_fallback_used",
+      payload: {
+        ...basePayload,
+        ...safeConversationStoreError(error),
+      },
+    });
+    events.push({
+      eventType: "nlu_assistive_slots_extracted",
+      payload: {
+        source: "deterministic_fallback",
+        slotNames: Object.keys(deterministicSlots),
+        pendingFields,
+      },
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  return events;
 }
 
 function normalizeOperationalText(value: string): string {
@@ -1153,7 +1505,17 @@ function shouldInterruptReservationFlowWithFaq(
   message: string,
   replyPlan: ReturnType<typeof buildConversationReplyPlan>,
 ): boolean {
-  if (replyPlan.source !== "faq_public_chat" || !isConcreteKnowledgeQuestion(message)) {
+  const isFaqIntent = replyPlan.intent.startsWith("faq_") || replyPlan.intent === "general_information";
+  const normalized = normalizeOperationalText(message);
+  const explicitFaqInsideFlow =
+    /\b(?:diferencia\s+entre\s+hotel\s+y\s+guarderia|hotel\s+y\s+guarderia|precio|tarifa|horarios?|pago|visitas?|vacunas?|que\s+tengo\s+que\s+traer|alimentacion|comida)\b/.test(
+      normalized,
+    );
+  if (
+    !isFaqIntent ||
+    (replyPlan.source !== "faq_public_chat" && !explicitFaqInsideFlow) ||
+    (!isConcreteKnowledgeQuestion(message) && !explicitFaqInsideFlow)
+  ) {
     return false;
   }
 
@@ -2109,6 +2471,129 @@ export async function handleInboundWhatsApp(
 
   if (isReservationFlowActive(latestBeforeFlow)) {
     const flowInterruptionPlan = buildConversationReplyPlan(safeBody);
+    const assistiveEvents = await buildAssistiveNluEvents({
+      record: latestBeforeFlow,
+      message: safeBody,
+      replyPlan: flowInterruptionPlan,
+      now: reservationBridgeDeps?.now?.() ?? new Date(),
+    });
+
+    if (isReservationFlowCancelEscape(safeBody)) {
+      const cancelled = buildReservationFlowCancelledRecord(latestBeforeFlow);
+      await store.replaceConversation(cancelled);
+      await addSafeEvents(store, latestBeforeFlow.id, [
+        ...assistiveEvents,
+        {
+          eventType: "nlu_assistive_global_intent_detected",
+          payload: {
+            intent: "reservation_flow_cancel",
+            source: "deterministic_escape_hatch",
+            status: latestBeforeFlow.reservationFlow?.status,
+          },
+        },
+        {
+          eventType: "reservation_global_intent_escape",
+          payload: {
+            intent: "reservation_flow_cancel",
+            action: "cancel_flow",
+            status: latestBeforeFlow.reservationFlow?.status,
+          },
+        },
+        {
+          eventType: "reservation_flow_cancelled_by_user",
+          payload: {
+            clearedPendingProposal: Boolean(latestBeforeFlow.pendingReservationProposal),
+            clearedReservationFlow: Boolean(latestBeforeFlow.reservationFlow),
+          },
+        },
+      ]);
+      const botReply = await store.addMessage(
+        createMessage({
+          conversationId: latestBeforeFlow.id,
+          direction: "outbound",
+          senderType: "bot",
+          body: RESERVATION_FLOW_CANCELLED_REPLY,
+        }),
+      );
+
+      return {
+        conversation: (await store.getById(latestBeforeFlow.id)) ?? cancelled,
+        inbound,
+        botReply,
+        twiml: buildTwilioMessageResponse(RESERVATION_FLOW_CANCELLED_REPLY),
+      };
+    }
+
+    if (
+      flowInterruptionPlan.intent === "human_handoff" &&
+      flowInterruptionPlan.handoff &&
+      isExplicitHumanHandoffRequest(safeBody) &&
+      !shouldKeepReservationSlotResolverPriority(latestBeforeFlow, safeBody)
+    ) {
+      const latestForHandoff = (await store.getById(latestBeforeFlow.id)) ?? latestBeforeFlow;
+      const humanRecord: ConversationRecord = {
+        ...latestForHandoff,
+        mode: "human",
+        humanRequested: true,
+        requiresManualReview: true,
+        updatedAt: nowIso(),
+      };
+      await store.replaceConversation(humanRecord);
+      await addSafeEvents(store, latestBeforeFlow.id, [
+        ...assistiveEvents,
+        {
+          eventType: "nlu_classified",
+          payload: {
+            intent: flowInterruptionPlan.intent,
+            confidence: flowInterruptionPlan.confidence,
+            matchedSignals: flowInterruptionPlan.matchedSignals,
+            slots: flowInterruptionPlan.slots,
+            source: flowInterruptionPlan.source,
+            handoff: true,
+            interruptedReservationFlow: latestBeforeFlow.reservationFlow?.status,
+          },
+        },
+        {
+          eventType: "nlu_assistive_global_intent_detected",
+          payload: {
+            intent: flowInterruptionPlan.intent,
+            source: flowInterruptionPlan.source,
+            status: latestBeforeFlow.reservationFlow?.status,
+          },
+        },
+        {
+          eventType: "reservation_global_intent_escape",
+          payload: {
+            intent: flowInterruptionPlan.intent,
+            action: "human_handoff",
+            status: latestBeforeFlow.reservationFlow?.status,
+          },
+        },
+        {
+          eventType: "human_requested",
+          payload: {
+            matchedFrom: "reservation_flow_global_escape",
+            intent: flowInterruptionPlan.intent,
+          },
+        },
+      ]);
+      const botReply = await store.addMessage(
+        createMessage({
+          conversationId: latestBeforeFlow.id,
+          direction: "outbound",
+          senderType: "bot",
+          body: flowInterruptionPlan.reply,
+        }),
+      );
+
+      return {
+        conversation: (await store.getById(latestBeforeFlow.id)) ?? humanRecord,
+        inbound,
+        botReply,
+        twiml: buildTwilioMessageResponse(flowInterruptionPlan.reply),
+      };
+    }
+
     if (shouldInterruptReservationFlowWithFaq(latestBeforeFlow, safeBody, flowInterruptionPlan)) {
       await store.addEvent(
         createEvent(latestBeforeFlow.id, "nlu_classified", {
@@ -2121,6 +2606,25 @@ export async function handleInboundWhatsApp(
           interruptedReservationFlow: latestBeforeFlow.reservationFlow?.status,
         }),
       );
+      await addSafeEvents(store, latestBeforeFlow.id, [
+        ...assistiveEvents,
+        {
+          eventType: "nlu_assistive_global_intent_detected",
+          payload: {
+            intent: flowInterruptionPlan.intent,
+            source: flowInterruptionPlan.source,
+            status: latestBeforeFlow.reservationFlow?.status,
+          },
+        },
+        {
+          eventType: "reservation_global_intent_escape",
+          payload: {
+            intent: flowInterruptionPlan.intent,
+            action: "faq_resume",
+            status: latestBeforeFlow.reservationFlow?.status,
+          },
+        },
+      ]);
 
       const latestForFaq = (await store.getById(latestBeforeFlow.id)) ?? latestBeforeFlow;
       const replyBody = flowInterruptionPlan.handoff
@@ -2339,6 +2843,11 @@ export async function handleInboundWhatsApp(
       });
     }
 
+    const attemptedSlots = extractReservationSlotsFromMessage(safeBody, {
+      flow: latestBeforeFlow.reservationFlow,
+      now: reservationBridgeDeps?.now?.() ?? new Date(),
+    });
+    const attemptedSlotNames = Object.keys(attemptedSlots);
     const flow = await advanceReservationFlow({
       conversation: latestBeforeFlow,
       inboundMessageId: inbound.id,
@@ -2348,7 +2857,50 @@ export async function handleInboundWhatsApp(
     });
 
     if (flow) {
+      const appliedSlotNames = changedReservationSlotNames(
+        latestBeforeFlow.reservationFlow,
+        flow.conversation.reservationFlow,
+      );
+      const missingFields = flow.conversation.reservationFlow
+        ? computeMissingReservationFields(flow.conversation.reservationFlow)
+        : [];
+      const antiLoop = applyReservationAntiLoop({
+        recordBeforeReply: flow.conversation,
+        reply: flow.reply,
+        appliedSlotNames,
+      });
       await store.replaceConversation(flow.conversation);
+      await addSafeEvents(store, flow.conversation.id, [
+        ...assistiveEvents,
+        {
+          eventType: "reservation_slot_merge_attempted",
+          payload: {
+            statusBefore: latestBeforeFlow.reservationFlow?.status,
+            attemptedSlotNames,
+            ...safeBodyKind(safeBody),
+          },
+        },
+        {
+          eventType:
+            appliedSlotNames.length > 0
+              ? "reservation_slot_merge_applied"
+              : "reservation_slot_merge_noop",
+          payload: {
+            statusBefore: latestBeforeFlow.reservationFlow?.status,
+            statusAfter: flow.conversation.reservationFlow?.status,
+            attemptedSlotNames,
+            appliedSlotNames,
+          },
+        },
+        {
+          eventType: "reservation_next_missing_fields",
+          payload: {
+            status: flow.conversation.reservationFlow?.status,
+            missingFields,
+          },
+        },
+        ...(antiLoop.event ? [antiLoop.event] : []),
+      ]);
       await store.addEvent(
         createEvent(flow.conversation.id, flow.eventType, flow.eventPayload),
       );
@@ -2357,7 +2909,7 @@ export async function handleInboundWhatsApp(
           conversationId: flow.conversation.id,
           direction: "outbound",
           senderType: "bot",
-          body: flow.reply,
+          body: antiLoop.reply,
         }),
       );
 
@@ -2365,7 +2917,7 @@ export async function handleInboundWhatsApp(
         conversation: (await store.getById(flow.conversation.id)) ?? flow.conversation,
         inbound,
         botReply,
-        twiml: buildTwilioMessageResponse(flow.reply),
+        twiml: buildTwilioMessageResponse(antiLoop.reply),
       };
     }
   }
