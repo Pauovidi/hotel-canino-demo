@@ -51,6 +51,7 @@ import {
   isExplicitNotClientClaim,
   isReservationFlowActive,
   isReservationFlowRejection,
+  resolveReservationSlotTarget,
   startReservationFlow,
 } from "./reservation-flow";
 import {
@@ -2843,11 +2844,19 @@ export async function handleInboundWhatsApp(
       });
     }
 
-    const attemptedSlots = extractReservationSlotsFromMessage(safeBody, {
-      flow: latestBeforeFlow.reservationFlow,
-      now: reservationBridgeDeps?.now?.() ?? new Date(),
-    });
+    const slotTargetResolution = latestBeforeFlow.reservationFlow
+      ? resolveReservationSlotTarget(safeBody, latestBeforeFlow.reservationFlow, {
+          now: reservationBridgeDeps?.now?.() ?? new Date(),
+        })
+      : undefined;
+    const attemptedSlots =
+      slotTargetResolution?.extractedSlots ??
+      extractReservationSlotsFromMessage(safeBody, {
+        flow: latestBeforeFlow.reservationFlow,
+        now: reservationBridgeDeps?.now?.() ?? new Date(),
+      });
     const attemptedSlotNames = Object.keys(attemptedSlots);
+    const targetedSlotNames = slotTargetResolution?.targetedSlotNames ?? [];
     const flow = await advanceReservationFlow({
       conversation: latestBeforeFlow,
       inboundMessageId: inbound.id,
@@ -2880,6 +2889,23 @@ export async function handleInboundWhatsApp(
             ...safeBodyKind(safeBody),
           },
         },
+        ...(slotTargetResolution
+          ? [
+              {
+                eventType: "reservation_slot_target_resolved",
+                payload: {
+                  statusBefore: latestBeforeFlow.reservationFlow?.status,
+                  target: slotTargetResolution.target,
+                  reason: slotTargetResolution.reason,
+                  pendingFields: slotTargetResolution.pendingFields,
+                  attemptedSlotNames,
+                  targetedSlotNames,
+                  ignoredSlotNames: slotTargetResolution.ignoredSlotNames,
+                  ...safeBodyKind(safeBody),
+                },
+              },
+            ]
+          : []),
         {
           eventType:
             appliedSlotNames.length > 0
@@ -2890,6 +2916,51 @@ export async function handleInboundWhatsApp(
             statusAfter: flow.conversation.reservationFlow?.status,
             attemptedSlotNames,
             appliedSlotNames,
+          },
+        },
+        ...(slotTargetResolution
+          ? [
+              {
+                eventType:
+                  appliedSlotNames.length > 0
+                    ? "reservation_slot_target_applied"
+                    : "reservation_slot_target_ignored",
+                payload: {
+                  target: slotTargetResolution.target,
+                  reason:
+                    appliedSlotNames.length > 0
+                      ? "state_changed"
+                      : targetedSlotNames.length > 0
+                        ? "no_state_change"
+                        : slotTargetResolution.reason,
+                  targetedSlotNames,
+                  appliedSlotNames,
+                  ignoredSlotNames: slotTargetResolution.ignoredSlotNames,
+                },
+              },
+              {
+                eventType:
+                  appliedSlotNames.length > 0
+                    ? "nlu_assistive_slots_applied"
+                    : "nlu_assistive_slots_ignored",
+                payload: {
+                  source: "deterministic_fallback_or_assistive_safe",
+                  slotNames: appliedSlotNames.length > 0 ? appliedSlotNames : attemptedSlotNames,
+                  reason:
+                    appliedSlotNames.length > 0
+                      ? "state_changed"
+                      : targetedSlotNames.length > 0
+                        ? "no_state_change"
+                        : slotTargetResolution.reason,
+                },
+              },
+            ]
+          : []),
+        {
+          eventType: "reservation_pending_fields_after_merge",
+          payload: {
+            status: flow.conversation.reservationFlow?.status,
+            missingFields,
           },
         },
         {

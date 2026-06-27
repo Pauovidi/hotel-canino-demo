@@ -1489,7 +1489,7 @@ describe("WhatsApp reservation bridge", () => {
   });
 
   it.each([
-    ["Entrada a las 11", "checkInTime", "11:00", "Tengo la hora de entrada"],
+    ["Entrada a las 11", "checkInTime", "11:00", "A qué hora sería"],
     ["Salida a las 11", "checkOutTime", "11:00", "Tengo la hora de salida"],
   ] as const)("sets only the contextual %s value", async (message, field, expectedTime, expectedReply) => {
     const store = new MemoryConversationStore();
@@ -3438,6 +3438,305 @@ describe("WhatsApp reservation bridge", () => {
     );
     expect(JSON.stringify(diagnosticEvents)).not.toContain("PIPO");
     expect(JSON.stringify(diagnosticEvents)).not.toContain("mañana");
+  });
+
+  it("targets pending checkout with pasado mañana a las 10 también", async () => {
+    const store = new MemoryConversationStore();
+    const { deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-06-01T10:00:00.000Z"),
+    };
+
+    await collectNewClientPet({
+      store,
+      deps: timedDeps,
+      prefix: "SM_SLOT_EXIT_PAST_TOMORROW",
+      petName: "PIPO",
+    });
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "para mañana puede ser?",
+        messageSid: "SM_SLOT_EXIT_PAST_TOMORROW_ENTRY",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "a las 10 ambas",
+        messageSid: "SM_SLOT_EXIT_PAST_TOMORROW_TIMES",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "pasado-mañanas a las 10 también",
+        messageSid: "SM_SLOT_EXIT_PAST_TOMORROW_EXIT",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_notes",
+      checkInDate: "2026-06-02",
+      checkInTime: "10:00",
+      checkOutDate: "2026-06-03",
+      checkOutTime: "10:00",
+    });
+    expect(result.botReply?.body).not.toBe("Gracias. Ahora dime la fecha y hora de entrada, y la fecha y hora de salida.");
+    expect(result.conversation.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventType: "reservation_slot_target_resolved",
+          payload: expect.objectContaining({
+            target: "exit",
+            reason: "pending_fields_exit",
+          }),
+        }),
+        expect.objectContaining({
+          eventType: "reservation_pending_fields_after_merge",
+          payload: expect.objectContaining({
+            missingFields: ["notes"],
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("targets pending checkout with lunes a las 10", async () => {
+    const store = new MemoryConversationStore();
+    const { deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-06-26T10:00:00.000Z"),
+    };
+
+    await collectNewClientPet({
+      store,
+      deps: timedDeps,
+      prefix: "SM_SLOT_EXIT_MONDAY",
+      petName: "PIPO",
+    });
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "mañana a las 10",
+        messageSid: "SM_SLOT_EXIT_MONDAY_ENTRY",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "lunes a las 10",
+        messageSid: "SM_SLOT_EXIT_MONDAY_EXIT",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_notes",
+      checkInDate: "2026-06-27",
+      checkInTime: "10:00",
+      checkOutDate: "2026-06-29",
+      checkOutTime: "10:00",
+    });
+    expect(result.botReply?.body).not.toBe("Gracias. Ahora dime la fecha y hora de entrada, y la fecha y hora de salida.");
+  });
+
+  it("resolves partial checkout day against the entry month when checkout is pending", async () => {
+    const store = new MemoryConversationStore();
+    const { deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-06-01T10:00:00.000Z"),
+    };
+
+    await collectNewClientPet({
+      store,
+      deps: timedDeps,
+      prefix: "SM_SLOT_EXIT_PARTIAL_DAY",
+      petName: "PIPO",
+    });
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "entrada el 25 de diciembre a las 10",
+        messageSid: "SM_SLOT_EXIT_PARTIAL_DAY_ENTRY",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "el día 27",
+        messageSid: "SM_SLOT_EXIT_PARTIAL_DAY_EXIT",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_dates",
+      checkInDate: "2026-12-25",
+      checkInTime: "10:00",
+      checkOutDate: "2026-12-27",
+    });
+    expect(result.botReply?.body).toContain("A qué hora sería");
+    expect(result.botReply?.body).not.toBe("Gracias. Ahora dime la fecha y hora de entrada, y la fecha y hora de salida.");
+  });
+
+  it("answers FAQ while checkout is pending and preserves entry slots", async () => {
+    const store = new MemoryConversationStore();
+    const { deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-06-01T10:00:00.000Z"),
+    };
+
+    await collectNewClientPet({
+      store,
+      deps: timedDeps,
+      prefix: "SM_SLOT_EXIT_FAQ",
+      petName: "PIPO",
+    });
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "mañana a las 10",
+        messageSid: "SM_SLOT_EXIT_FAQ_ENTRY",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "diferencia entre hotel y guardería",
+        messageSid: "SM_SLOT_EXIT_FAQ_VALUE",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_dates",
+      checkInDate: "2026-06-02",
+      checkInTime: "10:00",
+    });
+    expect(result.conversation.reservationFlow?.checkOutDate).toBeUndefined();
+    expect(result.botReply?.body.toLowerCase()).toContain("guardería");
+    expect(result.botReply?.body).toContain("Seguimos con la reserva");
+  });
+
+  it("cancels the reservation while checkout is pending", async () => {
+    const store = new MemoryConversationStore();
+    const { deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-06-01T10:00:00.000Z"),
+    };
+
+    await collectNewClientPet({
+      store,
+      deps: timedDeps,
+      prefix: "SM_SLOT_EXIT_CANCEL",
+      petName: "PIPO",
+    });
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "mañana a las 10",
+        messageSid: "SM_SLOT_EXIT_CANCEL_ENTRY",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "ya no quiero reservar",
+        messageSid: "SM_SLOT_EXIT_CANCEL_VALUE",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(result.botReply?.body).toBe(
+      "De acuerdo, dejamos la reserva sin continuar. Si necesitas otra cosa, estoy por aquí.",
+    );
+    expect(result.conversation.reservationFlow).toBeUndefined();
+  });
+
+  it("honors explicit entry and exit targets", async () => {
+    const directory = createStaticClientDirectory([]);
+    const { deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-06-26T10:00:00.000Z"),
+    };
+
+    const entryStore = new MemoryConversationStore();
+    await collectNewClientPet({
+      store: entryStore,
+      deps: timedDeps,
+      prefix: "SM_SLOT_EXPLICIT_ENTRY",
+      petName: "PIPO",
+      directory,
+    });
+    const entry = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "entrada mañana a las 10",
+        messageSid: "SM_SLOT_EXPLICIT_ENTRY_VALUE",
+      },
+      entryStore,
+      directory,
+      timedDeps,
+    );
+    expect(entry.conversation.reservationFlow).toMatchObject({
+      checkInDate: "2026-06-27",
+      checkInTime: "10:00",
+    });
+    expect(entry.conversation.reservationFlow?.checkOutDate).toBeUndefined();
+
+    const exit = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "salida el lunes a las 10",
+        messageSid: "SM_SLOT_EXPLICIT_EXIT_VALUE",
+      },
+      entryStore,
+      directory,
+      timedDeps,
+    );
+    expect(exit.conversation.reservationFlow).toMatchObject({
+      status: "collecting_notes",
+      checkInDate: "2026-06-27",
+      checkInTime: "10:00",
+      checkOutDate: "2026-06-29",
+      checkOutTime: "10:00",
+    });
   });
 
   it("keeps shared hours when the user gives times before dates", async () => {

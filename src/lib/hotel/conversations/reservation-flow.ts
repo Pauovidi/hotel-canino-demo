@@ -366,8 +366,8 @@ function resolveFutureDayInCurrentOrNextMonth(day: number, now: Date): string | 
 
 function stripRelativeDateWords(value: string): string {
   return value
-    .replace(/\bpasado\s+manana\b/g, " ")
-    .replace(/\bmanana\b/g, " ")
+    .replace(/\bpasado(?:\s+|-)mananas?\b/g, " ")
+    .replace(/\bmananas?\b/g, " ")
     .replace(/\b(?:este|esta|el|la)?\s*(lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/g, " ")
     .replace(/\b(?:el\s+(?:dia\s+)?|dia\s+)\d{1,2}\b/g, " ");
 }
@@ -377,10 +377,10 @@ function resolveSingleDateMention(
   now: Date,
 ): { date?: string; label?: string } {
   const hasMorningTimePhrase = /\b(?:por|de)\s+la\s+manana\b/.test(normalized);
-  if (/\bpasado\s+manana\b/.test(normalized)) {
+  if (/\bpasado(?:\s+|-)mananas?\b/.test(normalized)) {
     return { date: addUtcDays(now, 2), label: "pasado mañana" };
   }
-  if (/\bmanana\b/.test(normalized) && !hasMorningTimePhrase) {
+  if (/\bmananas?\b/.test(normalized) && !hasMorningTimePhrase) {
     return { date: addUtcDays(now, 1), label: "mañana" };
   }
 
@@ -412,6 +412,20 @@ function resolveSingleDateMention(
       date: base.toISOString().slice(0, 10),
       label: `este ${labels[weekday[1]]}`,
     };
+  }
+
+  const natural = normalized.match(
+    /\b(?:el\s+)?(\d{1,2})\s+de\s+([a-z]+)(?:\s+de\s+(\d{2,4}|este\s+ano|el\s+ano\s+que\s+viene|ano\s+que\s+viene))?\b/,
+  );
+  if (natural) {
+    const month = MONTHS[natural[2] ?? ""];
+    const day = Number.parseInt(natural[1], 10);
+    if (month && day >= 1 && day <= 31) {
+      return {
+        date: isoDate(normalizeYear(natural[3], now, month, day), month, day),
+        label: natural[0],
+      };
+    }
   }
 
   const partial = normalized.match(/\b(?:el\s+(?:dia\s+)?|dia\s+)(\d{1,2})\b/);
@@ -1389,7 +1403,7 @@ function nextCollectionReply(flow: ConversationReservationFlow): string {
   }
   if (flow.status === "collecting_dates") {
     if (flow.checkInDate && flow.checkOutDate && flow.checkInTime && !flow.checkOutTime) {
-      return "Tengo la hora de entrada. ¿A qué hora sería la salida?";
+      return `Tengo la salida para el ${formatDate(flow.checkOutDate)}. ¿A qué hora sería?`;
     }
     if (flow.checkInDate && flow.checkOutDate && flow.checkOutTime && !flow.checkInTime) {
       return "Tengo la hora de salida. ¿A qué hora sería la entrada?";
@@ -1441,6 +1455,245 @@ export interface ExtractedReservationSlots {
   checkInTime?: string;
   checkOutDate?: string;
   checkOutTime?: string;
+}
+
+type ReservationSlotTarget = "entry" | "exit" | "both" | "range" | "none";
+
+export interface ReservationSlotTargetResolution {
+  extractedSlots: ExtractedReservationSlots;
+  targetedSlots: Partial<ConversationReservationFlow>;
+  target: ReservationSlotTarget;
+  reason: string;
+  pendingFields: ReservationMissingField[];
+  targetedSlotNames: string[];
+  ignoredSlotNames: string[];
+}
+
+function isoDateToUtc(value: string): number {
+  return new Date(`${value}T00:00:00.000Z`).getTime();
+}
+
+function dateIsBefore(left?: string, right?: string): boolean {
+  return Boolean(left && right && isoDateToUtc(left) < isoDateToUtc(right));
+}
+
+function addDaysToIsoDate(value: string, days: number): string {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function hasWeekdayMention(normalized: string): boolean {
+  return /\b(?:este|esta|el|la)?\s*(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/.test(
+    normalized,
+  );
+}
+
+function hasPartialDayMention(normalized: string): boolean {
+  return /\b(?:el\s+(?:dia\s+)?|dia\s+)(\d{1,2})\b/.test(normalized);
+}
+
+function resolvePartialDayWithAnchor(
+  normalized: string,
+  anchorDate: string | undefined,
+  target: "entry" | "exit",
+): string | undefined {
+  if (!anchorDate) {
+    return undefined;
+  }
+  const partial = normalized.match(/\b(?:el\s+(?:dia\s+)?|dia\s+)(\d{1,2})\b/);
+  if (!partial) {
+    return undefined;
+  }
+  const day = Number.parseInt(partial[1], 10);
+  if (day < 1 || day > 31) {
+    return undefined;
+  }
+
+  const anchor = new Date(`${anchorDate}T00:00:00.000Z`);
+  let year = anchor.getUTCFullYear();
+  let month = anchor.getUTCMonth() + 1;
+  let candidate = isoDate(year, month, day);
+  if (target === "exit") {
+    while (dateIsBefore(candidate, anchorDate)) {
+      month += 1;
+      if (month > 12) {
+        month = 1;
+        year += 1;
+      }
+      candidate = isoDate(year, month, day);
+    }
+  }
+  return candidate;
+}
+
+function normalizeExitDateForFlow(
+  date: string,
+  normalized: string,
+  flow: ConversationReservationFlow,
+): string {
+  let nextDate = hasPartialDayMention(normalized)
+    ? resolvePartialDayWithAnchor(normalized, flow.checkInDate, "exit") ?? date
+    : date;
+
+  if (flow.checkInDate && dateIsBefore(nextDate, flow.checkInDate) && hasWeekdayMention(normalized)) {
+    while (dateIsBefore(nextDate, flow.checkInDate)) {
+      nextDate = addDaysToIsoDate(nextDate, 7);
+    }
+  }
+
+  return nextDate;
+}
+
+function hasSharedTimeCue(normalized: string): boolean {
+  return /\b(?:tambien|igual|misma\s+hora|a\s+la\s+misma\s+hora|mismo\s+horario|ambas|ambos|las\s+dos|los\s+dos)\b/.test(
+    normalized,
+  );
+}
+
+function hasExplicitExitCue(normalized: string): boolean {
+  return EXIT_MARKER_PATTERN.test(normalized);
+}
+
+function hasExplicitEntryCue(normalized: string): boolean {
+  return ENTRY_MARKER_PATTERN.test(normalized);
+}
+
+function hasOnlyExitFieldsPending(missingFields: ReservationMissingField[]): boolean {
+  return (
+    missingFields.some((field) => field.startsWith("check_out")) &&
+    !missingFields.some((field) => field.startsWith("check_in"))
+  );
+}
+
+function hasOnlyEntryFieldsPending(missingFields: ReservationMissingField[]): boolean {
+  return (
+    missingFields.some((field) => field.startsWith("check_in")) &&
+    !missingFields.some((field) => field.startsWith("check_out"))
+  );
+}
+
+function slotNamesFromPatch(patch: Partial<ConversationReservationFlow>): string[] {
+  return Object.keys(
+    defined({
+      checkInDate: patch.checkInDate,
+      checkInTime: patch.checkInTime,
+      checkOutDate: patch.checkOutDate,
+      checkOutTime: patch.checkOutTime,
+    }),
+  );
+}
+
+export function resolveReservationSlotTarget(
+  message: string,
+  flow: ConversationReservationFlow,
+  context: { now?: Date } = {},
+): ReservationSlotTargetResolution {
+  const now = context.now ?? new Date();
+  const normalized = normalizeDateTimeText(message);
+  const extractedSlots = extractReservationSlotsFromMessage(message, { flow, now });
+  const pendingFields = computeMissingReservationFields(flow);
+  const extractedSlotNames = Object.keys(extractedSlots);
+  const hasDate = Boolean(extractedSlots.checkInDate || extractedSlots.checkOutDate);
+  const sourceDate = extractedSlots.checkInDate ?? extractedSlots.checkOutDate;
+  const sourceTime = extractedSlots.checkInTime ?? extractedSlots.checkOutTime;
+  const explicitEntry = hasExplicitEntryCue(normalized);
+  const explicitExit = hasExplicitExitCue(normalized);
+  const sharedCue = hasSharedTimeCue(normalized);
+  const hasRange = Boolean(extractedSlots.checkInDate && extractedSlots.checkOutDate);
+
+  if (extractedSlotNames.length === 0) {
+    return {
+      extractedSlots,
+      targetedSlots: {},
+      target: "none",
+      reason: "no_slots_extracted",
+      pendingFields,
+      targetedSlotNames: [],
+      ignoredSlotNames: [],
+    };
+  }
+
+  let target: ReservationSlotTarget = "entry";
+  let reason = "default_entry";
+
+  if (hasRange || (explicitEntry && explicitExit)) {
+    target = "range";
+    reason = hasRange ? "range_detected" : "explicit_entry_and_exit";
+  } else if (explicitExit && !explicitEntry) {
+    target = "exit";
+    reason = "explicit_exit_cue";
+  } else if (explicitEntry && !explicitExit) {
+    target = "entry";
+    reason = "explicit_entry_cue";
+  } else if (hasOnlyExitFieldsPending(pendingFields) && (flow.checkInDate || flow.checkInTime)) {
+    target = "exit";
+    reason = "pending_fields_exit";
+  } else if (hasOnlyEntryFieldsPending(pendingFields)) {
+    target = "entry";
+    reason = "pending_fields_entry";
+  } else if (sharedCue && flow.checkInDate && flow.checkInTime && !flow.checkOutDate) {
+    target = "exit";
+    reason = "shared_cue_with_entry_ready";
+  } else if (hasDate && flow.checkInDate && !flow.checkOutDate && sourceDate && !dateIsBefore(sourceDate, flow.checkInDate)) {
+    target = "exit";
+    reason = "single_compatible_date_after_entry";
+  } else if (sharedCue && !hasDate) {
+    target = "both";
+    reason = "shared_time_cue";
+  }
+
+  let targetedSlots: Partial<ConversationReservationFlow> = {};
+
+  if (target === "range") {
+    targetedSlots = defined({
+      checkInDate: extractedSlots.checkInDate,
+      checkInTime: extractedSlots.checkInTime,
+      checkOutDate: extractedSlots.checkOutDate,
+      checkOutTime: extractedSlots.checkOutTime,
+      checkInSlot: slotFromTime(extractedSlots.checkInTime),
+      checkOutSlot: slotFromTime(extractedSlots.checkOutTime),
+    });
+  } else if (target === "exit") {
+    const checkOutDate = sourceDate
+      ? normalizeExitDateForFlow(sourceDate, normalized, flow)
+      : undefined;
+    const checkOutTime =
+      sourceTime ??
+      (sharedCue && flow.checkInTime && (checkOutDate || pendingFields.includes("check_out_time"))
+        ? flow.checkInTime
+        : undefined);
+    targetedSlots = defined({
+      checkOutDate,
+      checkOutTime,
+      checkOutSlot: slotFromTime(checkOutTime),
+    });
+  } else if (target === "both") {
+    const sharedTime = sourceTime ?? (sharedCue ? flow.checkInTime : undefined);
+    targetedSlots = defined({
+      checkInTime: sharedTime,
+      checkOutTime: sharedTime,
+      checkInSlot: slotFromTime(sharedTime),
+      checkOutSlot: slotFromTime(sharedTime),
+    });
+  } else if (target === "entry") {
+    targetedSlots = defined({
+      checkInDate: sourceDate,
+      checkInTime: sourceTime,
+      checkInSlot: slotFromTime(sourceTime),
+    });
+  }
+
+  const targetedSlotNames = slotNamesFromPatch(targetedSlots);
+  return {
+    extractedSlots,
+    targetedSlots,
+    target,
+    reason,
+    pendingFields,
+    targetedSlotNames,
+    ignoredSlotNames: extractedSlotNames.filter((slotName) => !targetedSlotNames.includes(slotName)),
+  };
 }
 
 export function extractReservationSlotsFromMessage(
@@ -1694,6 +1947,7 @@ export async function advanceReservationFlow(input: {
   let flow: ConversationReservationFlow = { ...current, updatedAt: nowIso(now) };
   const recognizedClient = isRecognizedDirectoryClient(input.conversation);
   let consumedContextualTimeInput = false;
+  let slotTargetResolution: ReservationSlotTargetResolution | undefined;
 
   if (recognizedClient) {
     flow = {
@@ -2051,7 +2305,8 @@ export async function advanceReservationFlow(input: {
       };
     }
 
-    const dateTimePatch = parseDatesAndTimes(input.message, now);
+    slotTargetResolution = resolveReservationSlotTarget(input.message, flow, { now });
+    const dateTimePatch = slotTargetResolution.targetedSlots;
     const parsedTimes = [
       dateTimePatch.checkInTime,
       dateTimePatch.checkOutTime,
@@ -2110,7 +2365,11 @@ export async function advanceReservationFlow(input: {
     current.status === "collecting_dates";
   const petDetailsFromMessage = extractPetDetails(input.message);
   const explicitPetCorrection = extractExplicitPetCorrection(input.message);
-  const dateDetailsFromMessage = parseDatesAndTimes(input.message, now);
+  const rawDateDetailsFromMessage = parseDatesAndTimes(input.message, now);
+  const dateDetailsFromMessage =
+    current.status === "collecting_dates"
+      ? slotTargetResolution?.targetedSlots ?? {}
+      : rawDateDetailsFromMessage;
   const canUpdatePetName =
     current.status === "collecting_pet" ||
     (current.status === "collecting_owner" && Boolean(explicitPetCorrection)) ||
@@ -2194,6 +2453,16 @@ export async function advanceReservationFlow(input: {
           checkOutTime: dateDetailsFromMessage.checkOutTime,
         }),
       ),
+      slotTarget:
+        current.status === "collecting_dates" && slotTargetResolution
+          ? {
+              target: slotTargetResolution.target,
+              reason: slotTargetResolution.reason,
+              pendingFields: slotTargetResolution.pendingFields,
+              targetedSlotNames: slotTargetResolution.targetedSlotNames,
+              ignoredSlotNames: slotTargetResolution.ignoredSlotNames,
+            }
+          : undefined,
     },
   };
 }
