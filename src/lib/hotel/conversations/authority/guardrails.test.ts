@@ -32,7 +32,8 @@ describe("conversation authority guardrails", () => {
     const audit = readRepoFile("docs/CONVERSATION_BYPASS_AUDIT.md");
     expect(audit).toContain("src/app/api/twilio/whatsapp/route.ts");
     expect(audit).toContain("src/lib/hotel/conversations/reservation-flow.ts");
-    expect(audit).toContain("legacy_allowed_temporarily_with_guard");
+    expect(audit).toContain("keep_temporarily_with_reason");
+    expect(audit).toContain("Retirado De Allowlist Legacy");
   });
 
   it("does not allow direct Twilio client sends from conversation modules", () => {
@@ -43,19 +44,52 @@ describe("conversation authority guardrails", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("keeps known visible-copy bypasses documented while migration is progressive", () => {
+  it("keeps remaining bypasses narrowly documented while migration is progressive", () => {
     const audit = readRepoFile("docs/CONVERSATION_BYPASS_AUDIT.md");
     const allowlisted = [
-      "src/app/api/twilio/whatsapp/route.ts | legacy_allowed_temporarily_with_guard",
-      "src/lib/hotel/conversations/service.ts | legacy_allowed_temporarily_with_guard",
-      "src/lib/hotel/conversations/reservation-flow.ts | legacy_allowed_temporarily_with_guard",
-      "src/lib/hotel/conversations/nlu.ts | legacy_allowed_temporarily_with_guard",
-      "src/lib/hotel/conversations/template-preview.ts | legacy_allowed_temporarily_with_guard",
-      "scripts/hotel-scheduled-jobs-lib.mjs | legacy_allowed_temporarily_with_guard",
+      "src/app/api/twilio/whatsapp/route.ts | keep_temporarily_with_reason",
+      "src/lib/hotel/conversations/service.ts | keep_temporarily_with_reason",
+      "src/lib/hotel/conversations/template-preview.ts | keep_temporarily_with_reason",
+      "scripts/hotel-scheduled-jobs-lib.mjs | keep_temporarily_with_reason",
     ];
 
     for (const entry of allowlisted) {
       expect(audit).toContain(entry);
     }
+    expect(audit).not.toContain("src/lib/hotel/conversations/reservation-flow.ts | legacy_allowed_temporarily_with_guard");
+    expect(audit).not.toContain("src/lib/hotel/conversations/nlu.ts | legacy_allowed_temporarily_with_guard");
+  });
+
+  it("blocks visible reservation and NLU reply copy outside CopyRenderer", () => {
+    const reservationFlow = readRepoFile("src/lib/hotel/conversations/reservation-flow.ts");
+    const nlu = readRepoFile("src/lib/hotel/conversations/nlu.ts");
+    const forbiddenReplyPhrases = [
+      "Gracias. Ahora dime",
+      "Genial. ¿Ya eres cliente",
+      "Te ayudo con la reserva",
+      "Perdona, no te he entendido bien",
+      "De acuerdo, dejamos la reserva",
+      "Tenemos disponibilidad",
+      "Reiniciado.",
+    ];
+
+    for (const phrase of forbiddenReplyPhrases) {
+      expect(reservationFlow).not.toContain(phrase);
+      expect(nlu).not.toContain(phrase);
+    }
+    expect(reservationFlow).toContain("renderReservationFlowCopy");
+    expect(nlu).toContain("renderNluReply");
+  });
+
+  it("routes automatic bot messages through the rendered outbox helper in service", () => {
+    const service = readRepoFile("src/lib/hotel/conversations/service.ts");
+    const handleInboundSection = service.slice(
+      service.indexOf("export async function handleInboundWhatsApp"),
+      service.indexOf("export async function sendManualReply"),
+    );
+
+    expect(handleInboundSection).not.toMatch(/store\.addMessage\(\s*createMessage\(\{[\s\S]*?senderType:\s*"bot"/);
+    expect(service).toContain("copy_rendered");
+    expect(service).toContain("outbox_sent");
   });
 });

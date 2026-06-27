@@ -16,6 +16,7 @@ import {
 } from "@/lib/hotel/clients";
 import {
   normalizeWhatsAppUserEvent,
+  renderCopy,
 } from "@/lib/hotel/conversations/authority";
 import {
   buildConversationReplyPlan,
@@ -32,7 +33,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const STORE_DEGRADED_CRITICAL_REPLY =
-  "Ahora mismo no puedo consultar correctamente la conversación. Te contestamos por aquí en cuanto lo revisemos.";
+  renderCopy({ key: "service.store_degraded_critical" });
 
 const STATELESS_SAFE_INTENTS = new Set<ConversationIntent>([
   "greeting",

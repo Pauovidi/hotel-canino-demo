@@ -6,6 +6,13 @@ import {
   buildPriceQuoteReply,
   buildVagueDatePrecisionReply,
 } from "./conversation-intelligence";
+import {
+  CONVERSATION_RESET_REPLY,
+  renderCopy,
+  type ConversationRenderKey,
+} from "./authority/copy-renderer";
+
+export { CONVERSATION_RESET_REPLY };
 
 export type ConversationIntent =
   | "greeting"
@@ -63,35 +70,6 @@ export interface ConversationReplyPlan extends ConversationNluResult {
   source: "conversation_nlu" | "faq_public_chat";
 }
 
-const GENERAL_INFORMATION_REPLY =
-  "Claro. Te puedo ayudar con horarios, visitas, reservas, vacunas, alimentación, qué traer y funcionamiento del hotel. ¿Sobre qué necesitas información?";
-
-const HUMAN_HANDOFF_REPLY =
-  "Perfecto, te paso con una persona del equipo. En cuanto puedan te responderán por aquí.";
-
-const STAY_STATUS_REPLY =
-  "Para darte una respuesta real sobre cómo está tu perro, lo revisa una persona del equipo y te contestamos por aquí.";
-
-const UNKNOWN_REPLY =
-  "Perdona, no te he entendido bien. ¿Quieres hacer una reserva, consultar disponibilidad o resolver alguna duda del hotel?";
-
-const RESERVATION_START_REPLY =
-  "Te ayudo con la reserva. Dime, por favor, la fecha de entrada, la fecha de salida y el nombre de tu mascota.";
-
-const AVAILABILITY_REQUEST_REPLY =
-  "Para consultar disponibilidad, dime la fecha de entrada, la fecha de salida y el nombre de tu mascota.";
-
-const RESERVATION_CONFIRM_REPLY =
-  "Para confirmar una reserva necesitamos una propuesta válida revisada por el equipo. Si ya tienes una solicitud en marcha, te paso con una persona para confirmarla con seguridad.";
-
-const RESERVATION_CANCEL_REPLY =
-  "Claro. Te ayudo a cancelarla. Primero necesito localizar la reserva.";
-
-const RESERVATION_MODIFY_REPLY =
-  "Claro. Te ayudo a modificarla. ¿Quieres cambiar fechas, datos de la mascota, observaciones o cancelar la reserva?";
-
-export const CONVERSATION_RESET_REPLY = "Reiniciado.";
-
 const SHARED_FAQ_BYPASS_INTENTS: ConversationIntent[] = [
   "conversation_reset",
   "greeting",
@@ -131,29 +109,17 @@ export function isConversationResetCommand(message: string): boolean {
   ]);
 }
 
-function greetingPrefix(message: string): string | undefined {
+function hasGreetingPrefix(message: string): boolean {
   const normalized = normalizeText(message);
-  if (/\bbuenos dias\b/.test(normalized) || /\bbuen dia\b/.test(normalized)) {
-    return "Buenos días.";
-  }
-  if (/\bbuenas tardes\b/.test(normalized)) {
-    return "Buenas tardes.";
-  }
-  if (/\bbuenas noches\b/.test(normalized)) {
-    return "Buenas noches.";
-  }
-  if (/\bbuenas\b/.test(normalized)) {
-    return "Buenas.";
-  }
-  if (/\bhola+\b/.test(normalized) || /\bhey\b/.test(normalized)) {
-    return "¡Hola!";
-  }
-  return undefined;
-}
-
-function withGreeting(message: string, reply: string): string {
-  const prefix = greetingPrefix(message);
-  return prefix ? `${prefix} ${reply}` : reply;
+  return (
+    /\bbuenos dias\b/.test(normalized) ||
+    /\bbuen dia\b/.test(normalized) ||
+    /\bbuenas tardes\b/.test(normalized) ||
+    /\bbuenas noches\b/.test(normalized) ||
+    /\bbuenas\b/.test(normalized) ||
+    /\bhola+\b/.test(normalized) ||
+    /\bhey\b/.test(normalized)
+  );
 }
 
 function isGreetingLike(normalized: string): boolean {
@@ -171,7 +137,7 @@ export function isPureGreeting(message: string): boolean {
 }
 
 export function isGreetingWithIntent(message: string): boolean {
-  return Boolean(greetingPrefix(message)) && !isPureGreeting(message);
+  return hasGreetingPrefix(message) && !isPureGreeting(message);
 }
 
 export function isAffirmativeConfirmationUtterance(message: string): boolean {
@@ -192,6 +158,8 @@ export function isAffirmativeConfirmationUtterance(message: string): boolean {
       "ok gracias",
       "perfecto gracias",
       "adelante por favor",
+      "acepto",
+      "acepto la reserva",
       "confirmo reserva",
       "confirmo la reserva",
       "de acuerdo",
@@ -216,10 +184,14 @@ export function buildReservationConfirmReplyPlan(
     slots: extractSlots(message, normalized),
     confidence: "medium",
     matchedSignals: [matchedSignal],
-    reply: RESERVATION_CONFIRM_REPLY,
+    reply: renderCopy({ key: "conversation.reservation_confirm" }),
     handoff: true,
     source: "conversation_nlu",
   };
+}
+
+function renderNluReply(key: ConversationRenderKey, message: string, reply?: string): string {
+  return renderCopy({ key, message, reply });
 }
 
 function extractSlots(rawText: string, normalized: string): ConversationSlots {
@@ -330,6 +302,14 @@ export function classifyConversationIntent(message: string): ConversationNluResu
   }
 
   if (
+    isAffirmativeConfirmationUtterance(message) ||
+    matchAny(normalized, [/\bsi\s*,?\s*(confirma|confirmo|confirmar)\b/, /\bconfirm(a|o|ar)\b/])
+  ) {
+    matchedSignals.push("reservation_confirm");
+    return result("reservation_confirm", "medium");
+  }
+
+  if (
     matchAny(normalized, [
       /\bha\s+(comido|dormido|llorado|jugado|bebido)\b/,
       /\besta\s+(bien|tranquil[oa]|jugando|comiendo|durmiendo)\b/,
@@ -364,12 +344,9 @@ export function classifyConversationIntent(message: string): ConversationNluResu
     return result("reservation_modify");
   }
 
-  if (
-    isAffirmativeConfirmationUtterance(message) ||
-    matchAny(normalized, [/\bsi\s*,?\s*(confirma|confirmo|confirmar)\b/, /\bconfirm(a|o|ar)\b/])
-  ) {
-    matchedSignals.push("reservation_confirm");
-    return result("reservation_confirm", "medium");
+  if (matchAny(normalized, [/\bhay\s+(?:plaza|plazas|sitio|hueco)\b/])) {
+    matchedSignals.push("availability_request");
+    return result("availability_request");
   }
 
   if (
@@ -598,49 +575,49 @@ export function buildConversationReplyPlan(message: string): ConversationReplyPl
     case "greeting":
       return {
         ...nlu,
-        reply: `${greetingPrefix(message) ?? "¡Hola!"} ¿En qué podemos ayudarte?`,
+        reply: renderNluReply("conversation.greeting", message),
         handoff: false,
         source: "conversation_nlu",
       };
     case "general_information":
       return {
         ...nlu,
-        reply: withGreeting(message, GENERAL_INFORMATION_REPLY),
+        reply: renderNluReply("conversation.general_information", message),
         handoff: false,
         source: "conversation_nlu",
       };
     case "human_handoff":
-      return { ...nlu, reply: HUMAN_HANDOFF_REPLY, handoff: true, source: "conversation_nlu" };
+      return { ...nlu, reply: renderNluReply("conversation.human_handoff", message), handoff: true, source: "conversation_nlu" };
     case "stay_status_question":
-      return { ...nlu, reply: STAY_STATUS_REPLY, handoff: true, source: "conversation_nlu" };
+      return { ...nlu, reply: renderNluReply("conversation.stay_status", message), handoff: true, source: "conversation_nlu" };
     case "reservation_start":
       return {
         ...nlu,
-        reply: withGreeting(message, RESERVATION_START_REPLY),
+        reply: renderNluReply("conversation.reservation_start", message),
         handoff: false,
         source: "conversation_nlu",
       };
     case "availability_request":
       return {
         ...nlu,
-        reply: withGreeting(message, AVAILABILITY_REQUEST_REPLY),
+        reply: renderNluReply("conversation.availability_request", message),
         handoff: false,
         source: "conversation_nlu",
       };
     case "reservation_confirm":
-      return { ...nlu, reply: RESERVATION_CONFIRM_REPLY, handoff: true, source: "conversation_nlu" };
+      return { ...nlu, reply: renderNluReply("conversation.reservation_confirm", message), handoff: true, source: "conversation_nlu" };
     case "reservation_cancel":
-      return { ...nlu, reply: RESERVATION_CANCEL_REPLY, handoff: false, source: "conversation_nlu" };
+      return { ...nlu, reply: renderNluReply("conversation.reservation_cancel", message), handoff: false, source: "conversation_nlu" };
     case "reservation_modify":
-      return { ...nlu, reply: RESERVATION_MODIFY_REPLY, handoff: false, source: "conversation_nlu" };
+      return { ...nlu, reply: renderNluReply("conversation.reservation_modify", message), handoff: false, source: "conversation_nlu" };
     case "conversation_reset":
-      return { ...nlu, reply: CONVERSATION_RESET_REPLY, handoff: false, source: "conversation_nlu" };
+      return { ...nlu, reply: renderNluReply("conversation.reset", message), handoff: false, source: "conversation_nlu" };
     case "price_quote": {
       const intelligence = analyzeConversationIntelligence(message);
       if (intelligence.needsExactDate) {
         return {
           ...nlu,
-          reply: buildVagueDatePrecisionReply(intelligence),
+          reply: renderNluReply("conversation.dynamic_reply", message, buildVagueDatePrecisionReply(intelligence)),
           handoff: false,
           source: "conversation_nlu",
         };
@@ -648,18 +625,22 @@ export function buildConversationReplyPlan(message: string): ConversationReplyPl
       if (intelligence.checkInDate && intelligence.checkOutDate && intelligence.petCount) {
         return {
           ...nlu,
-          reply: buildPriceQuoteReply({
-            petCount: intelligence.petCount,
-            checkInDate: intelligence.checkInDate,
-            checkOutDate: intelligence.checkOutDate,
-          }),
+          reply: renderNluReply(
+            "conversation.dynamic_reply",
+            message,
+            buildPriceQuoteReply({
+              petCount: intelligence.petCount,
+              checkInDate: intelligence.checkInDate,
+              checkOutDate: intelligence.checkOutDate,
+            }),
+          ),
           handoff: false,
           source: "conversation_nlu",
         };
       }
       return {
         ...nlu,
-        reply: buildNeedPetCountForQuoteReply(intelligence),
+        reply: renderNluReply("conversation.dynamic_reply", message, buildNeedPetCountForQuoteReply(intelligence)),
         handoff: false,
         source: "conversation_nlu",
       };
@@ -680,12 +661,14 @@ export function buildConversationReplyPlan(message: string): ConversationReplyPl
       const faqMatch = matchFaqIntent(message);
       return {
         ...nlu,
-        reply: faqMatch?.reply ?? UNKNOWN_REPLY,
+        reply: faqMatch?.reply
+          ? renderNluReply("conversation.faq_reply", message, faqMatch.reply)
+          : renderNluReply("conversation.unknown", message),
         handoff: Boolean(faqMatch?.isFallback || faqMatch?.resolution.outputType === "handoff"),
         source: faqMatch ? "faq_public_chat" : "conversation_nlu",
       };
     }
     case "unknown":
-      return { ...nlu, reply: UNKNOWN_REPLY, handoff: false, source: "conversation_nlu" };
+      return { ...nlu, reply: renderNluReply("conversation.unknown", message), handoff: false, source: "conversation_nlu" };
   }
 }

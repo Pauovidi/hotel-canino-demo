@@ -4,6 +4,7 @@ import { decideConversationPolicy } from "../policy/policy-engine";
 import {
   computeMissingReservationFields,
   extractReservationSlotsFromMessage,
+  mergeReservationSlots,
   resolveReservationSlotTarget,
 } from "../reservation-flow";
 import type { ConversationRecord, ConversationReservationFlow } from "../types";
@@ -15,6 +16,7 @@ import type {
   StructuredConversationInterpretation,
   ToolResultSummary,
 } from "./types";
+import { renderCopy } from "./copy-renderer";
 
 export interface NormalizeWhatsAppEventInput {
   from: string;
@@ -193,27 +195,204 @@ export function decideNextConversationAction(input: {
     };
   }
   if (decision.route === "global_reset" || input.interpretation.globalIntent === "reset") {
-    return { kind: "cancel_flow", policyRoute: decision.route, requiresToolSuccess: false, reason: decision.reason };
+    return {
+      type: "reset_conversation",
+      kind: "cancel_flow",
+      policyRoute: decision.route,
+      requiresToolSuccess: false,
+      reason: decision.reason,
+      renderKey: "conversation.reset",
+    };
   }
   if (decision.route === "manual_review") {
-    return { kind: "handoff_to_human", policyRoute: decision.route, requiresToolSuccess: false, reason: decision.reason };
+    return {
+      type: "handoff_to_human",
+      kind: "handoff_to_human",
+      policyRoute: decision.route,
+      requiresToolSuccess: false,
+      reason: decision.reason,
+      renderKey: "conversation.human_handoff",
+    };
   }
   if (decision.route === "faq") {
-    return { kind: "answer_faq_then_resume", policyRoute: decision.route, requiresToolSuccess: false, reason: decision.reason };
+    return {
+      type: "answer_faq_then_resume",
+      kind: "answer_faq_then_resume",
+      policyRoute: decision.route,
+      requiresToolSuccess: false,
+      reason: decision.reason,
+      renderKey: "conversation.faq_reply",
+    };
   }
   if (decision.route === "reservation_confirmation") {
-    return { kind: "confirm_reservation", policyRoute: decision.route, requiresToolSuccess: true, reason: decision.reason };
+    return {
+      type: "confirm_reservation",
+      kind: "confirm_reservation",
+      policyRoute: decision.route,
+      requiresToolSuccess: true,
+      reason: decision.reason,
+      renderKey: "conversation.reservation_confirm",
+    };
   }
   if (decision.route === "reservation_flow") {
     return {
+      type: input.event.pendingFields.length > 0 ? "ask_missing_slot" : "propose_reservation",
       kind: input.event.pendingFields.length > 0 ? "ask_missing_slot" : "propose_reservation",
       policyRoute: decision.route,
       requiresToolSuccess: decision.requiresToolSuccess,
       reason: decision.reason,
       slotNames: input.event.pendingFields,
+      renderKey: input.event.pendingFields.length > 0
+        ? "reservation.ask_entry_exit_date_time"
+        : "reservation.proposal",
     };
   }
-  return { kind: "fallback_contextual", policyRoute: decision.route, requiresToolSuccess: decision.requiresToolSuccess, reason: decision.reason };
+  return {
+    type: "fallback_contextual",
+    kind: "fallback_contextual",
+    policyRoute: decision.route,
+    requiresToolSuccess: decision.requiresToolSuccess,
+    reason: decision.reason,
+    renderKey: "conversation.unknown",
+  };
+}
+
+export function reduceReservationState(input: {
+  state: ConversationReservationFlow;
+  event: NormalizedUserEvent;
+  interpretation: StructuredConversationInterpretation;
+}): {
+  flow: ConversationReservationFlow;
+  stateChanged: boolean;
+  appliedSlotNames: string[];
+  ignoredSlotNames: string[];
+  nextMissingFields: string[];
+  staleProposalInvalidated: boolean;
+  flowCancelled: boolean;
+} {
+  if (input.interpretation.cancellation?.requested) {
+    return {
+      flow: {
+        ...input.state,
+        status: "rejected",
+        updatedAt: input.event.timestamp,
+      },
+      stateChanged: true,
+      appliedSlotNames: [],
+      ignoredSlotNames: Object.keys(input.interpretation.slots),
+      nextMissingFields: [],
+      staleProposalInvalidated: true,
+      flowCancelled: true,
+    };
+  }
+
+  const targetSlots = input.interpretation.targetSlots as Record<string, unknown>;
+  const targetedReservationSlots = Object.fromEntries(
+    Object.entries(targetSlots).filter(([, value]) => value !== undefined && value !== null && value !== ""),
+  ) as Parameters<typeof mergeReservationSlots>[1];
+  const reduced = mergeReservationSlots(input.state, targetedReservationSlots);
+  const nextMissingFields = computeMissingReservationFields(reduced.flow);
+
+  return {
+    flow: {
+      ...reduced.flow,
+      updatedAt: input.event.timestamp,
+    },
+    stateChanged: reduced.appliedSlotNames.length > 0,
+    appliedSlotNames: reduced.appliedSlotNames,
+    ignoredSlotNames: Object.keys(input.interpretation.slots).filter(
+      (slotName) => !reduced.appliedSlotNames.includes(slotName),
+    ),
+    nextMissingFields,
+    staleProposalInvalidated: reduced.appliedSlotNames.some((slotName) =>
+      ["checkInDate", "checkInTime", "checkOutDate", "checkOutTime", "petName", "petCount"].includes(slotName),
+    ),
+    flowCancelled: false,
+  };
+}
+
+export function decideReservationAction(input: {
+  flow: ConversationReservationFlow;
+  interpretation: StructuredConversationInterpretation;
+  toolResults?: ToolResultSummary[];
+}): ConversationAction {
+  const failedTool = input.toolResults?.find((result) => !result.ok);
+  if (failedTool) {
+    return {
+      type: "fallback_contextual",
+      kind: "fallback_contextual",
+      policyRoute: "fallback",
+      requiresToolSuccess: true,
+      reason: `tool_failed:${failedTool.toolName}`,
+      toolName: failedTool.toolName,
+      renderKey: "conversation.unknown",
+    };
+  }
+  if (input.interpretation.globalIntent === "reset") {
+    return {
+      type: "reset_conversation",
+      kind: "cancel_flow",
+      policyRoute: "global_reset",
+      requiresToolSuccess: false,
+      reason: "global_reset",
+      renderKey: "conversation.reset",
+    };
+  }
+  if (input.interpretation.handoffIntent) {
+    return {
+      type: "handoff_to_human",
+      kind: "handoff_to_human",
+      policyRoute: "manual_review",
+      requiresToolSuccess: false,
+      reason: "handoff_intent",
+      renderKey: "conversation.human_handoff",
+    };
+  }
+  if (input.interpretation.faqIntent) {
+    return {
+      type: "answer_faq_then_resume",
+      kind: "answer_faq_then_resume",
+      policyRoute: "faq",
+      requiresToolSuccess: false,
+      reason: "faq_inside_reservation",
+      renderKey: "conversation.faq_reply",
+    };
+  }
+  if (input.interpretation.cancellation?.requested) {
+    return {
+      type: "cancel_reservation_flow",
+      kind: "cancel_flow",
+      policyRoute: "reservation_flow",
+      requiresToolSuccess: false,
+      reason: "reservation_cancel_requested",
+      renderKey: "reservation.cancelled",
+    };
+  }
+
+  const missing = computeMissingReservationFields(input.flow);
+  if (missing.length > 0) {
+    return {
+      type: "ask_missing_slot",
+      kind: "ask_missing_slot",
+      policyRoute: "reservation_flow",
+      requiresToolSuccess: false,
+      reason: "missing_reservation_fields",
+      slotNames: missing,
+      renderKey: "reservation.ask_entry_exit_date_time",
+      renderInput: { flow: input.flow },
+    };
+  }
+
+  return {
+    type: "propose_reservation",
+    kind: "propose_reservation",
+    policyRoute: "reservation_flow",
+    requiresToolSuccess: true,
+    reason: "reservation_ready_for_availability",
+    toolName: "check_availability",
+    renderKey: "reservation.proposal",
+    renderInput: { flow: input.flow },
+  };
 }
 
 export function renderConversationReply(input: {
@@ -224,6 +403,16 @@ export function renderConversationReply(input: {
     return {
       body: input.legacyReply,
       copySource: "legacy_allowed_temporarily_with_guard",
+      actionKind: input.action.kind,
+    };
+  }
+  if (input.action.renderKey) {
+    return {
+      body: renderCopy({
+        key: input.action.renderKey,
+        ...input.action.renderInput,
+      }),
+      copySource: "copy_renderer",
       actionKind: input.action.kind,
     };
   }

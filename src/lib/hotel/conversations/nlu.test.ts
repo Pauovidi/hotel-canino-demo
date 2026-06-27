@@ -308,4 +308,42 @@ describe("conversation NLU", () => {
     expect(plan.reply).toContain("Perdona, no te he entendido bien");
     expect(plan.reply).not.toContain("Ese caso prefiero");
   });
+
+  it.each([
+    ["reiniciar", "conversation_reset"],
+    ["/reiniciar", "conversation_reset"],
+    ["reset", "conversation_reset"],
+    ["/reset", "conversation_reset"],
+    ["empezar de nuevo", "conversation_reset"],
+    ["limpiar conversación", "conversation_reset"],
+    ["quiero cancelar mi reserva", "reservation_cancel"],
+    ["necesito anular la reserva", "reservation_cancel"],
+    ["cancelación de reserva", "reservation_cancel"],
+    ["quiero cambiar la reserva", "reservation_modify"],
+    ["necesito modificar fechas", "reservation_modify"],
+    ["puedo cambiar la hora", "reservation_modify"],
+    ["¿y el pago?", "faq_payment"],
+    ["¿cómo se paga?", "faq_payment"],
+    ["¿hay que dejar señal?", "faq_payment"],
+    ["diferencia entre hotel y guardería", "faq_services"],
+    ["hotel y guardería", "faq_services"],
+    ["¿qué vacunas necesita?", "faq_vaccines"],
+    ["¿puedo visitar el hotel?", "faq_visits"],
+    ["¿dónde estáis?", "faq_location"],
+    ["está bien", "reservation_confirm"],
+    ["de acuerdo", "reservation_confirm"],
+    ["acepto", "reservation_confirm"],
+    ["confirmo la reserva", "reservation_confirm"],
+    ["anótala por favor", "reservation_confirm"],
+    ["quiero reservar", "reservation_start"],
+    ["necesito reservar", "reservation_start"],
+    ["quisiera reservar para mi perro", "reservation_start"],
+    ["hay plaza para mi perro", "availability_request"],
+    ["tenéis sitio para un Rottweiler", "availability_request"],
+  ] as const)("routes fuzz phrase %s as %s", (message, expectedIntent) => {
+    const plan = buildConversationReplyPlan(message);
+
+    expect(plan.intent).toBe(expectedIntent);
+    expect(plan.reply).not.toBe("Gracias. Ahora dime la fecha y hora de entrada, y la fecha y hora de salida.");
+  });
 });

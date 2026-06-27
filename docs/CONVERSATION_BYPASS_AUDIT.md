@@ -2,66 +2,55 @@
 
 Fecha: 2026-06-27
 
-Base auditada: `codex/smp-reservation-pending-field-slot-assignment-v0` / `9cb1f292cb8805562baefebe7c90b67b4e5fcae7`
+Base de trabajo: `codex/smp-conversation-authority-complete-migration-v0` desde `a9bc4c017dede0190252b86f4b84fd4386da0996`.
 
 Clasificaciones:
 
-- `allowed_renderer`: redacta copy desde el renderer contractual.
-- `allowed_outbox`: envia o convierte salida ya renderizada.
-- `reducer_only`: actualiza estado sin redactar.
-- `policy_only`: decide accion sin redactar.
-- `bypass_to_fix`: bypass no aceptable.
-- `legacy_allowed_temporarily_with_guard`: bypass existente permitido durante migracion, con test/allowlist.
+- `renderer_only`: redacta respuesta visible desde `CopyRenderer`.
+- `reducer_only`: fusiona estado/slots sin redactar copy.
+- `policy_only`: decide accion sin redactar copy.
+- `outbox_only`: convierte una salida renderizada en mensaje/canal.
+- `keep_temporarily_with_reason`: excepcion legacy acotada, con motivo, riesgo y test.
+- `migrate_now`: migrado en esta rama o bloqueado por guardrail.
 
-## Hallazgos principales
+## Hallazgos Priorizados
 
-| Archivo | Clasificacion | Hallazgo | Riesgo | Accion |
-| --- | --- | --- | --- | --- |
-| `src/lib/hotel/conversations/authority/pipeline.ts` | allowed_renderer / allowed_outbox / policy_only | Nuevo nucleo de autoridad: evento normalizado, interpretacion estructurada, policy action, renderer contractual y outbox. | Bajo. | Mantener como punto de entrada para nuevas rutas. |
-| `src/app/api/twilio/whatsapp/route.ts` | legacy_allowed_temporarily_with_guard | Valida token, parsea payload, normaliza `NormalizedUserEvent`, pero aun construye TwiML y tiene respuestas degradadas/template preview. | Medio: route todavia puede montar copy en errores/previews. | Migrar degraded/template preview a CopyRenderer/Outbox. Guardrail cubre allowlist. |
-| `src/lib/hotel/conversations/service.ts` | legacy_allowed_temporarily_with_guard | Orquestador principal. Genera multiples `botReply.body`, TwiML y eventos. Tambien contiene reset global, handoff, FAQ escape y confirmacion. | Alto: mezcla policy, reducer, renderer y outbox. | Encapsular por fases: state reducer puro, policy decision y CopyRenderer. |
-| `src/lib/hotel/conversations/reservation-flow.ts` | legacy_allowed_temporarily_with_guard | Contiene reducer de reserva y tambien copy visible (`reply`, prompts, propuesta). | Alto: state reducer y renderer estan mezclados. | Extraer prompts/propuestas a CopyRenderer; dejar reducer sin texto. |
-| `src/lib/hotel/conversations/nlu.ts` | legacy_allowed_temporarily_with_guard | Clasifica intent y tambien contiene replies visibles para FAQ/fallback/handoff/reset. | Medio: NLU redacta copy legacy. | Mantener solo interpretacion estructurada; migrar copy a renderer. |
-| `src/lib/hotel/conversations/conversation-intelligence.ts` | legacy_allowed_temporarily_with_guard | Ayuda a precio/raza/fechas vagas y devuelve replies visibles. | Medio. | Convertir a interpretation/reducer hints; renderer decide copy. |
-| `src/lib/hotel/conversations/client-templates.ts` | legacy_allowed_temporarily_with_guard | Templates reales de cliente y contrato. | Medio: templates son copy autorizado pero aun no cuelgan del renderer unico. | Mover detras de CopyRenderer con `render_template`. |
-| `src/lib/hotel/conversations/template-preview.ts` | legacy_allowed_temporarily_with_guard | Preview de plantillas genera reply visible y route puede contestarlo antes de pipeline completo. | Medio: prerouter bypass. | Mantener por estabilidad; mover a policy `render_template`. |
-| `src/lib/hotel/conversations/reservation-bridge.ts` | reducer_only / legacy_allowed_temporarily_with_guard | Confirma propuestas y produce replies de confirmacion/handoff. | Alto: confirmacion debe depender de tool/write success. | Mantener guardado por tests; extraer copy de confirmacion. |
-| `src/lib/hotel/conversations/policy/policy-engine.ts` | policy_only | Shadow policy engine existente, ahora usado por autoridad pipeline. | Bajo. | Ampliar hasta ser unica decision. |
-| `src/lib/hotel/conversations/client-requests.ts` | legacy_allowed_temporarily_with_guard | Copy y configuracion para recordatorios/followups. | Medio. | Pasar por renderer/outbox en jobs. |
-| `src/lib/hotel/conversations/scheduled-messages.ts` | legacy_allowed_temporarily_with_guard | Construye payloads de mensajes programados. | Medio. | ToolExecutor/Outbox para envios reales. |
-| `scripts/hotel-scheduled-jobs-lib.mjs` | legacy_allowed_temporarily_with_guard | Construye textos de prearrival/post-stay y puede enviar via Twilio mock/real segun env. | Alto en real mode. | Migrar a ToolExecutor + CopyRenderer + Outbox; mantener dry-run tests. |
-| `src/lib/hotel/twilio/client.ts` | allowed_outbox | Cliente Twilio central de bajo nivel. | Bajo si solo recibe outbox autorizado. | No llamar desde conversation modules salvo outbox. |
-| `src/app/api/conversations/[id]/reply/route.ts` | allowed_outbox / legacy_allowed_temporarily_with_guard | Reply manual del panel. | Medio: humano redacta, sistema envia. | Mantener como panel/manual; registrar como outbox manual. |
-| FAQ helpers (`src/lib/hotel/knowledge/*`) | legacy_allowed_temporarily_with_guard | Resolucion FAQ puede traer copy/respuestas. | Medio. | Mantener contenido como knowledge source; CopyRenderer renderiza. |
+| Archivo | Clasificacion | Copy visible | Next action | Tool critica | Accion |
+| --- | --- | --- | --- | --- | --- |
+| `src/lib/hotel/conversations/authority/copy-renderer.ts` | `renderer_only` | Si, fuente canonica de copy conversacional. | No. | No. | Nuevo punto unico para copy de NLU, reserva, reset, handoff, baño/post-stay y degradados seguros. |
+| `src/lib/hotel/conversations/authority/pipeline.ts` | `policy_only` / `reducer_only` / `outbox_only` | Solo via `renderCopy`. | Si: `decideNextConversationAction` y `decideReservationAction`. | No ejecuta tools. | Incluye `reduceReservationState`, policy de reserva y `buildOutboxMessage`. |
+| `src/lib/hotel/conversations/reservation-flow.ts` | `reducer_only` + `renderer_only` adapter | No debe contener frases visibles de negocio; los `reply` de compatibilidad salen de `renderReservationFlowCopy`. | Aun conserva stage decisions del flujo. | `checkAvailability` sigue aqui temporalmente. | `migrate_now` hecho para copy. Pendiente separar disponibilidad a ToolExecutor. Tests: bridge golden + authority guardrails. |
+| `src/lib/hotel/conversations/nlu.ts` | `policy_only` interpretation adapter | No contiene respuestas visibles hardcodeadas; `ConversationReplyPlan.reply` se renderiza por `CopyRenderer` o por FAQ/quote autorizadas. | Clasifica intent y handoff. | No. | `migrate_now` hecho para copy hardcoded. Pendiente eliminar campo `reply` publico en una ruptura controlada. Tests: NLU + guardrails. |
+| `src/lib/hotel/conversations/service.ts` | `keep_temporarily_with_reason` | Salida bot automatica pasa por `addRenderedBotMessage` y eventos `copy_rendered`/`outbox_sent`. | Si: orquestador principal. | Si: confirmacion, schedule, stores. | Mantener temporalmente por compatibilidad. Riesgo: mezcla policy/tool. Eliminacion: siguiente rama ToolExecutor. Tests: service + WhatsApp bridge. |
+| `src/app/api/twilio/whatsapp/route.ts` | `outbox_only` + `keep_temporarily_with_reason` | Degraded reply sale de `CopyRenderer`; preview stateless sigue como guard previo documentado. | Auth/parse/reset/preview prerouter. | No escribe reservas. | Mantener reset/preview como hard guards. Riesgo: TwiML adapter aun vive aqui. Tests: conversations-security. |
+| `src/lib/hotel/conversations/conversation-intelligence.ts` | `keep_temporarily_with_reason` | Aun genera copy de quote/fechas vagas/raza. | Interpreta precio/raza/fechas. | No. | Pendiente mover builders a CopyRenderer. Riesgo medio. Tests: service + nlu price/breed. |
+| `src/lib/hotel/conversations/reservation-bridge.ts` | `keep_temporarily_with_reason` | Aun genera copy de confirmacion/fallo. | Decide confirmacion segura. | Si: Sheets/ReservationRecords/CLIENTES. | Pendiente ToolExecutor + renderer de confirmacion. Riesgo alto si se toca sin tests. Tests: bridge contract/confirmation/no availability. |
+| `src/lib/hotel/conversations/template-preview.ts` | `keep_temporarily_with_reason` | Preview autorizado de plantillas. | Detecta comandos preview. | No. | Mantener por estabilidad; debe pasar a `render_template`. Tests: template-preview + route. |
+| `src/lib/hotel/conversations/client-templates.ts` | `renderer_only` authorized template layer | Si, plantillas reales autorizadas. | No. | No. | Permitido como capa de plantillas llamada por renderer/preview/jobs. |
+| `src/lib/hotel/conversations/scheduled-messages.ts` | `keep_temporarily_with_reason` | Construye payloads programados. | Dedupe/dispatch. | Puede enviar via Twilio segun flags. | Mantener con dry-run/no-op tests; siguiente migracion a Outbox scheduled. |
+| `scripts/hotel-scheduled-jobs-lib.mjs` | `keep_temporarily_with_reason` | Construye textos job. | Seleccion jobs. | Puede usar Postgres/Twilio segun env. | Mantener con dry-run/no-op. Riesgo alto solo en real mode. |
 
-## Bypasses bloqueados o congelados
+## Allowlist Final Temporal
+
+- `src/lib/hotel/conversations/service.ts | keep_temporarily_with_reason | monolith_orchestrator_until_tool_executor | tests: service.test.ts, whatsapp-reservation-bridge.test.ts | remove_by: next_authority_tool_executor_branch`
+- `src/app/api/twilio/whatsapp/route.ts | keep_temporarily_with_reason | auth_reset_template_preview_twiML_adapter | tests: conversations-security.test.ts, template-preview.test.ts | remove_by: channel_outbox_adapter_branch`
+- `src/lib/hotel/conversations/conversation-intelligence.ts | keep_temporarily_with_reason | price_breed_vague_date_copy_builders | tests: nlu.test.ts, service.test.ts | remove_by: quote_renderer_branch`
+- `src/lib/hotel/conversations/reservation-bridge.ts | keep_temporarily_with_reason | confirmation_tool_success_contract | tests: whatsapp-reservation-bridge.test.ts | remove_by: reservation_tool_executor_branch`
+- `src/lib/hotel/conversations/template-preview.ts | keep_temporarily_with_reason | stateless_preview_guard | tests: template-preview.test.ts, conversations-security.test.ts | remove_by: render_template_policy_branch`
+- `src/lib/hotel/conversations/scheduled-messages.ts | keep_temporarily_with_reason | scheduled_outbox_not_migrated | tests: scheduled-messages.test.ts, dry-run jobs | remove_by: scheduled_outbox_branch`
+- `scripts/hotel-scheduled-jobs-lib.mjs | keep_temporarily_with_reason | mjs_job_runtime_parallel_path | tests: dry-run jobs | remove_by: scheduled_outbox_branch`
+
+## Retirado De Allowlist Legacy
+
+- `src/lib/hotel/conversations/reservation-flow.ts`: copy visible hardcoded migrado a `CopyRenderer`; sigue como reducer/stage adapter con `reply` de compatibilidad.
+- `src/lib/hotel/conversations/nlu.ts`: respuestas visibles hardcoded migradas a `CopyRenderer`; sigue el campo `reply` legacy por compatibilidad.
+- `src/lib/hotel/conversations/client-templates.ts`: capa de plantillas autorizada, no bypass arbitrario.
+
+## Guardrails Activos
 
 - No se permite `client.messages.create` ni `messages.create` dentro de `src/lib/hotel/conversations/*`.
-- Nuevos copies visibles fuera de `authority/pipeline.ts`, templates documentados o allowlist deben actualizar este audit y tests.
-- Twilio webhook crea `NormalizedUserEvent` antes de reset/template/flujo.
-- NLU estructurado del nuevo pipeline no expone campo `reply`.
-
-## Allowlist temporal
-
-Estas entradas son temporales y deben retirarse por fases:
-
-- `src/app/api/twilio/whatsapp/route.ts | legacy_allowed_temporarily_with_guard`
-- `src/lib/hotel/conversations/service.ts | legacy_allowed_temporarily_with_guard`
-- `src/lib/hotel/conversations/reservation-flow.ts | legacy_allowed_temporarily_with_guard`
-- `src/lib/hotel/conversations/nlu.ts | legacy_allowed_temporarily_with_guard`
-- `src/lib/hotel/conversations/conversation-intelligence.ts | legacy_allowed_temporarily_with_guard`
-- `src/lib/hotel/conversations/client-templates.ts | legacy_allowed_temporarily_with_guard`
-- `src/lib/hotel/conversations/template-preview.ts | legacy_allowed_temporarily_with_guard`
-- `src/lib/hotel/conversations/reservation-bridge.ts | legacy_allowed_temporarily_with_guard`
-- `src/lib/hotel/conversations/client-requests.ts | legacy_allowed_temporarily_with_guard`
-- `src/lib/hotel/conversations/scheduled-messages.ts | legacy_allowed_temporarily_with_guard`
-- `scripts/hotel-scheduled-jobs-lib.mjs | legacy_allowed_temporarily_with_guard`
-
-## Plan de retirada
-
-1. Mover replies de `reservation-flow.ts` a `renderConversationReply`.
-2. Convertir `nlu.ts` a interpretacion pura sin replies.
-3. Cambiar `service.ts` para que devuelva `ConversationAction` + `RenderedConversationReply`.
-4. Envolver template preview y degraded replies de Twilio en policy/renderer.
-5. Migrar scheduled jobs a ToolExecutor + Outbox.
-6. Cambiar guardrail de allowlist a bloqueo estricto por archivo.
+- `reservation-flow.ts` no puede introducir frases visibles de negocio fuera de `renderReservationFlowCopy`.
+- `nlu.ts` no puede reintroducir respuestas visibles hardcoded como fallback/handoff/reserva/reset.
+- La salida bot automatica de `service.ts` debe usar `addRenderedBotMessage` o `addRenderedBotMessageBestEffort`.
+- Twilio route debe usar `CopyRenderer` para degraded copy y solo adaptar a TwiML.
+- Nuevas excepciones deben añadir motivo, riesgo, fecha/branch de eliminacion y test.

@@ -5,8 +5,10 @@ import type { ConversationRecord, ConversationReservationFlow } from "../types";
 import {
   buildOutboxMessage,
   buildStructuredInterpretation,
+  decideReservationAction,
   decideNextConversationAction,
   normalizeWhatsAppUserEvent,
+  reduceReservationState,
   renderConversationReply,
 } from "./pipeline";
 
@@ -142,6 +144,78 @@ describe("conversation authority pipeline", () => {
       externalUserId: "whatsapp:+34600009991",
       body: "Hola QA",
       source: "copy_renderer",
+    });
+  });
+
+  it("renders reset and reservation actions from CopyRenderer without legacy reply text", () => {
+    const event = normalizeWhatsAppUserEvent({
+      from: "whatsapp:+34600009991",
+      body: "reiniciar",
+    });
+    const action = decideNextConversationAction({
+      event,
+      interpretation: {
+        intent: "conversation_reset",
+        globalIntent: "reset",
+        slots: {},
+        targetSlots: {},
+        cancellation: { requested: false },
+        confidence: "high",
+        safety: {
+          canWriteState: false,
+          canRenderUserText: false,
+          canCallTools: false,
+          canConfirmReservation: false,
+        },
+      },
+    });
+    const rendered = renderConversationReply({ action });
+    const outbox = buildOutboxMessage({ event, rendered });
+
+    expect(action.renderKey).toBe("conversation.reset");
+    expect(rendered).toMatchObject({
+      body: "Reiniciado.",
+      copySource: "copy_renderer",
+    });
+    expect(outbox?.body).toBe("Reiniciado.");
+  });
+
+  it("reduces reservation slots before policy chooses the next action", () => {
+    const flow = makeFlow({ checkInDate: "2026-06-27", checkInTime: "10:00" });
+    const conversation = makeConversation(flow);
+    const event = normalizeWhatsAppUserEvent({
+      from: "whatsapp:+34600009991",
+      body: "lunes a las 10",
+      conversation,
+      now: new Date("2026-06-26T10:02:00.000Z"),
+    });
+    const interpretation = buildStructuredInterpretation({
+      event,
+      replyPlan: buildConversationReplyPlan(event.messageText),
+      reservationFlow: flow,
+      now: new Date("2026-06-26T10:02:00.000Z"),
+    });
+    const reduced = reduceReservationState({ state: flow, event, interpretation });
+    const action = decideReservationAction({
+      flow: reduced.flow,
+      interpretation,
+    });
+
+    expect(reduced).toMatchObject({
+      stateChanged: true,
+      nextMissingFields: ["notes"],
+    });
+    expect(reduced.appliedSlotNames).toEqual(
+      expect.arrayContaining(["checkOutDate", "checkOutTime"]),
+    );
+    expect(reduced.flow).toMatchObject({
+      checkOutDate: "2026-06-29",
+      checkOutTime: "10:00",
+    });
+    expect(action).toMatchObject({
+      type: "ask_missing_slot",
+      kind: "ask_missing_slot",
+      renderKey: "reservation.ask_entry_exit_date_time",
     });
   });
 });

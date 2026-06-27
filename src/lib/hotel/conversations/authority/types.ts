@@ -1,5 +1,6 @@
 import type { ConversationPolicyRoute } from "../policy/policy-engine";
 import type { ConversationMode, ConversationRecord } from "../types";
+import type { ConversationRenderKey, RenderCopyInput } from "./copy-renderer";
 
 export type ConversationChannel = "whatsapp" | "panel" | "job";
 export type ConversationInboundSource = "webhook" | "panel" | "job" | "test";
@@ -71,6 +72,7 @@ export type ConversationActionKind =
   | "suppress_reply";
 
 export interface ConversationAction {
+  type?: string;
   kind: ConversationActionKind;
   policyRoute: ConversationPolicyRoute;
   requiresToolSuccess: boolean;
@@ -78,6 +80,8 @@ export interface ConversationAction {
   slotNames?: string[];
   toolName?: string;
   templateKind?: string;
+  renderKey?: ConversationRenderKey;
+  renderInput?: Omit<RenderCopyInput, "key">;
 }
 
 export interface ToolResultSummary {

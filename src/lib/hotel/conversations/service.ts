@@ -14,6 +14,7 @@ import {
   isAffirmativeConfirmationUtterance,
   isConversationResetCommand,
 } from "./nlu";
+import { renderCopy } from "./authority/copy-renderer";
 import {
   confirmPendingReservationProposal,
   type WhatsAppReservationBridgeDeps,
@@ -305,23 +306,53 @@ async function getConversationByIdBestEffort(
   }
 }
 
-async function addBotMessageBestEffort(
+async function addRenderedBotMessage(
+  store: ConversationStore,
+  conversationId: string,
+  body: string,
+  operation: string,
+): Promise<Message> {
+  await addEventBestEffort(
+    store,
+    createEvent(conversationId, "copy_rendered", {
+      source: "copy_renderer",
+      operation,
+      bodyKind: body.length <= 80 ? "short_text" : "long_text",
+      hasTwimlMessage: true,
+    }),
+    `${operation}_copy_rendered`,
+  );
+  const botReply = await store.addMessage(
+    createMessage({
+      conversationId,
+      direction: "outbound",
+      senderType: "bot",
+      body,
+    }),
+  );
+  await addEventBestEffort(
+    store,
+    createEvent(conversationId, "outbox_sent", {
+      channel: "whatsapp",
+      source: "copy_renderer",
+      operation,
+      mode: "twiml_response",
+    }),
+    `${operation}_outbox_sent`,
+  );
+  return botReply;
+}
+
+async function addRenderedBotMessageBestEffort(
   store: ConversationStore,
   conversationId: string,
   body: string,
   operation: string,
 ): Promise<Message | undefined> {
   try {
-    return await store.addMessage(
-      createMessage({
-        conversationId,
-        direction: "outbound",
-        senderType: "bot",
-        body,
-      }),
-    );
+    return await addRenderedBotMessage(store, conversationId, body, operation);
   } catch (error) {
-    console.warn("conversation_store_post_confirmation_message_failed", {
+    console.warn("conversation_store_rendered_message_failed", {
       operation,
       conversationId: safeConversationId(conversationId),
       ...safeConversationStoreError(error),
@@ -477,23 +508,23 @@ function buildReservationFlowResumePrompt(record: ConversationRecord): string | 
 
   switch (status) {
     case "asking_client_kind":
-      return "Seguimos con la reserva. ¿Ya eres cliente de Somos Muy Perros? Responde sí o no.";
+      return renderCopy({ key: "reservation.resume_asking_client_kind" });
     case "asking_existing_email":
-      return "Seguimos con la reserva. Me falta el email para localizar tu ficha de cliente.";
+      return renderCopy({ key: "reservation.resume_asking_existing_email" });
     case "collecting_owner":
-      return "Seguimos con la reserva. Me falta tu nombre y apellidos.";
+      return renderCopy({ key: "reservation.resume_collecting_owner" });
     case "collecting_pet":
-      return "Seguimos con la reserva. Me falta el nombre o los nombres de tu mascota/s.";
+      return renderCopy({ key: "reservation.resume_collecting_pet" });
     case "collecting_dates":
-      return "Seguimos con la reserva. Me faltan la fecha de entrada y la fecha de salida.";
+      return renderCopy({ key: "reservation.resume_collecting_dates" });
     case "collecting_notes":
-      return "Seguimos con la reserva. Me falta saber si hay alimentación, medicación u observaciones importantes.";
+      return renderCopy({ key: "reservation.resume_collecting_notes" });
     case "collecting_visit":
-      return "Seguimos con la reserva. ¿Quieres visitar el hotel antes de confirmar?";
+      return renderCopy({ key: "reservation.resume_collecting_visit" });
     case "pending_availability":
-      return "Seguimos con la reserva. Estoy revisando disponibilidad para poder proponértela con seguridad.";
+      return renderCopy({ key: "reservation.resume_pending_availability" });
     case "pending_confirmation":
-      return "Seguimos con la reserva. Si quieres dejarla anotada, responde “sí, confirma”.";
+      return renderCopy({ key: "reservation.resume_pending_confirmation" });
     case "confirmed":
     case "rejected":
     case "no_availability":
@@ -507,7 +538,7 @@ function appendReservationResume(reply: string, record: ConversationRecord): str
 }
 
 const RESERVATION_FLOW_CANCELLED_REPLY =
-  "De acuerdo, dejamos la reserva sin continuar. Si necesitas otra cosa, estoy por aquí.";
+  renderCopy({ key: "reservation.cancelled" });
 
 type PendingSafeEvent = {
   eventType: string;
@@ -621,15 +652,15 @@ function buildLoopSafeReservationReply(record: ConversationRecord, fallback: str
   if (flow?.status === "collecting_dates") {
     const missing = computeMissingReservationFields(flow);
     if (flow.checkInDate && missing.some((field) => field.startsWith("check_out"))) {
-      return "Entiendo parte de la reserva. Me falta la salida y las horas. ¿Me las indicas?";
+      return renderCopy({ key: "service.loop_missing_exit_and_times" });
     }
     if ((flow.checkInTime || flow.checkOutTime) && missing.some((field) => field.endsWith("_date"))) {
-      return "Perfecto, tengo las horas. ¿Qué fecha de entrada y qué fecha de salida serían?";
+      return renderCopy({ key: "service.loop_have_hours_need_dates" });
     }
   }
 
   const resume = buildReservationFlowResumePrompt(record);
-  return resume ? `Perdona, lo reformulo. ${resume}` : fallback;
+  return resume ? renderCopy({ key: "service.loop_reformulation", reply: resume }) : fallback;
 }
 
 function applyReservationAntiLoop(input: {
@@ -992,7 +1023,7 @@ async function handlePendingBathOfferReply(input: {
     eventType = "bath_photo_requested";
     eventPayload = { ...eventPayload, reason: "long_hair_or_knots" };
   } else if (hasBathDecline(input.safeBody)) {
-    reply = "De acuerdo, no añadimos baño.";
+    reply = renderCopy({ key: "service.bath_declined" });
     nextBath = { ...nextBath, status: "declined" };
     nextConversation = {
       ...input.conversation,
@@ -1002,7 +1033,7 @@ async function handlePendingBathOfferReply(input: {
     eventType = "bath_declined";
   } else if (size) {
     const quotedPrice = bathPriceForSize(size);
-    reply = `Perfecto. Para pelo corto, el baño serían ${quotedPrice}€. Lo dejamos anotado para recepción.`;
+    reply = renderCopy({ key: "service.bath_price_quoted", price: quotedPrice });
     nextBath = { ...nextBath, status: "quoted", size, quotedPrice };
     nextConversation = {
       ...input.conversation,
@@ -1012,7 +1043,7 @@ async function handlePendingBathOfferReply(input: {
     eventType = "bath_price_quoted";
     eventPayload = { ...eventPayload, size, quotedPrice };
   } else if (hasBathAcceptance(input.safeBody)) {
-    reply = "Perfecto. ¿Es pequeño, mediano o grande? Solo damos precio automático si es de pelo corto.";
+    reply = renderCopy({ key: "service.bath_size_requested" });
     nextBath = { ...nextBath, status: "awaiting_size" };
     nextConversation = {
       ...input.conversation,
@@ -1039,7 +1070,7 @@ async function handlePendingBathOfferReply(input: {
       "bath_manual_review",
     );
   }
-  const botReply = await addBotMessageBestEffort(
+  const botReply = await addRenderedBotMessageBestEffort(
     input.store,
     input.conversation.id,
     reply,
@@ -1101,7 +1132,7 @@ async function handlePendingPostStayFollowupReply(input: {
     };
     eventType = "post_stay_positive_review_requested";
   } else if (isNegativePostStayReply(input.safeBody)) {
-    reply = "Gracias por avisarnos. Lo revisa el equipo y te contestamos por aquí.";
+    reply = renderCopy({ key: "service.post_stay_negative_manual_review" });
     nextConversation = {
       ...input.conversation,
       pendingPostStayFollowup: {
@@ -1125,7 +1156,7 @@ async function handlePendingPostStayFollowupReply(input: {
     createEvent(input.conversation.id, eventType),
     eventType,
   );
-  const botReply = await addBotMessageBestEffort(
+  const botReply = await addRenderedBotMessageBestEffort(
     input.store,
     input.conversation.id,
     reply,
@@ -1157,13 +1188,11 @@ async function sendBotOutcome(input: {
   await input.store.addEvent(
     createEvent(input.conversation.id, input.eventType, input.eventPayload),
   );
-  const botReply = await input.store.addMessage(
-    createMessage({
-      conversationId: input.conversation.id,
-      direction: "outbound",
-      senderType: "bot",
-      body: input.reply,
-    }),
+  const botReply = await addRenderedBotMessage(
+    input.store,
+    input.conversation.id,
+    input.reply,
+    input.eventType,
   );
 
   return {
@@ -1191,7 +1220,7 @@ async function handleTemplatePreviewCommand(input: {
       createEvent(input.conversation.id, "template_preview_failed", safeConversationStoreError(error)),
       "template_preview_failed",
     );
-    const botReply = await addBotMessageBestEffort(
+    const botReply = await addRenderedBotMessageBestEffort(
       input.store,
       input.conversation.id,
       TEMPLATE_PREVIEW_FAILED_REPLY,
@@ -1228,7 +1257,7 @@ async function handleTemplatePreviewCommand(input: {
       ? "template_preview_disabled"
       : "template_preview_rendered",
   );
-  const botReply = await addBotMessageBestEffort(
+  const botReply = await addRenderedBotMessageBestEffort(
     input.store,
     input.conversation.id,
     templatePreview.reply,
@@ -1483,13 +1512,11 @@ async function sendReservationChangeOutcome(input: {
       }),
     );
   }
-  const botReply = await input.store.addMessage(
-    createMessage({
-      conversationId: input.outcome.conversation.id,
-      direction: "outbound",
-      senderType: "bot",
-      body: input.outcome.reply,
-    }),
+  const botReply = await addRenderedBotMessage(
+    input.store,
+    input.outcome.conversation.id,
+    input.outcome.reply,
+    input.outcome.eventType,
   );
 
   return {
@@ -1709,13 +1736,11 @@ export async function handleGlobalResetCommand(
         clearedHumanMode: latest.mode === "human" || latest.humanRequested,
       }),
     );
-    const botReply = await store.addMessage(
-      createMessage({
-        conversationId: conversation.id,
-        direction: "outbound",
-        senderType: "bot",
-        body: CONVERSATION_RESET_REPLY,
-      }),
+    const botReply = await addRenderedBotMessage(
+      store,
+      conversation.id,
+      CONVERSATION_RESET_REPLY,
+      "conversation_reset_requested",
     );
 
     return {
@@ -2374,8 +2399,7 @@ export async function handleInboundWhatsApp(
   const freshAfterInbound = (await store.getById(freshWithClient.id)) ?? freshWithClient;
 
   if (clientIdentity.identity.status === "blocked") {
-    const replyBody =
-      "Gracias, revisamos tu solicitud con el equipo y te contestamos por aquí.";
+    const replyBody = renderCopy({ key: "service.manual_review" });
     const humanRecord: ConversationRecord = {
       ...freshAfterInbound,
       mode: "human",
@@ -2385,13 +2409,11 @@ export async function handleInboundWhatsApp(
       updatedAt: nowIso(),
     };
     await store.replaceConversation(humanRecord);
-    const botReply = await store.addMessage(
-      createMessage({
-        conversationId: freshAfterInbound.id,
-        direction: "outbound",
-        senderType: "bot",
-        body: replyBody,
-      }),
+    const botReply = await addRenderedBotMessage(
+      store,
+      freshAfterInbound.id,
+      replyBody,
+      "client_blocked_manual_review",
     );
 
     return {
@@ -2508,13 +2530,11 @@ export async function handleInboundWhatsApp(
           },
         },
       ]);
-      const botReply = await store.addMessage(
-        createMessage({
-          conversationId: latestBeforeFlow.id,
-          direction: "outbound",
-          senderType: "bot",
-          body: RESERVATION_FLOW_CANCELLED_REPLY,
-        }),
+      const botReply = await addRenderedBotMessage(
+        store,
+        latestBeforeFlow.id,
+        RESERVATION_FLOW_CANCELLED_REPLY,
+        "reservation_flow_cancelled_by_user",
       );
 
       return {
@@ -2578,13 +2598,11 @@ export async function handleInboundWhatsApp(
           },
         },
       ]);
-      const botReply = await store.addMessage(
-        createMessage({
-          conversationId: latestBeforeFlow.id,
-          direction: "outbound",
-          senderType: "bot",
-          body: flowInterruptionPlan.reply,
-        }),
+      const botReply = await addRenderedBotMessage(
+        store,
+        latestBeforeFlow.id,
+        flowInterruptionPlan.reply,
+        "reservation_flow_handoff_reply",
       );
 
       return {
@@ -2651,13 +2669,11 @@ export async function handleInboundWhatsApp(
         );
       }
 
-      const botReply = await store.addMessage(
-        createMessage({
-          conversationId: latestForFaq.id,
-          direction: "outbound",
-          senderType: "bot",
-          body: replyBody,
-        }),
+      const botReply = await addRenderedBotMessage(
+        store,
+        latestForFaq.id,
+        replyBody,
+        "reservation_flow_faq_resume_reply",
       );
       await store.addEvent(
         createEvent(latestForFaq.id, "bot_reply_sent", {
@@ -2688,7 +2704,7 @@ export async function handleInboundWhatsApp(
         message: safeBody,
         deps: reservationBridgeDeps,
       });
-      const botReply = await addBotMessageBestEffort(
+      const botReply = await addRenderedBotMessageBestEffort(
         store,
         latestBeforeFlow.id,
         confirmed.reply,
@@ -2719,7 +2735,7 @@ export async function handleInboundWhatsApp(
         message: safeBody,
         deps: reservationBridgeDeps,
       });
-      const botReply = await addBotMessageBestEffort(
+      const botReply = await addRenderedBotMessageBestEffort(
         store,
         latestBeforeFlow.id,
         confirmed.reply,
@@ -2749,7 +2765,7 @@ export async function handleInboundWhatsApp(
         message: safeBody,
         deps: reservationBridgeDeps,
       });
-      const botReply = await addBotMessageBestEffort(
+      const botReply = await addRenderedBotMessageBestEffort(
         store,
         latestBeforeFlow.id,
         confirmed.reply,
@@ -2809,15 +2825,12 @@ export async function handleInboundWhatsApp(
           preservedFlow: true,
         }),
       );
-      const replyBody =
-        "De acuerdo, no confirmamos esa propuesta. Dime las nuevas fechas y horarios y lo reviso de nuevo.";
-      const botReply = await store.addMessage(
-        createMessage({
-          conversationId: latestBeforeFlow.id,
-          direction: "outbound",
-          senderType: "bot",
-          body: replyBody,
-        }),
+      const replyBody = renderCopy({ key: "reservation.rejected_new_dates" });
+      const botReply = await addRenderedBotMessage(
+        store,
+        latestBeforeFlow.id,
+        replyBody,
+        "reservation_flow_rejected",
       );
       return {
         conversation: (await store.getById(latestBeforeFlow.id)) ?? rejected,
@@ -2975,13 +2988,11 @@ export async function handleInboundWhatsApp(
       await store.addEvent(
         createEvent(flow.conversation.id, flow.eventType, flow.eventPayload),
       );
-      const botReply = await store.addMessage(
-        createMessage({
-          conversationId: flow.conversation.id,
-          direction: "outbound",
-          senderType: "bot",
-          body: antiLoop.reply,
-        }),
+      const botReply = await addRenderedBotMessage(
+        store,
+        flow.conversation.id,
+        antiLoop.reply,
+        flow.eventType,
       );
 
       return {
@@ -3007,7 +3018,7 @@ export async function handleInboundWhatsApp(
       deps: reservationBridgeDeps,
     });
 
-    const botReply = await addBotMessageBestEffort(
+    const botReply = await addRenderedBotMessageBestEffort(
       store,
       freshWithClient.id,
       confirmation.reply,
@@ -3038,7 +3049,7 @@ export async function handleInboundWhatsApp(
       deps: reservationBridgeDeps,
     });
 
-    const botReply = await addBotMessageBestEffort(
+    const botReply = await addRenderedBotMessageBestEffort(
       store,
       freshWithClient.id,
       confirmation.reply,
@@ -3104,33 +3115,66 @@ export async function handleInboundWhatsApp(
         ],
       }
     : initialReplyPlan;
-  await store.addEvent(
-    createEvent(freshWithClient.id, "nlu_classified", {
+  await addSafeEvents(store, freshWithClient.id, [
+    {
+      eventType: "nlu_called",
+      payload: {
+        source: "conversation_service",
+        ...safeBodyKind(safeBody),
+      },
+    },
+    {
+      eventType: "nlu_result_received",
+      payload: {
+        intent: replyPlan.intent,
+        confidence: replyPlan.confidence,
+        matchedSignals: replyPlan.matchedSignals,
+        source: replyPlan.source,
+        handoff: replyPlan.handoff,
+      },
+    },
+    {
+      eventType: "policy_decision",
+      payload: {
+        intent: replyPlan.intent,
+        route:
+          replyPlan.intent === "availability_request" || replyPlan.intent === "reservation_start"
+            ? "reservation_flow"
+            : replyPlan.intent === "reservation_modify" || replyPlan.intent === "reservation_cancel"
+              ? "reservation_change_flow"
+              : replyPlan.handoff
+                ? "manual_review"
+                : "direct_reply",
+        hasActiveReservationFlow: Boolean(latestBeforePlan.reservationFlow),
+        hasPendingReservationProposal: Boolean(latestBeforePlan.pendingReservationProposal),
+      },
+    },
+    {
+      eventType: "nlu_classified",
+      payload: {
       intent: replyPlan.intent,
       confidence: replyPlan.confidence,
       matchedSignals: replyPlan.matchedSignals,
       slots: replyPlan.slots,
       source: replyPlan.source,
       handoff: replyPlan.handoff,
-    }),
-  );
+      },
+    },
+  ]);
 
   if (isStrongDirectoryConversation(latestBeforePlan) && isExplicitNotClientClaim(safeBody)) {
-    const replyBody =
-      "He encontrado una ficha con este teléfono, así que seguimos con tu reserva. Si quieres reservar, dime el nombre de tu mascota o mascotas y las fechas.";
+    const replyBody = renderCopy({ key: "service.client_override_reservation" });
     await store.addEvent(
       createEvent(freshWithClient.id, "client_directory_phone_match_overrode_declaration", {
         matchType: latestBeforePlan.clientMatchType,
         confidence: latestBeforePlan.clientConfidence,
       }),
     );
-    const botReply = await store.addMessage(
-      createMessage({
-        conversationId: freshWithClient.id,
-        direction: "outbound",
-        senderType: "bot",
-        body: replyBody,
-      }),
+    const botReply = await addRenderedBotMessage(
+      store,
+      freshWithClient.id,
+      replyBody,
+      "client_directory_phone_match_overrode_declaration",
     );
 
     return {
@@ -3160,14 +3204,12 @@ export async function handleInboundWhatsApp(
           reason: "ambiguous_client",
         }),
       );
-      const replyBody = "Gracias, revisamos tu solicitud con el equipo y te contestamos por aquí.";
-      const botReply = await store.addMessage(
-        createMessage({
-          conversationId: freshWithClient.id,
-          direction: "outbound",
-          senderType: "bot",
-          body: replyBody,
-        }),
+      const replyBody = renderCopy({ key: "service.manual_review" });
+      const botReply = await addRenderedBotMessage(
+        store,
+        freshWithClient.id,
+        replyBody,
+        "ambiguous_client_manual_review",
       );
       return {
         conversation: (await store.getById(freshWithClient.id)) ?? reviewRecord,
@@ -3186,13 +3228,11 @@ export async function handleInboundWhatsApp(
     await store.addEvent(
       createEvent(flow.conversation.id, flow.eventType, flow.eventPayload),
     );
-    const botReply = await store.addMessage(
-      createMessage({
-        conversationId: flow.conversation.id,
-        direction: "outbound",
-        senderType: "bot",
-        body: flow.reply,
-      }),
+    const botReply = await addRenderedBotMessage(
+      store,
+      flow.conversation.id,
+      flow.reply,
+      flow.eventType,
     );
 
     return {
@@ -3226,7 +3266,7 @@ export async function handleInboundWhatsApp(
       deps: reservationBridgeDeps,
     });
 
-    const botReply = await addBotMessageBestEffort(
+    const botReply = await addRenderedBotMessageBestEffort(
       store,
       freshWithClient.id,
       confirmation.reply,
@@ -3262,13 +3302,11 @@ export async function handleInboundWhatsApp(
         intent: replyPlan.intent,
       }),
     );
-    const botReply = await store.addMessage(
-      createMessage({
-        conversationId: freshWithClient.id,
-        direction: "outbound",
-        senderType: "bot",
-        body: replyBody,
-      }),
+    const botReply = await addRenderedBotMessage(
+      store,
+      freshWithClient.id,
+      replyBody,
+      "nlu_handoff_reply",
     );
 
     return {
@@ -3283,13 +3321,11 @@ export async function handleInboundWhatsApp(
     replyPlan.reply,
     (await store.getById(freshWithClient.id)) ?? freshWithClient,
   );
-  const botReply = await store.addMessage(
-    createMessage({
-      conversationId: freshWithClient.id,
-      direction: "outbound",
-      senderType: "bot",
-      body: reply,
-    }),
+  const botReply = await addRenderedBotMessage(
+    store,
+    freshWithClient.id,
+    reply,
+    "bot_reply_sent",
   );
   await store.addEvent(
     createEvent(freshWithClient.id, "bot_reply_sent", {

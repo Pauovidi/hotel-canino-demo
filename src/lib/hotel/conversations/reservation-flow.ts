@@ -12,7 +12,10 @@ import { quoteStayPrice } from "@/lib/hotel/pricing/engine";
 import type { PricingQuote } from "@/lib/hotel/pricing/types";
 import { buildGoogleSheetAdapter, buildMockSheetAdapter } from "@/lib/hotel/sheets";
 import type { WhatsAppReservationBridgeDeps } from "./reservation-bridge";
-import { renderReservationDeniedTemplate } from "./client-templates";
+import {
+  renderNextReservationQuestion as renderNextReservationQuestionCopy,
+  renderReservationFlowCopy,
+} from "./authority/copy-renderer";
 import { readScheduledMessagesConfig } from "./scheduled-messages";
 import type {
   ConversationRecord,
@@ -24,13 +27,9 @@ const RESERVATION_FLOW_TTL_MS = 2 * 60 * 60 * 1000;
 const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
 const DEFAULT_MORNING_TIME = HOTEL_SLOT_WINDOWS.morning.start;
 const DEFAULT_AFTERNOON_TIME = HOTEL_SLOT_WINDOWS.afternoon.start;
-const TIME_PREFERENCE_PROMPT =
-  "Sin problema. ¿Prefieres mañana o tarde? Si te da igual, puedo poner la primera hora de la mañana o la primera de la tarde.";
-const TIME_CONTEXT_FALLBACK =
-  "Para poder calcular disponibilidad y precio necesito la hora de entrada y la hora de salida. Si te da igual, puedo proponerte primera hora de la mañana o primera hora de la tarde.";
-const PET_NAMES_PROMPT = "Genial. Dime el nombre o los nombres de tu mascota/s.";
-const CLIENT_RECORD_FOUND_REPLY =
-  "He encontrado una ficha con este teléfono, así que seguimos con tu reserva.";
+const TIME_PREFERENCE_PROMPT = renderReservationFlowCopy({ key: "reservation.time_preference_prompt" });
+const TIME_CONTEXT_FALLBACK = renderReservationFlowCopy({ key: "reservation.time_context_fallback" });
+const CLIENT_RECORD_FOUND_REPLY = renderReservationFlowCopy({ key: "reservation.client_record_found" });
 
 const MONTHS: Record<string, number> = {
   enero: 1,
@@ -131,15 +130,6 @@ function firstName(value?: string): string | undefined {
   return value?.trim().split(/\s+/)[0];
 }
 
-function knownClientIntro(conversation: ConversationRecord): string {
-  const name = firstName(clientDisplayName(conversation));
-  return name ? `Genial, ${name}. Te localizo en nuestra ficha.` : "Genial. Te localizo en nuestra ficha.";
-}
-
-function knownClientPetPrompt(conversation: ConversationRecord): string {
-  return `${knownClientIntro(conversation)} Dime el nombre de tu mascota o mascotas y las fechas de la reserva.`;
-}
-
 function safeClientPets(input: {
   pets?: string[];
   count?: number;
@@ -197,32 +187,20 @@ function safeClientRecordPets(client?: ClientRecord): string[] {
   });
 }
 
-function formatPetList(pets: string[]): string {
-  if (pets.length <= 1) {
-    return pets[0] ?? "";
-  }
-
-  return `${pets.slice(0, -1).join(", ")} y ${pets.at(-1)}`;
-}
-
 function knownClientPetAwarePrompt(conversation: ConversationRecord): string {
   const pets = safeKnownClientPets(conversation);
-  const name = firstName(clientDisplayName(conversation));
-  const intro = name ? `Genial, ${name}.` : "Genial.";
-
-  if (pets.length === 1) {
-    return `${intro} Tengo registrada a ${pets[0]}. ¿Qué fechas necesitas para la reserva?`;
-  }
-
-  if (pets.length > 1) {
-    return `${intro} Tengo registradas a ${formatPetList(pets)}. ¿La reserva sería para alguna de ellas o para otra mascota?`;
-  }
-
-  return knownClientPetPrompt(conversation);
+  return renderReservationFlowCopy({
+    key: "reservation.known_client_pet_aware_prompt",
+    firstName: firstName(clientDisplayName(conversation)),
+    pets,
+  });
 }
 
 function knownClientEmailPrompt(conversation: ConversationRecord): string {
-  return `${knownClientIntro(conversation)} Antes de seguir, ¿me confirmas el email que quieres asociar a esta reserva?`;
+  return renderReservationFlowCopy({
+    key: "reservation.known_client_email_prompt",
+    firstName: firstName(clientDisplayName(conversation)),
+  });
 }
 
 export function isReservationFlowRejection(message: string): boolean {
@@ -534,13 +512,11 @@ function isOutsideReceptionDay(time: string): boolean {
 }
 
 function buildTimeOutOfRangeReply(times: string[]): string {
-  const unique = Array.from(new Set(times));
-  const understood = unique.length === 1 ? unique[0] : unique.join(" y ");
-  return `He entendido ${understood}, pero puede quedar fuera del horario habitual. ¿Quieres que lo dejemos en primera hora de la mañana o primera hora de la tarde?`;
+  return renderReservationFlowCopy({ key: "reservation.time_out_of_range", times });
 }
 
 function buildMissingMonthReply(): string {
-  return "Entiendo los días, pero necesito el mes para revisar disponibilidad. ¿De qué mes sería?";
+  return renderReservationFlowCopy({ key: "reservation.missing_month" });
 }
 
 function extractLooseTimeMentions(message: string): string[] {
@@ -628,7 +604,7 @@ function resolveAwaitingTimeInput(
   if (ambiguousFirstHour) {
     return {
       patch: { timePreferencePrompted: true },
-      reply: "¿Primera hora de la mañana o primera hora de la tarde?",
+      reply: renderReservationFlowCopy({ key: "reservation.first_hour_preference" }),
       eventType: "reservation_flow_waiting_time_preference",
       eventPayload: { preference: "first_hour_ambiguous" },
     };
@@ -664,7 +640,10 @@ function resolveAwaitingTimeInput(
             : { timePreferencePrompted: true },
         reply:
           explicit.checkInTime === explicit.checkOutTime
-            ? `He entendido ${explicit.checkInTime}, pero puede quedar fuera del horario habitual. ¿Confirmas que usemos las ${explicit.checkInTime} tanto para la entrada como para la salida?`
+            ? renderReservationFlowCopy({
+                key: "reservation.confirm_shared_out_of_range_time",
+                time: explicit.checkInTime,
+              })
             : buildTimeOutOfRangeReply(outOfRange),
         eventType: "reservation_flow_time_out_of_range",
         eventPayload: { outOfRangeTimes: outOfRange },
@@ -688,7 +667,10 @@ function resolveAwaitingTimeInput(
     if (outOfRange.length > 0) {
       return {
         patch: { timePreferencePrompted: true, pendingSharedTimeConfirmation: sharedTime },
-        reply: `He entendido ${sharedTime}, pero puede quedar fuera del horario habitual. ¿Confirmas que usemos las ${sharedTime} tanto para la entrada como para la salida?`,
+        reply: renderReservationFlowCopy({
+          key: "reservation.confirm_shared_out_of_range_time",
+          time: sharedTime,
+        }),
         eventType: "reservation_flow_time_out_of_range",
         eventPayload: { outOfRangeTimes: outOfRange },
       };
@@ -752,7 +734,10 @@ function resolveAwaitingTimeInput(
             : { timePreferencePrompted: true },
         reply:
           uniqueOutOfRange.length === 1
-            ? `He entendido ${uniqueOutOfRange[0]}, pero puede quedar fuera del horario habitual. ¿Confirmas que usemos las ${uniqueOutOfRange[0]} tanto para la entrada como para la salida?`
+            ? renderReservationFlowCopy({
+                key: "reservation.confirm_shared_out_of_range_time",
+                time: uniqueOutOfRange[0],
+              })
             : buildTimeOutOfRangeReply(outOfRange),
         eventType: "reservation_flow_time_out_of_range",
         eventPayload: { outOfRangeTimes: outOfRange },
@@ -768,7 +753,10 @@ function resolveAwaitingTimeInput(
     if (isOutsideReceptionDay(looseTimes[0])) {
       return {
         patch: { timePreferencePrompted: true, pendingSharedTimeConfirmation: looseTimes[0] },
-        reply: `He entendido ${looseTimes[0]}, pero puede quedar fuera del horario habitual. ¿Confirmas que usemos las ${looseTimes[0]} tanto para la entrada como para la salida?`,
+        reply: renderReservationFlowCopy({
+          key: "reservation.confirm_shared_out_of_range_time",
+          time: looseTimes[0],
+        }),
         eventType: "reservation_flow_time_out_of_range",
         eventPayload: { outOfRangeTimes: [looseTimes[0]] },
       };
@@ -776,7 +764,10 @@ function resolveAwaitingTimeInput(
 
     return {
       patch: { timePreferencePrompted: true, pendingSharedTimeConfirmation: looseTimes[0] },
-      reply: `¿Ponemos las ${looseTimes[0]} tanto para la entrada como para la salida?`,
+      reply: renderReservationFlowCopy({
+        key: "reservation.confirm_shared_time",
+        time: looseTimes[0],
+      }),
       eventType: "reservation_flow_waiting_shared_time_confirmation",
       eventPayload: { time: looseTimes[0] },
     };
@@ -1136,16 +1127,6 @@ function formatPetNames(names: string[]): string {
   return `${names.slice(0, -1).join(", ")} y ${names[names.length - 1]}`;
 }
 
-function namesQuestion(count: number): string {
-  if (count === 1) {
-    return "Gracias. ¿Cómo se llama la mascota?";
-  }
-  if (count === 2) {
-    return "Gracias. ¿Cómo se llaman las dos mascotas?";
-  }
-  return `Gracias. ¿Cómo se llaman las ${count} mascotas?`;
-}
-
 function cleanPetNamesCandidate(value: string): string {
   return compact(value)
     .replace(PET_DETAIL_STOP_PATTERN, "")
@@ -1369,72 +1350,12 @@ function getDefaultBuildSheetAdapter() {
     : () => buildMockSheetAdapter("hotel-whatsapp-reservation-flow.json");
 }
 
-function formatDate(value: string): string {
-  return new Intl.DateTimeFormat("es-ES", {
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-    timeZone: "UTC",
-  }).format(new Date(`${value}T00:00:00.000Z`));
-}
-
 function proposalReply(flow: ConversationReservationFlow): string {
-  return `Tenemos disponibilidad para ${flow.petName} del ${formatDate(flow.checkInDate!)} a las ${flow.checkInTime} al ${formatDate(flow.checkOutDate!)} a las ${flow.checkOutTime}. El precio sería de ${flow.price} €. ¿Confirmas la reserva?`;
+  return renderReservationFlowCopy({ key: "reservation.proposal", flow });
 }
 
 function nextCollectionReply(flow: ConversationReservationFlow): string {
-  if (flow.status === "asking_client_kind") {
-    return "Genial. ¿Ya eres cliente de Somos Muy Perros? Responde sí o no.";
-  }
-  if (flow.status === "asking_existing_email") {
-    return "Genial. Para localizar tu ficha, dime el email con el que sueles reservar.";
-  }
-  if (flow.status === "collecting_owner") {
-    return "De acuerdo, te tomo los datos para la reserva. Primero dime tu nombre y apellidos y tu email.";
-  }
-  if (flow.status === "collecting_pet") {
-    if (flow.petCountInconsistency) {
-      return `Tengo ${flow.petCountInconsistency.nameCount} nombres pero indicas ${flow.petCountInconsistency.statedCount} perros. ¿Me confirmas los nombres de las ${flow.petCountInconsistency.statedCount} mascotas?`;
-    }
-    if (flow.petCount && !flow.petName) {
-      return namesQuestion(flow.petCount);
-    }
-    return PET_NAMES_PROMPT;
-  }
-  if (flow.status === "collecting_dates") {
-    if (flow.checkInDate && flow.checkOutDate && flow.checkInTime && !flow.checkOutTime) {
-      return `Tengo la salida para el ${formatDate(flow.checkOutDate)}. ¿A qué hora sería?`;
-    }
-    if (flow.checkInDate && flow.checkOutDate && flow.checkOutTime && !flow.checkInTime) {
-      return "Tengo la hora de salida. ¿A qué hora sería la entrada?";
-    }
-    if (flow.checkInDate && flow.checkInTime && (!flow.checkOutDate || !flow.checkOutTime)) {
-      return "Perfecto, tengo la entrada. ¿Qué día y a qué hora sería la salida?";
-    }
-    if (flow.checkOutDate && flow.checkOutTime && (!flow.checkInDate || !flow.checkInTime)) {
-      return "Tengo la salida. ¿Qué día y a qué hora sería la entrada?";
-    }
-    if (flow.checkInDate && flow.checkOutDate && (!flow.checkInTime || !flow.checkOutTime)) {
-      return "Ya tengo las fechas. Me falta la hora de entrada y la hora de salida. ¿Me las indicas?";
-    }
-    if (flow.checkInDate && !flow.checkOutDate && !flow.checkInTime && !flow.checkOutTime) {
-      return "Entiendo que la entrada sería ese día. Me falta la salida y las horas. ¿Me las indicas?";
-    }
-    if (flow.checkInDate && !flow.checkInTime && (!flow.checkOutDate || !flow.checkOutTime)) {
-      return "Entiendo la fecha de entrada. Me falta la salida y las horas. ¿Me las indicas?";
-    }
-    if ((!flow.checkInDate || !flow.checkOutDate) && (flow.checkInTime || flow.checkOutTime)) {
-      return "Gracias. ¿Qué fecha de entrada y qué fecha de salida serían?";
-    }
-    return "Gracias. Ahora dime la fecha y hora de entrada, y la fecha y hora de salida.";
-  }
-  if (flow.status === "collecting_notes") {
-    return "Anotado. ¿Hay alimentación, medicación o alguna observación importante?";
-  }
-  if (flow.status === "collecting_visit") {
-    return "¿Quieres visitar el hotel antes de confirmar?";
-  }
-  return "Vale. Sigo con la reserva.";
+  return renderNextReservationQuestionCopy(flow);
 }
 
 export function renderNextReservationQuestion(
@@ -1442,7 +1363,7 @@ export function renderNextReservationQuestion(
   flow: ConversationReservationFlow,
 ): string {
   if (missingFields.length === 0) {
-    return "Vale. Sigo con la reserva.";
+    return renderReservationFlowCopy({ key: "reservation.keep_collecting" });
   }
   return nextCollectionReply(flow);
 }
@@ -1800,11 +1721,11 @@ async function buildAvailableProposal(input: {
         availabilityStatus: "unavailable",
         updatedAt: nowIso(input.deps?.now?.() ?? new Date()),
       },
-      reply: renderReservationDeniedTemplate({
-        clientName: input.flow.ownerName ?? input.conversation.clientName,
-        petNames: input.flow.petNames?.length
-          ? input.flow.petNames
-          : [input.flow.petName ?? "tu mascota"],
+      reply: renderReservationFlowCopy({
+        key: "reservation.denied",
+        name: input.flow.ownerName ?? input.conversation.clientName,
+        pets: input.flow.petNames?.length ? input.flow.petNames : undefined,
+        petName: input.flow.petName,
         waitlistSupported: scheduledConfig.waitlistEnabled && !scheduledConfig.waitlistDryRun,
       }),
       eventType: "reservation_denied_template_sent",
@@ -1998,7 +1919,7 @@ export async function advanceReservationFlow(input: {
     } else {
       return {
         conversation: syncConversationFromFlow(input.conversation, flow),
-        reply: "Genial. ¿Ya eres cliente de Somos Muy Perros? Responde sí o no.",
+        reply: renderReservationFlowCopy({ key: "reservation.ask_client_kind" }),
         eventType: "reservation_flow_waiting_client_kind",
       };
     }
@@ -2041,8 +1962,7 @@ export async function advanceReservationFlow(input: {
         );
         return {
           conversation: nextConversation,
-          reply:
-            "Gracias. He encontrado una ficha con este teléfono; dejamos ese email marcado para revisión y seguimos con la reserva. Dime el nombre de tu mascota o mascotas.",
+          reply: renderReservationFlowCopy({ key: "reservation.email_review" }),
           eventType: "reservation_flow_known_client_email_review",
           eventPayload: { matchType: input.conversation.clientMatchType },
         };
@@ -2072,10 +1992,10 @@ export async function advanceReservationFlow(input: {
       );
       return {
         conversation,
-        reply:
-          nextFlow.petName && nextFlow.status === "collecting_dates"
-            ? `Gracias. Tengo registrada a ${nextFlow.petName}. ¿Qué fechas necesitas para la reserva?`
-            : "Gracias. Dime el nombre de tu mascota o mascotas y las fechas de la reserva.",
+        reply: renderReservationFlowCopy({
+          key: "reservation.known_email_collected",
+          petName: nextFlow.petName && nextFlow.status === "collecting_dates" ? nextFlow.petName : undefined,
+        }),
         eventType: "reservation_flow_known_client_email_collected",
         eventPayload: { matchType: input.conversation.clientMatchType },
       };
@@ -2085,7 +2005,7 @@ export async function advanceReservationFlow(input: {
     if (!email) {
       return {
         conversation: syncConversationFromFlow(input.conversation, flow),
-        reply: "Necesito un email válido para localizar tu ficha de cliente.",
+        reply: renderReservationFlowCopy({ key: "reservation.email_invalid" }),
         eventType: "reservation_flow_email_invalid",
       };
     }
@@ -2108,7 +2028,7 @@ export async function advanceReservationFlow(input: {
           },
           flow,
         ),
-        reply: "Gracias, revisamos tu solicitud con el equipo y te contestamos por aquí.",
+        reply: renderReservationFlowCopy({ key: "reservation.manual_review" }),
         eventType:
           identity.status === "blocked"
             ? "reservation_flow_existing_client_blocked"
@@ -2152,10 +2072,10 @@ export async function advanceReservationFlow(input: {
       );
       return {
         conversation,
-        reply:
-          flow.petName && flow.status === "collecting_dates"
-            ? `Genial. Tengo registrada a ${flow.petName}. ¿Qué fechas necesitas para la reserva?`
-            : "Genial. Dime el nombre o los nombres de tu mascota/s, y después vemos fechas y horarios.",
+        reply: renderReservationFlowCopy({
+          key: "reservation.existing_email_match",
+          petName: flow.petName && flow.status === "collecting_dates" ? flow.petName : undefined,
+        }),
         eventType: "reservation_flow_existing_client_email_match",
         eventPayload: { matchType: "email", status: "known" },
       };
@@ -2180,7 +2100,7 @@ export async function advanceReservationFlow(input: {
         },
         flow,
       ),
-      reply: "No encuentro ese email en la ficha de clientes. Puedo tomar tus datos como nuevo contacto para esta reserva. Dime tu nombre y apellidos.",
+      reply: renderReservationFlowCopy({ key: "reservation.existing_email_not_found" }),
       eventType: "reservation_flow_existing_client_email_not_found",
       eventPayload: { status: identity.status, matchType: identity.matchType },
     };
@@ -2203,7 +2123,7 @@ export async function advanceReservationFlow(input: {
           humanRequested: true,
           requiresManualReview: true,
         },
-        reply: "Sin problema. Podemos dejarlo pendiente para revisión, pero necesitaremos los nombres antes de confirmar la reserva.",
+        reply: renderReservationFlowCopy({ key: "reservation.pet_names_pending_review" }),
         eventType: "reservation_flow_pet_names_pending_review",
       };
     }
@@ -2228,7 +2148,7 @@ export async function advanceReservationFlow(input: {
           humanRequested: true,
           requiresManualReview: true,
         },
-        reply: "Para más de 4 perros necesitamos revisarlo con el equipo antes de darte precio.",
+        reply: renderReservationFlowCopy({ key: "reservation.too_many_pets_manual_review" }),
         eventType: "reservation_flow_pet_count_manual_review",
         eventPayload: { petCount: flow.petCount },
       };
@@ -2261,7 +2181,7 @@ export async function advanceReservationFlow(input: {
           timePreferencePrompted: true,
           updatedAt: nowIso(now),
         }),
-        reply: "De acuerdo. ¿Prefieres primera hora de la mañana o primera hora de la tarde?",
+        reply: renderReservationFlowCopy({ key: "reservation.out_of_range_rejected" }),
         eventType: "reservation_flow_waiting_time_preference",
         eventPayload: { preference: "out_of_range_rejected" },
       };
@@ -2330,7 +2250,10 @@ export async function advanceReservationFlow(input: {
         conversation: syncConversationFromFlow(input.conversation, nextFlow),
         reply:
           uniqueOutOfRange.length === 1
-            ? `He entendido ${uniqueOutOfRange[0]}, pero puede quedar fuera del horario habitual. ¿Confirmas que usemos las ${uniqueOutOfRange[0]} tanto para la entrada como para la salida?`
+            ? renderReservationFlowCopy({
+                key: "reservation.confirm_shared_out_of_range_time",
+                time: uniqueOutOfRange[0],
+              })
             : buildTimeOutOfRangeReply(outOfRangeTimes),
         eventType: "reservation_flow_time_out_of_range",
         eventPayload: { outOfRangeTimes },
@@ -2401,9 +2324,9 @@ export async function advanceReservationFlow(input: {
     });
     const visitPrefix =
       current.status === "collecting_visit" && flow.wantsVisit === true
-        ? "Anotado. Las visitas se coordinan de lunes a jueves de 10:00 a 18:00. Lo dejamos apuntado para el equipo. "
+        ? renderReservationFlowCopy({ key: "reservation.visit_yes_prefix" })
         : current.status === "collecting_visit" && flow.wantsVisit === false
-          ? "De acuerdo, seguimos con la reserva. "
+          ? renderReservationFlowCopy({ key: "reservation.visit_no_prefix" })
           : "";
     return {
       conversation: {
@@ -2419,9 +2342,9 @@ export async function advanceReservationFlow(input: {
   const conversation = syncConversationFromFlow(input.conversation, flow);
   const visitPrefix =
     current.status === "collecting_visit" && flow.wantsVisit === true
-      ? "Anotado. Las visitas se coordinan de lunes a jueves de 10:00 a 18:00. Lo dejamos apuntado para el equipo. "
+      ? renderReservationFlowCopy({ key: "reservation.visit_yes_prefix" })
       : current.status === "collecting_visit" && flow.wantsVisit === false
-        ? "De acuerdo, seguimos con la reserva. "
+        ? renderReservationFlowCopy({ key: "reservation.visit_no_prefix" })
         : "";
 
   return {
@@ -2431,7 +2354,10 @@ export async function advanceReservationFlow(input: {
       flow.status === "collecting_dates" &&
       !flow.checkInDate &&
       !flow.checkOutDate
-        ? `Perfecto, sería para ${flow.petName}. ¿Qué fechas necesitas para la reserva?`
+        ? renderReservationFlowCopy({
+            key: "reservation.explicit_pet_correction_dates",
+            petName: flow.petName,
+          })
         : hasDatesAndNeedsTimes(flow) && flow.timePreferencePrompted
           ? TIME_CONTEXT_FALLBACK
           : nextCollectionReply(flow)

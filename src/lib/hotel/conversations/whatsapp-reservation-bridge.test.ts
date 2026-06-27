@@ -3477,7 +3477,7 @@ describe("WhatsApp reservation bridge", () => {
     const result = await handleInboundWhatsApp(
       {
         from: "whatsapp:+34600009991",
-        body: "pasado-mañanas a las 10 también",
+        body: "pasado mañana a las 10 también",
         messageSid: "SM_SLOT_EXIT_PAST_TOMORROW_EXIT",
       },
       store,

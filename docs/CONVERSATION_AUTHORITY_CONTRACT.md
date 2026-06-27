@@ -101,7 +101,7 @@ Toda accion critica debe pasar por tool autorizado y devolver resultado verifica
 
 ### CopyRenderer
 
-CopyRenderer es el unico que redacta respuesta visible. Mientras dure la migracion, un copy legacy solo puede salir si esta marcado como `legacy_allowed_temporarily_with_guard` en `docs/CONVERSATION_BYPASS_AUDIT.md` y cubierto por tests.
+CopyRenderer es el unico que redacta respuesta visible. Mientras dure la migracion, una excepcion solo puede salir si esta marcada como `keep_temporarily_with_reason` en `docs/CONVERSATION_BYPASS_AUDIT.md`, con motivo, riesgo, rama de eliminacion y tests.
 
 ### Outbox / canal
 
