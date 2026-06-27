@@ -11,6 +11,7 @@ import {
 import type { SheetAdapter, SheetsWriteResult } from "@/lib/hotel/sheets/types";
 import { handleInboundWhatsApp, listConversationDashboard } from "./service";
 import { buildConversationReplyPlan } from "./nlu";
+import { renderConversationReplyPlan } from "./authority/copy-renderer";
 import { TEMPLATE_PREVIEW_FAILED_REPLY } from "./template-preview";
 import { MemoryScheduledMessageStore } from "./scheduled-messages";
 import {
@@ -4031,20 +4032,19 @@ describe("WhatsApp reservation bridge", () => {
   });
 
   it("keeps the WhatsApp golden routing phrases stable", async () => {
-    expect(buildConversationReplyPlan("reiniciar")).toMatchObject({
-      intent: "conversation_reset",
-      reply: "Reiniciado.",
-    });
-    expect(buildConversationReplyPlan("hola")).toMatchObject({
-      intent: "greeting",
-      reply: "¡Hola! ¿En qué podemos ayudarte?",
-    });
+    const reset = buildConversationReplyPlan("reiniciar");
+    expect(reset).toMatchObject({ intent: "conversation_reset" });
+    expect(renderConversationReplyPlan(reset, "reiniciar")).toBe("Reiniciado.");
+
+    const hola = buildConversationReplyPlan("hola");
+    expect(hola).toMatchObject({ intent: "greeting" });
+    expect(renderConversationReplyPlan(hola, "hola")).toBe("¡Hola! ¿En qué podemos ayudarte?");
+
     const greeting = buildConversationReplyPlan("hola buenas tardes");
-    expect(greeting).toMatchObject({
-      intent: "greeting",
-      reply: "Buenas tardes. ¿En qué podemos ayudarte?",
-    });
-    expect(greeting.reply).not.toContain("horario de recepción");
+    const greetingReply = renderConversationReplyPlan(greeting, "hola buenas tardes");
+    expect(greeting).toMatchObject({ intent: "greeting" });
+    expect(greetingReply).toBe("Buenas tardes. ¿En qué podemos ayudarte?");
+    expect(greetingReply).not.toContain("horario de recepción");
     expect(buildConversationReplyPlan("quiero reservar")).toMatchObject({
       intent: "reservation_start",
     });

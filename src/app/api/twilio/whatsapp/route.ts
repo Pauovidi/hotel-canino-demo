@@ -16,6 +16,7 @@ import {
 } from "@/lib/hotel/clients";
 import {
   normalizeWhatsAppUserEvent,
+  renderConversationReplyPlan,
   renderCopy,
 } from "@/lib/hotel/conversations/authority";
 import {
@@ -215,7 +216,7 @@ function buildStoreFailureTwiml(
     : "degraded_without_client_identity";
 
   if (!plan.handoff && STATELESS_SAFE_INTENTS.has(plan.intent)) {
-    const reply = personalizeReplyWithClientIdentity(plan.reply, clientIdentity);
+    const reply = personalizeReplyWithClientIdentity(renderConversationReplyPlan(plan, body), clientIdentity);
 
     console.info(degradedLogName, {
       intent: plan.intent,

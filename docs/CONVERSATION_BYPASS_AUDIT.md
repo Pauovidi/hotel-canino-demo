@@ -20,7 +20,7 @@ Clasificaciones:
 | `src/lib/hotel/conversations/authority/copy-renderer.ts` | `renderer_only` | Si, fuente canonica de copy conversacional. | No. | No. | Nuevo punto unico para copy de NLU, reserva, reset, handoff, baño/post-stay y degradados seguros. |
 | `src/lib/hotel/conversations/authority/pipeline.ts` | `policy_only` / `reducer_only` / `outbox_only` | Solo via `renderCopy`. | Si: `decideNextConversationAction` y `decideReservationAction`. | No ejecuta tools. | Incluye `reduceReservationState`, policy de reserva y `buildOutboxMessage`. |
 | `src/lib/hotel/conversations/reservation-flow.ts` | `reducer_only` + `renderer_only` adapter | No debe contener frases visibles de negocio; los `reply` de compatibilidad salen de `renderReservationFlowCopy`. | Aun conserva stage decisions del flujo. | `checkAvailability` sigue aqui temporalmente. | `migrate_now` hecho para copy. Pendiente separar disponibilidad a ToolExecutor. Tests: bridge golden + authority guardrails. |
-| `src/lib/hotel/conversations/nlu.ts` | `policy_only` interpretation adapter | No contiene respuestas visibles hardcodeadas; `ConversationReplyPlan.reply` se renderiza por `CopyRenderer` o por FAQ/quote autorizadas. | Clasifica intent y handoff. | No. | `migrate_now` hecho para copy hardcoded. Pendiente eliminar campo `reply` publico en una ruptura controlada. Tests: NLU + guardrails. |
+| `src/lib/hotel/conversations/nlu.ts` | `policy_only` interpretation adapter | No contiene respuestas visibles hardcodeadas ni campo publico `reply`; devuelve `renderKey` para `CopyRenderer`. | Clasifica intent, handoff y routing FAQ/quote. | No. | `migrate_now` hecho para copy hardcoded y contrato sin `reply`. Tests: NLU + guardrails. |
 | `src/lib/hotel/conversations/service.ts` | `keep_temporarily_with_reason` | Salida bot automatica pasa por `addRenderedBotMessage` y eventos `copy_rendered`/`outbox_sent`. | Si: orquestador principal. | Si: confirmacion, schedule, stores. | Mantener temporalmente por compatibilidad. Riesgo: mezcla policy/tool. Eliminacion: siguiente rama ToolExecutor. Tests: service + WhatsApp bridge. |
 | `src/app/api/twilio/whatsapp/route.ts` | `outbox_only` + `keep_temporarily_with_reason` | Degraded reply sale de `CopyRenderer`; preview stateless sigue como guard previo documentado. | Auth/parse/reset/preview prerouter. | No escribe reservas. | Mantener reset/preview como hard guards. Riesgo: TwiML adapter aun vive aqui. Tests: conversations-security. |
 | `src/lib/hotel/conversations/conversation-intelligence.ts` | `keep_temporarily_with_reason` | Aun genera copy de quote/fechas vagas/raza. | Interpreta precio/raza/fechas. | No. | Pendiente mover builders a CopyRenderer. Riesgo medio. Tests: service + nlu price/breed. |
@@ -43,7 +43,7 @@ Clasificaciones:
 ## Retirado De Allowlist Legacy
 
 - `src/lib/hotel/conversations/reservation-flow.ts`: copy visible hardcoded migrado a `CopyRenderer`; sigue como reducer/stage adapter con `reply` de compatibilidad.
-- `src/lib/hotel/conversations/nlu.ts`: respuestas visibles hardcoded migradas a `CopyRenderer`; sigue el campo `reply` legacy por compatibilidad.
+- `src/lib/hotel/conversations/nlu.ts`: respuestas visibles hardcoded migradas a `CopyRenderer`; el plan NLU ya no expone `reply`, `replyText`, `message`, `botReply` ni `visibleText`.
 - `src/lib/hotel/conversations/client-templates.ts`: capa de plantillas autorizada, no bypass arbitrario.
 
 ## Guardrails Activos
@@ -51,6 +51,7 @@ Clasificaciones:
 - No se permite `client.messages.create` ni `messages.create` dentro de `src/lib/hotel/conversations/*`.
 - `reservation-flow.ts` no puede introducir frases visibles de negocio fuera de `renderReservationFlowCopy`.
 - `nlu.ts` no puede reintroducir respuestas visibles hardcoded como fallback/handoff/reserva/reset.
+- `nlu.ts` no puede reintroducir campo `reply:` en `ConversationReplyPlan`.
 - La salida bot automatica de `service.ts` debe usar `addRenderedBotMessage` o `addRenderedBotMessageBestEffort`.
 - Twilio route debe usar `CopyRenderer` para degraded copy y solo adaptar a TwiML.
 - Nuevas excepciones deben añadir motivo, riesgo, fecha/branch de eliminacion y test.

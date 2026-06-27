@@ -7,6 +7,7 @@ import {
   buildConversationReplyPlan,
   classifyConversationIntent,
 } from "./nlu";
+import { renderConversationReplyPlan } from "./authority/copy-renderer";
 import { handleInboundWhatsApp } from "./service";
 import {
   createEmptyConversationSnapshot,
@@ -165,19 +166,20 @@ describe("conversation end-to-end policy QA", () => {
     ["mensaje sin contexto operativo", "unknown", false],
   ] as const)("classifies %s as %s with handoff=%s", (message, intent, handoff) => {
     const plan = buildConversationReplyPlan(message);
+    const reply = renderConversationReplyPlan(plan, message);
 
     expect(plan.intent).toBe(intent);
     expect(plan.handoff).toBe(handoff);
-    expect(plan.reply).not.toContain("por aqui");
+    expect(reply).not.toContain("por aqui");
     if (intent === "general_information") {
-      expect(plan.reply).toContain("horarios");
-      expect(plan.reply).not.toContain("Ese caso prefiero");
-      expect(plan.reply.toLowerCase()).not.toContain("caso");
+      expect(reply).toContain("horarios");
+      expect(reply).not.toContain("Ese caso prefiero");
+      expect(reply.toLowerCase()).not.toContain("caso");
     }
     if (intent === "greeting") {
-      expect(plan.reply).toContain("¿En qué podemos ayudarte?");
-      expect(plan.reply).not.toContain("horarios");
-      expect(plan.reply.toLowerCase()).not.toContain("caso");
+      expect(reply).toContain("¿En qué podemos ayudarte?");
+      expect(reply).not.toContain("horarios");
+      expect(reply.toLowerCase()).not.toContain("caso");
     }
   });
 
@@ -185,7 +187,7 @@ describe("conversation end-to-end policy QA", () => {
     const plan = buildConversationReplyPlan("reinicia conversación");
 
     expect(plan.intent).toBe("conversation_reset");
-    expect(plan.reply).toBe("Reiniciado.");
+    expect(renderConversationReplyPlan(plan, "reinicia conversación")).toBe("Reiniciado.");
   });
 
   it("creates a reviewed proposal without attaching a confirmed reservationId from reservation copy", async () => {
@@ -388,6 +390,6 @@ describe("conversation end-to-end policy QA", () => {
     expect(start.slots.checkOut).toBe("31 de diciembre de 2026");
     expect(confirm.intent).toBe("reservation_confirm");
     expect(confirm.handoff).toBe(true);
-    expect(confirm.reply).toContain("propuesta válida revisada");
+    expect(renderConversationReplyPlan(confirm, "Sí, confirma")).toContain("propuesta válida revisada");
   });
 });

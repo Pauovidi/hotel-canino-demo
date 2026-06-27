@@ -9,6 +9,7 @@ import type { PricingQuote } from "@/lib/hotel/pricing/types";
 import { buildGoogleSheetAdapter, buildMockSheetAdapter } from "@/lib/hotel/sheets";
 import type { SheetAdapter, SheetsWriteResult } from "@/lib/hotel/sheets/types";
 import type { ConversationReplyPlan } from "./nlu";
+import { renderConversationReplyPlan } from "./authority/copy-renderer";
 import { isAffirmativeConfirmationUtterance } from "./nlu";
 import { isReservationFlowRejection } from "./reservation-flow";
 import type { WhatsAppReservationBridgeDeps } from "./reservation-bridge";
@@ -938,9 +939,10 @@ export async function advanceReservationChangeFlow(input: {
 
     const reservation = target.reservations[0];
     if (input.replyPlan.source === "faq_public_chat" && input.replyPlan.intent.startsWith("faq_")) {
+      const faqReply = renderConversationReplyPlan(input.replyPlan, input.message);
       return {
         conversation: input.conversation,
-        reply: `${input.replyPlan.reply}\n\nSeguimos con la modificación: me falta que me indiques el cambio que quieres hacer.`,
+        reply: `${faqReply}\n\nSeguimos con la modificación: me falta que me indiques el cambio que quieres hacer.`,
         eventType: "reservation_modification_faq_interruption",
         eventPayload: { intent: input.replyPlan.intent },
       };
@@ -1038,9 +1040,10 @@ export async function advanceReservationChangeFlow(input: {
     }
     const reservation = target.reservations[0];
     if (input.replyPlan.source === "faq_public_chat" && input.replyPlan.intent.startsWith("faq_")) {
+      const faqReply = renderConversationReplyPlan(input.replyPlan, input.message);
       return {
         conversation: input.conversation,
-        reply: `${input.replyPlan.reply}\n\nSeguimos con la cancelación: dime si confirmas cancelar esa reserva.`,
+        reply: `${faqReply}\n\nSeguimos con la cancelación: dime si confirmas cancelar esa reserva.`,
         eventType: "reservation_cancellation_faq_interruption",
         eventPayload: { intent: input.replyPlan.intent },
       };

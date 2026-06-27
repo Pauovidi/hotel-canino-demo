@@ -1,14 +1,8 @@
 import type { FaqIntentId } from "@/lib/hotel/faq";
 import { matchFaqIntent } from "@/lib/hotel/knowledge/faq";
-import {
-  analyzeConversationIntelligence,
-  buildNeedPetCountForQuoteReply,
-  buildPriceQuoteReply,
-  buildVagueDatePrecisionReply,
-} from "./conversation-intelligence";
+import { analyzeConversationIntelligence } from "./conversation-intelligence";
 import {
   CONVERSATION_RESET_REPLY,
-  renderCopy,
   type ConversationRenderKey,
 } from "./authority/copy-renderer";
 
@@ -65,8 +59,8 @@ export interface ConversationNluResult {
 }
 
 export interface ConversationReplyPlan extends ConversationNluResult {
-  reply: string;
   handoff: boolean;
+  renderKey: ConversationRenderKey;
   source: "conversation_nlu" | "faq_public_chat";
 }
 
@@ -184,14 +178,10 @@ export function buildReservationConfirmReplyPlan(
     slots: extractSlots(message, normalized),
     confidence: "medium",
     matchedSignals: [matchedSignal],
-    reply: renderCopy({ key: "conversation.reservation_confirm" }),
     handoff: true,
+    renderKey: "conversation.reservation_confirm",
     source: "conversation_nlu",
   };
-}
-
-function renderNluReply(key: ConversationRenderKey, message: string, reply?: string): string {
-  return renderCopy({ key, message, reply });
 }
 
 function extractSlots(rawText: string, normalized: string): ConversationSlots {
@@ -564,8 +554,8 @@ export function buildConversationReplyPlan(message: string): ConversationReplyPl
             faqMatch.isFallback ? "concrete_question_uncovered" : "shared_faq_match",
           ]),
         ),
-        reply: faqMatch.reply,
         handoff: faqMatch.isFallback || faqMatch.resolution.outputType === "handoff",
+        renderKey: "conversation.faq_reply",
         source: "faq_public_chat",
       };
     }
@@ -575,73 +565,65 @@ export function buildConversationReplyPlan(message: string): ConversationReplyPl
     case "greeting":
       return {
         ...nlu,
-        reply: renderNluReply("conversation.greeting", message),
         handoff: false,
+        renderKey: "conversation.greeting",
         source: "conversation_nlu",
       };
     case "general_information":
       return {
         ...nlu,
-        reply: renderNluReply("conversation.general_information", message),
         handoff: false,
+        renderKey: "conversation.general_information",
         source: "conversation_nlu",
       };
     case "human_handoff":
-      return { ...nlu, reply: renderNluReply("conversation.human_handoff", message), handoff: true, source: "conversation_nlu" };
+      return { ...nlu, handoff: true, renderKey: "conversation.human_handoff", source: "conversation_nlu" };
     case "stay_status_question":
-      return { ...nlu, reply: renderNluReply("conversation.stay_status", message), handoff: true, source: "conversation_nlu" };
+      return { ...nlu, handoff: true, renderKey: "conversation.stay_status", source: "conversation_nlu" };
     case "reservation_start":
       return {
         ...nlu,
-        reply: renderNluReply("conversation.reservation_start", message),
         handoff: false,
+        renderKey: "conversation.reservation_start",
         source: "conversation_nlu",
       };
     case "availability_request":
       return {
         ...nlu,
-        reply: renderNluReply("conversation.availability_request", message),
         handoff: false,
+        renderKey: "conversation.availability_request",
         source: "conversation_nlu",
       };
     case "reservation_confirm":
-      return { ...nlu, reply: renderNluReply("conversation.reservation_confirm", message), handoff: true, source: "conversation_nlu" };
+      return { ...nlu, handoff: true, renderKey: "conversation.reservation_confirm", source: "conversation_nlu" };
     case "reservation_cancel":
-      return { ...nlu, reply: renderNluReply("conversation.reservation_cancel", message), handoff: false, source: "conversation_nlu" };
+      return { ...nlu, handoff: false, renderKey: "conversation.reservation_cancel", source: "conversation_nlu" };
     case "reservation_modify":
-      return { ...nlu, reply: renderNluReply("conversation.reservation_modify", message), handoff: false, source: "conversation_nlu" };
+      return { ...nlu, handoff: false, renderKey: "conversation.reservation_modify", source: "conversation_nlu" };
     case "conversation_reset":
-      return { ...nlu, reply: renderNluReply("conversation.reset", message), handoff: false, source: "conversation_nlu" };
+      return { ...nlu, handoff: false, renderKey: "conversation.reset", source: "conversation_nlu" };
     case "price_quote": {
       const intelligence = analyzeConversationIntelligence(message);
       if (intelligence.needsExactDate) {
         return {
           ...nlu,
-          reply: renderNluReply("conversation.dynamic_reply", message, buildVagueDatePrecisionReply(intelligence)),
           handoff: false,
+          renderKey: "conversation.dynamic_reply",
           source: "conversation_nlu",
         };
       }
       if (intelligence.checkInDate && intelligence.checkOutDate && intelligence.petCount) {
         return {
           ...nlu,
-          reply: renderNluReply(
-            "conversation.dynamic_reply",
-            message,
-            buildPriceQuoteReply({
-              petCount: intelligence.petCount,
-              checkInDate: intelligence.checkInDate,
-              checkOutDate: intelligence.checkOutDate,
-            }),
-          ),
           handoff: false,
+          renderKey: "conversation.dynamic_reply",
           source: "conversation_nlu",
         };
       }
       return {
         ...nlu,
-        reply: renderNluReply("conversation.dynamic_reply", message, buildNeedPetCountForQuoteReply(intelligence)),
         handoff: false,
+        renderKey: "conversation.dynamic_reply",
         source: "conversation_nlu",
       };
     }
@@ -661,14 +643,12 @@ export function buildConversationReplyPlan(message: string): ConversationReplyPl
       const faqMatch = matchFaqIntent(message);
       return {
         ...nlu,
-        reply: faqMatch?.reply
-          ? renderNluReply("conversation.faq_reply", message, faqMatch.reply)
-          : renderNluReply("conversation.unknown", message),
         handoff: Boolean(faqMatch?.isFallback || faqMatch?.resolution.outputType === "handoff"),
+        renderKey: faqMatch ? "conversation.faq_reply" : "conversation.unknown",
         source: faqMatch ? "faq_public_chat" : "conversation_nlu",
       };
     }
     case "unknown":
-      return { ...nlu, reply: renderNluReply("conversation.unknown", message), handoff: false, source: "conversation_nlu" };
+      return { ...nlu, handoff: false, renderKey: "conversation.unknown", source: "conversation_nlu" };
   }
 }

@@ -78,7 +78,8 @@ describe("conversation authority guardrails", () => {
       expect(nlu).not.toContain(phrase);
     }
     expect(reservationFlow).toContain("renderReservationFlowCopy");
-    expect(nlu).toContain("renderNluReply");
+    expect(nlu).toContain("renderKey");
+    expect(nlu).not.toMatch(/\breply\s*:/);
   });
 
   it("routes automatic bot messages through the rendered outbox helper in service", () => {

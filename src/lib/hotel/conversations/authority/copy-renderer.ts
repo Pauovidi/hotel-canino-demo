@@ -1,3 +1,10 @@
+import { matchFaqIntent } from "@/lib/hotel/knowledge/faq";
+import {
+  analyzeConversationIntelligence,
+  buildNeedPetCountForQuoteReply,
+  buildPriceQuoteReply,
+  buildVagueDatePrecisionReply,
+} from "../conversation-intelligence";
 import { renderReservationDeniedTemplate } from "../client-templates";
 import type { ConversationRecord, ConversationReservationFlow } from "../types";
 
@@ -101,6 +108,10 @@ export interface RenderCopyInput {
   flow?: ConversationReservationFlow;
   conversation?: ConversationRecord;
   waitlistSupported?: boolean;
+}
+
+export interface ConversationRenderPlan {
+  renderKey: ConversationRenderKey;
 }
 
 function normalizeText(value: string): string {
@@ -252,6 +263,10 @@ export function renderReservationFlowCopy(input: RenderCopyInput): string {
   return renderCopy(input);
 }
 
+export function renderConversationReplyPlan(plan: ConversationRenderPlan, message: string): string {
+  return renderCopy({ key: plan.renderKey, message });
+}
+
 export function renderCopy(input: RenderCopyInput): string {
   switch (input.key) {
     case "conversation.greeting":
@@ -285,8 +300,25 @@ export function renderCopy(input: RenderCopyInput): string {
       return "Claro. Te ayudo a modificarla. ¿Quieres cambiar fechas, datos de la mascota, observaciones o cancelar la reserva?";
     case "conversation.reset":
       return CONVERSATION_RESET_REPLY;
-    case "conversation.faq_reply":
+    case "conversation.faq_reply": {
+      const faqMatch = input.message ? matchFaqIntent(input.message) : undefined;
+      return faqMatch?.reply ?? input.reply ?? renderCopy({ key: "conversation.unknown", message: input.message });
+    }
     case "conversation.dynamic_reply":
+      if (input.message) {
+        const intelligence = analyzeConversationIntelligence(input.message);
+        if (intelligence.needsExactDate) {
+          return buildVagueDatePrecisionReply(intelligence);
+        }
+        if (intelligence.checkInDate && intelligence.checkOutDate && intelligence.petCount) {
+          return buildPriceQuoteReply({
+            petCount: intelligence.petCount,
+            checkInDate: intelligence.checkInDate,
+            checkOutDate: intelligence.checkOutDate,
+          });
+        }
+        return buildNeedPetCountForQuoteReply(intelligence);
+      }
       return input.reply ?? "";
     case "reservation.ask_client_kind":
       return "Genial. ¿Ya eres cliente de Somos Muy Perros? Responde sí o no.";

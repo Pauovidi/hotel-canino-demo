@@ -14,7 +14,7 @@ import {
   isAffirmativeConfirmationUtterance,
   isConversationResetCommand,
 } from "./nlu";
-import { renderCopy } from "./authority/copy-renderer";
+import { renderConversationReplyPlan, renderCopy } from "./authority/copy-renderer";
 import {
   confirmPendingReservationProposal,
   type WhatsAppReservationBridgeDeps,
@@ -2551,6 +2551,7 @@ export async function handleInboundWhatsApp(
       isExplicitHumanHandoffRequest(safeBody) &&
       !shouldKeepReservationSlotResolverPriority(latestBeforeFlow, safeBody)
     ) {
+      const replyBody = renderConversationReplyPlan(flowInterruptionPlan, safeBody);
       const latestForHandoff = (await store.getById(latestBeforeFlow.id)) ?? latestBeforeFlow;
       const humanRecord: ConversationRecord = {
         ...latestForHandoff,
@@ -2601,7 +2602,7 @@ export async function handleInboundWhatsApp(
       const botReply = await addRenderedBotMessage(
         store,
         latestBeforeFlow.id,
-        flowInterruptionPlan.reply,
+        replyBody,
         "reservation_flow_handoff_reply",
       );
 
@@ -2609,7 +2610,7 @@ export async function handleInboundWhatsApp(
         conversation: (await store.getById(latestBeforeFlow.id)) ?? humanRecord,
         inbound,
         botReply,
-        twiml: buildTwilioMessageResponse(flowInterruptionPlan.reply),
+        twiml: buildTwilioMessageResponse(replyBody),
       };
     }
 
@@ -2646,9 +2647,10 @@ export async function handleInboundWhatsApp(
       ]);
 
       const latestForFaq = (await store.getById(latestBeforeFlow.id)) ?? latestBeforeFlow;
+      const renderedInterruptionReply = renderConversationReplyPlan(flowInterruptionPlan, safeBody);
       const replyBody = flowInterruptionPlan.handoff
-        ? flowInterruptionPlan.reply
-        : appendReservationResume(flowInterruptionPlan.reply, latestForFaq);
+        ? renderedInterruptionReply
+        : appendReservationResume(renderedInterruptionReply, latestForFaq);
       const nextConversation: ConversationRecord = flowInterruptionPlan.handoff
         ? {
             ...latestForFaq,
@@ -3287,7 +3289,7 @@ export async function handleInboundWhatsApp(
   }
 
   if (replyPlan.handoff) {
-    const replyBody = replyPlan.reply;
+    const replyBody = renderConversationReplyPlan(replyPlan, safeBody);
     const latestForHandoff = (await store.getById(freshWithClient.id)) ?? freshAfterInbound;
     const humanRecord: ConversationRecord = {
       ...latestForHandoff,
@@ -3318,7 +3320,7 @@ export async function handleInboundWhatsApp(
   }
 
   const reply = personalizeGreetingReply(
-    replyPlan.reply,
+    renderConversationReplyPlan(replyPlan, safeBody),
     (await store.getById(freshWithClient.id)) ?? freshWithClient,
   );
   const botReply = await addRenderedBotMessage(

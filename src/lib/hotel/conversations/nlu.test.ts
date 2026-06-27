@@ -5,6 +5,16 @@ import {
   isAffirmativeConfirmationUtterance,
   isPureGreeting,
 } from "./nlu";
+import { renderConversationReplyPlan } from "./authority/copy-renderer";
+
+function buildRenderedPlan(message: string) {
+  const plan = buildConversationReplyPlan(message);
+  return { plan, reply: renderConversationReplyPlan(plan, message) };
+}
+
+function renderPlan(message: string): string {
+  return buildRenderedPlan(message).reply;
+}
 
 describe("conversation NLU", () => {
   it.each([
@@ -116,26 +126,26 @@ describe("conversation NLU", () => {
   });
 
   it("answers general information without sending the conversation to human mode", () => {
-    const plan = buildConversationReplyPlan("Hola, quiero información");
+    const { plan, reply } = buildRenderedPlan("Hola, quiero información");
 
     expect(plan.intent).toBe("general_information");
     expect(plan.handoff).toBe(false);
-    expect(plan.reply).toContain("¡Hola! Claro");
-    expect(plan.reply).toContain("horarios");
-    expect(plan.reply).toContain("visitas");
-    expect(plan.reply).not.toContain("Ese caso prefiero");
-    expect(plan.reply).not.toContain("por aqui");
+    expect(reply).toContain("¡Hola! Claro");
+    expect(reply).toContain("horarios");
+    expect(reply).toContain("visitas");
+    expect(reply).not.toContain("Ese caso prefiero");
+    expect(reply).not.toContain("por aqui");
   });
 
   it("answers pure greetings with a short natural reply", () => {
-    const plan = buildConversationReplyPlan("Buenos días");
+    const { plan, reply } = buildRenderedPlan("Buenos días");
 
     expect(plan.intent).toBe("greeting");
     expect(plan.handoff).toBe(false);
-    expect(plan.reply).toBe("Buenos días. ¿En qué podemos ayudarte?");
-    expect(plan.reply).toContain("¿En qué podemos ayudarte?");
-    expect(plan.reply).not.toContain("horarios");
-    expect(plan.reply).not.toContain("visitas");
+    expect(reply).toBe("Buenos días. ¿En qué podemos ayudarte?");
+    expect(reply).toContain("¿En qué podemos ayudarte?");
+    expect(reply).not.toContain("horarios");
+    expect(reply).not.toContain("visitas");
   });
 
   it.each([
@@ -149,14 +159,14 @@ describe("conversation NLU", () => {
     ["hola buenas noches", "Buenas noches. ¿En qué podemos ayudarte?"],
     ["hola, qué tal", "¡Hola! ¿En qué podemos ayudarte?"],
   ])("keeps pure greeting %s out of FAQ routing", (message, expectedReply) => {
-    const plan = buildConversationReplyPlan(message);
+    const { plan, reply } = buildRenderedPlan(message);
 
     expect(isPureGreeting(message)).toBe(true);
     expect(plan.intent).toBe("greeting");
     expect(plan.source).toBe("conversation_nlu");
-    expect(plan.reply).toBe(expectedReply);
-    expect(plan.reply).not.toContain("horario de recepción");
-    expect(plan.reply).not.toContain("8:00");
+    expect(reply).toBe(expectedReply);
+    expect(reply).not.toContain("horario de recepción");
+    expect(reply).not.toContain("8:00");
   });
 
   it.each([
@@ -164,50 +174,50 @@ describe("conversation NLU", () => {
     ["hola buenas, quiero hacer una reserva", "reservation_start", "Buenas. Te ayudo"],
     ["buenas tardes, ¿a qué hora puedo recogerlo?", "faq_hours", "El horario de recepción"],
   ] as const)("keeps greeting prefixes but routes explicit intent: %s", (message, intent, expectedReply) => {
-    const plan = buildConversationReplyPlan(message);
+    const { plan, reply } = buildRenderedPlan(message);
 
     expect(plan.intent).toBe(intent);
-    expect(plan.reply).toContain(expectedReply);
+    expect(reply).toContain(expectedReply);
   });
 
   it("keeps social greeting prefixes in routed replies", () => {
-    expect(buildConversationReplyPlan("En primer lugar, buenos días").reply).toBe(
+    expect(renderPlan("En primer lugar, buenos días")).toBe(
       "Buenos días. ¿En qué podemos ayudarte?",
     );
-    expect(buildConversationReplyPlan("Hola, quiero hacer una reserva").reply).toBe(
+    expect(renderPlan("Hola, quiero hacer una reserva")).toBe(
       "¡Hola! Te ayudo con la reserva. Dime, por favor, la fecha de entrada, la fecha de salida y el nombre de tu mascota.",
     );
-    expect(buildConversationReplyPlan("Buenos días, quiero consultar disponibilidad").reply).toBe(
+    expect(renderPlan("Buenos días, quiero consultar disponibilidad")).toBe(
       "Buenos días. Para consultar disponibilidad, dime la fecha de entrada, la fecha de salida y el nombre de tu mascota.",
     );
-    expect(buildConversationReplyPlan("Buenas, quiero información").reply).toContain(
+    expect(renderPlan("Buenas, quiero información")).toContain(
       "Buenas. Claro. Te puedo ayudar",
     );
   });
 
   it("answers reset with a compact operational reply", () => {
-    const plan = buildConversationReplyPlan("reiniciar");
+    const { plan, reply } = buildRenderedPlan("reiniciar");
 
     expect(plan.intent).toBe("conversation_reset");
-    expect(plan.reply).toBe("Reiniciado.");
-    expect(plan.reply).not.toContain("información general");
+    expect(reply).toBe("Reiniciado.");
+    expect(reply).not.toContain("información general");
   });
 
   it("extracts price quote slots without turning a plain price FAQ into a flow", () => {
-    const quote = buildConversationReplyPlan("Hola! Querría saber el precio desde 30 junio hasta 8 julio");
-    const direct = buildConversationReplyPlan(
-      "quería saber que me cuesta deja a mi perro del 30 de junio al 8 de julio",
-    );
+    const quoteMessage = "Hola! Querría saber el precio desde 30 junio hasta 8 julio";
+    const directMessage = "quería saber que me cuesta deja a mi perro del 30 de junio al 8 de julio";
+    const { plan: quote, reply: quoteReply } = buildRenderedPlan(quoteMessage);
+    const { plan: direct, reply: directReply } = buildRenderedPlan(directMessage);
     const plainFaq = buildConversationReplyPlan("¿cuánto cuesta?");
 
     expect(quote.intent).toBe("price_quote");
     expect(quote.slots.checkInDate).toBe("2026-06-30");
     expect(quote.slots.checkOutDate).toBe("2026-07-08");
-    expect(quote.reply).toContain("necesito saber cuántos perros");
-    expect(quote.reply).not.toContain("Perdona, no te he entendido bien");
+    expect(quoteReply).toContain("necesito saber cuántos perros");
+    expect(quoteReply).not.toContain("Perdona, no te he entendido bien");
     expect(direct.intent).toBe("price_quote");
     expect(direct.slots.petCount).toBe(1);
-    expect(direct.reply).toContain("240 €");
+    expect(directReply).toContain("240 €");
     expect(plainFaq.intent).toBe("faq_prices");
   });
 
@@ -252,31 +262,31 @@ describe("conversation NLU", () => {
     ["¿dónde estáis?", "faq_location", "Camino de Santiago, 58"],
     ["¿hay peluquería?", "faq_services", "servicios complementarios"],
   ] as const)("answers shared WhatsApp FAQ %s", (message, intent, expectedCopy) => {
-    const plan = buildConversationReplyPlan(message);
+    const { plan, reply } = buildRenderedPlan(message);
 
     expect(plan.intent).toBe(intent);
     expect(plan.source).toBe("faq_public_chat");
     expect(plan.handoff).toBe(false);
-    expect(plan.reply).toContain(expectedCopy);
-    expect(plan.reply).not.toContain("Perdona, no te he entendido bien");
+    expect(reply).toContain(expectedCopy);
+    expect(reply).not.toContain("Perdona, no te he entendido bien");
   });
 
   it("routes reservation changes to the operational modification flow", () => {
-    const plan = buildConversationReplyPlan("quiero cambiar la reserva");
+    const { plan, reply } = buildRenderedPlan("quiero cambiar la reserva");
 
     expect(plan.intent).toBe("reservation_modify");
     expect(plan.source).toBe("conversation_nlu");
     expect(plan.handoff).toBe(false);
-    expect(plan.reply).toContain("Te ayudo a modificarla");
+    expect(reply).toContain("Te ayudo a modificarla");
   });
 
   it("uses the covered-question fallback for concrete unknown questions", () => {
-    const plan = buildConversationReplyPlan("¿y el unicornio?");
+    const { plan, reply } = buildRenderedPlan("¿y el unicornio?");
 
     expect(plan.intent).toBe("human_handoff");
     expect(plan.source).toBe("faq_public_chat");
     expect(plan.handoff).toBe(true);
-    expect(plan.reply).toBe(
+    expect(reply).toBe(
       "Disculpa, para esta información un miembro de nuestro equipo se pondrá en contacto contigo para aclarar esta cuestión.",
     );
   });
@@ -292,21 +302,21 @@ describe("conversation NLU", () => {
   });
 
   it("does not invent live stay status", () => {
-    const plan = buildConversationReplyPlan("¿Ha comido mi perro?");
+    const { plan, reply } = buildRenderedPlan("¿Ha comido mi perro?");
 
     expect(plan.intent).toBe("stay_status_question");
     expect(plan.handoff).toBe(true);
-    expect(plan.reply).toContain("respuesta real");
-    expect(plan.reply).toContain("persona del equipo");
+    expect(reply).toContain("respuesta real");
+    expect(reply).toContain("persona del equipo");
   });
 
   it("asks for clarification on unknown messages without aggressive fallback", () => {
-    const plan = buildConversationReplyPlan("xyz abc");
+    const { plan, reply } = buildRenderedPlan("xyz abc");
 
     expect(plan.intent).toBe("unknown");
     expect(plan.handoff).toBe(false);
-    expect(plan.reply).toContain("Perdona, no te he entendido bien");
-    expect(plan.reply).not.toContain("Ese caso prefiero");
+    expect(reply).toContain("Perdona, no te he entendido bien");
+    expect(reply).not.toContain("Ese caso prefiero");
   });
 
   it.each([
@@ -341,9 +351,22 @@ describe("conversation NLU", () => {
     ["hay plaza para mi perro", "availability_request"],
     ["tenéis sitio para un Rottweiler", "availability_request"],
   ] as const)("routes fuzz phrase %s as %s", (message, expectedIntent) => {
-    const plan = buildConversationReplyPlan(message);
+    const { plan, reply } = buildRenderedPlan(message);
 
     expect(plan.intent).toBe(expectedIntent);
-    expect(plan.reply).not.toBe("Gracias. Ahora dime la fecha y hora de entrada, y la fecha y hora de salida.");
+    expect(reply).not.toBe("Gracias. Ahora dime la fecha y hora de entrada, y la fecha y hora de salida.");
+  });
+
+  it("keeps NLU plans structured without visible reply fields", () => {
+    const plan = buildConversationReplyPlan("¿y el pago?");
+
+    expect(plan).toMatchObject({
+      intent: "faq_payment",
+      renderKey: "conversation.faq_reply",
+      source: "faq_public_chat",
+    });
+    for (const forbidden of ["reply", "replyText", "message", "botReply", "visibleText"]) {
+      expect(Object.prototype.hasOwnProperty.call(plan, forbidden)).toBe(false);
+    }
   });
 });
