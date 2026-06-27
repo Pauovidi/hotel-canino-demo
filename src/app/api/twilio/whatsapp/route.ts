@@ -15,6 +15,9 @@ import {
   type ClientIdentityResult,
 } from "@/lib/hotel/clients";
 import {
+  normalizeWhatsAppUserEvent,
+} from "@/lib/hotel/conversations/authority";
+import {
   buildConversationReplyPlan,
   isConversationResetCommand,
   type ConversationIntent,
@@ -280,6 +283,26 @@ async function handlePost(request: Request) {
     return twilioXmlResponse();
   }
 
+  const sanitizedRawPayload = sanitizeTwilioPayload(raw);
+  const normalizedEvent = normalizeWhatsAppUserEvent({
+    from,
+    to,
+    body,
+    messageSid,
+    displayName: String(raw.ProfileName ?? raw.profileName ?? ""),
+    rawPayload: sanitizedRawPayload,
+    source: "webhook",
+  });
+  console.info("normalized_user_event_created", {
+    channel: normalizedEvent.channel,
+    source: normalizedEvent.source,
+    hasConversationId: Boolean(normalizedEvent.conversationId),
+    hasMessageText: Boolean(normalizedEvent.messageText),
+    hasMessageSid: Boolean(messageSid),
+    currentMode: normalizedEvent.currentMode,
+    pendingFields: normalizedEvent.pendingFields,
+  });
+
   if (isConversationResetCommand(body)) {
     const result = await handleGlobalResetCommand({
       from,
@@ -287,7 +310,7 @@ async function handlePost(request: Request) {
       body,
       messageSid,
       displayName: String(raw.ProfileName ?? raw.profileName ?? ""),
-      rawPayload: sanitizeTwilioPayload(raw),
+      rawPayload: sanitizedRawPayload,
     });
     const twiml = resolveTwilioWebhookTwiml(result);
 
@@ -331,7 +354,7 @@ async function handlePost(request: Request) {
       body,
       messageSid,
       displayName,
-      rawPayload: sanitizeTwilioPayload(raw),
+      rawPayload: sanitizedRawPayload,
     }, undefined, clientDirectory);
     const twiml = resolveTwilioWebhookTwiml(result);
 
