@@ -14,7 +14,7 @@ import {
   isAffirmativeConfirmationUtterance,
   isConversationResetCommand,
 } from "./nlu";
-import { renderConversationReplyPlan, renderCopy } from "./authority/copy-renderer";
+import { renderConversationReplyPlan, renderCopy, type ConversationRenderKey } from "./authority/copy-renderer";
 import {
   confirmPendingReservationProposal,
   type WhatsAppReservationBridgeDeps,
@@ -52,6 +52,7 @@ import {
   isExplicitNotClientClaim,
   isReservationFlowActive,
   isReservationFlowRejection,
+  renderNextReservationQuestion,
   resolveReservationSlotTarget,
   startReservationFlow,
 } from "./reservation-flow";
@@ -79,6 +80,7 @@ import type {
   Message,
   PendingReservationProposal,
 } from "./types";
+import type { AuthorityTurnTrace } from "./authority/types";
 
 export interface InboundWhatsAppPayload {
   from: string;
@@ -501,7 +503,8 @@ function shouldTreatAsReservationSlotFill(
 }
 
 function buildReservationFlowResumePrompt(record: ConversationRecord): string | undefined {
-  const status = record.reservationFlow?.status;
+  const flow = record.reservationFlow;
+  const status = flow?.status;
   if (!status || !isReservationFlowActive(record)) {
     return undefined;
   }
@@ -515,8 +518,15 @@ function buildReservationFlowResumePrompt(record: ConversationRecord): string | 
       return renderCopy({ key: "reservation.resume_collecting_owner" });
     case "collecting_pet":
       return renderCopy({ key: "reservation.resume_collecting_pet" });
-    case "collecting_dates":
-      return renderCopy({ key: "reservation.resume_collecting_dates" });
+    case "collecting_dates": {
+      const nextQuestion = renderNextReservationQuestion(
+        computeMissingReservationFields(flow),
+        flow,
+      );
+      return nextQuestion.startsWith("Seguimos con la reserva.")
+        ? nextQuestion
+        : `Seguimos con la reserva. ${nextQuestion}`;
+    }
     case "collecting_notes":
       return renderCopy({ key: "reservation.resume_collecting_notes" });
     case "collecting_visit":
@@ -625,6 +635,259 @@ function changedReservationSlotNames(
   return RESERVATION_SLOT_KEYS.filter(
     (key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]),
   );
+}
+
+function activeFlowName(record?: ConversationRecord): string | undefined {
+  if (!record) return undefined;
+  if (isReservationFlowActive(record)) return "reservation";
+  if (record.pendingReservationModificationFlow || record.pendingReservationCancellationFlow) {
+    return "reservation_change";
+  }
+  if (record.pendingPriceQuoteFlow) return "price_quote";
+  return "none";
+}
+
+function pendingFieldsForTrace(record?: ConversationRecord): string[] {
+  return record?.reservationFlow && isReservationFlowActive(record)
+    ? computeMissingReservationFields(record.reservationFlow)
+    : [];
+}
+
+function inferLastBotQuestionKindForTrace(reply?: string): string | undefined {
+  if (!reply) return undefined;
+  const normalized = reply
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase();
+  if (normalized.includes("salida")) return "ask_exit_date_time";
+  if (normalized.includes("entrada")) return "ask_entry_date_time";
+  if (normalized.includes("mascota")) return "ask_pet";
+  if (normalized.includes("email")) return "ask_owner_or_email";
+  if (normalized.includes("observacion") || normalized.includes("medicacion")) return "ask_notes";
+  if (normalized.includes("visitar")) return "ask_visit";
+  return undefined;
+}
+
+function ignoredSlotsWithReason(
+  slotNames: string[],
+  appliedSlotNames: string[],
+  reason: string,
+): Array<{ slotName: string; reason: string }> {
+  return slotNames
+    .filter((slotName) => !appliedSlotNames.includes(slotName))
+    .map((slotName) => ({ slotName, reason }));
+}
+
+function buildAuthorityTurnTrace(input: {
+  turnId: string;
+  recordBefore: ConversationRecord;
+  recordAfter?: ConversationRecord;
+  message: string;
+  nluIntent?: string;
+  nluGlobalIntent?: string;
+  nluSlotsExtracted?: string[];
+  nluTargetSlots?: string[];
+  slotsApplied?: string[];
+  slotsIgnored?: Array<{ slotName: string; reason: string }>;
+  policyAction?: string;
+  policyReason?: string;
+  renderKey?: ConversationRenderKey;
+  outboxKind?: AuthorityTurnTrace["outboxKind"];
+  legacyBypassUsed?: boolean;
+  legacyBypassName?: string;
+  loopPrevented?: boolean;
+}): AuthorityTurnTrace {
+  const lastReply = lastBotReplyBody(input.recordBefore);
+  const stateBefore = input.recordBefore.reservationFlow;
+  const stateAfter = input.recordAfter?.reservationFlow;
+  return {
+    turnId: input.turnId,
+    conversationIdHash: safeConversationId(input.recordBefore.id),
+    channel: "whatsapp",
+    inboundKind: safeBodyKind(input.message),
+    activeFlowBefore: activeFlowName(input.recordBefore),
+    lastBotQuestionKindBefore: inferLastBotQuestionKindForTrace(lastReply),
+    pendingFieldsBefore: pendingFieldsForTrace(input.recordBefore),
+    nluCalled: Boolean(input.nluIntent),
+    nluProviderUsed: input.nluIntent ? "deterministic" : "skipped",
+    nluIntent: input.nluIntent,
+    nluGlobalIntent: input.nluGlobalIntent,
+    nluSlotsExtracted: input.nluSlotsExtracted ?? [],
+    nluTargetSlots: input.nluTargetSlots ?? [],
+    slotsApplied: input.slotsApplied ?? [],
+    slotsIgnored: input.slotsIgnored ?? [],
+    statePatchSummary: {
+      statusBefore: stateBefore?.status,
+      statusAfter: stateAfter?.status,
+      stateChanged: JSON.stringify(stateBefore) !== JSON.stringify(stateAfter),
+    },
+    pendingFieldsAfter: pendingFieldsForTrace(input.recordAfter),
+    activeFlowAfter: activeFlowName(input.recordAfter),
+    policyAction: input.policyAction,
+    policyReason: input.policyReason,
+    renderKey: input.renderKey,
+    outboxKind: input.outboxKind,
+    legacyBypassUsed: input.legacyBypassUsed ?? false,
+    legacyBypassName: input.legacyBypassName,
+    loopPrevented: input.loopPrevented ?? false,
+  };
+}
+
+function authorityTurnStartedEvent(trace: Pick<
+  AuthorityTurnTrace,
+  | "turnId"
+  | "conversationIdHash"
+  | "channel"
+  | "inboundKind"
+  | "activeFlowBefore"
+  | "lastBotQuestionKindBefore"
+  | "pendingFieldsBefore"
+>): PendingSafeEvent {
+  return {
+    eventType: "authority_turn_started",
+    payload: trace as unknown as Record<string, unknown>,
+  };
+}
+
+function authorityTurnCompletedEvents(trace: AuthorityTurnTrace): PendingSafeEvent[] {
+  const events: PendingSafeEvent[] = [
+    {
+      eventType: "authority_turn_completed",
+      payload: trace as unknown as Record<string, unknown>,
+    },
+  ];
+  if (trace.legacyBypassUsed) {
+    events.push({
+      eventType: "legacy_bypass_used",
+      payload: {
+        turnId: trace.turnId,
+        legacyBypassName: trace.legacyBypassName,
+        policyAction: trace.policyAction,
+      },
+    });
+  }
+  return events;
+}
+
+function authorityGlobalIntent(input: {
+  message: string;
+  intent?: string;
+  isCancelEscape?: boolean;
+}): string | undefined {
+  if (isConversationResetCommand(input.message)) return "reset";
+  if (input.isCancelEscape) return "cancel_flow";
+  if (input.intent === "human_handoff") return "handoff";
+  if (input.intent?.startsWith("faq_")) return "faq";
+  return undefined;
+}
+
+function authorityRuntimeEvents(trace: AuthorityTurnTrace): PendingSafeEvent[] {
+  return [
+    authorityTurnStartedEvent(trace),
+    {
+      eventType: "nlu_called",
+      payload: {
+        turnId: trace.turnId,
+        provider: trace.nluProviderUsed,
+        activeFlowBefore: trace.activeFlowBefore,
+        ...trace.inboundKind,
+      },
+    },
+    {
+      eventType: "nlu_result_received",
+      payload: {
+        turnId: trace.turnId,
+        intent: trace.nluIntent,
+        globalIntent: trace.nluGlobalIntent,
+        provider: trace.nluProviderUsed,
+      },
+    },
+    {
+      eventType: "nlu_slots_extracted",
+      payload: {
+        turnId: trace.turnId,
+        slotNames: trace.nluSlotsExtracted,
+        targetSlotNames: trace.nluTargetSlots,
+      },
+    },
+    {
+      eventType: "nlu_slots_applied",
+      payload: {
+        turnId: trace.turnId,
+        slotNames: trace.slotsApplied,
+      },
+    },
+    {
+      eventType: "nlu_slots_ignored",
+      payload: {
+        turnId: trace.turnId,
+        slots: trace.slotsIgnored,
+      },
+    },
+    {
+      eventType: "state_reducer_applied",
+      payload: {
+        turnId: trace.turnId,
+        ...trace.statePatchSummary,
+        slotsApplied: trace.slotsApplied,
+      },
+    },
+    {
+      eventType: "pending_fields_after_merge",
+      payload: {
+        turnId: trace.turnId,
+        activeFlowAfter: trace.activeFlowAfter,
+        pendingFieldsAfter: trace.pendingFieldsAfter,
+      },
+    },
+    {
+      eventType: "policy_decision",
+      payload: {
+        turnId: trace.turnId,
+        action: trace.policyAction,
+        reason: trace.policyReason,
+        renderKey: trace.renderKey,
+        pendingFieldsAfter: trace.pendingFieldsAfter,
+      },
+    },
+    ...authorityInvariantFailureEvents(trace),
+    ...authorityTurnCompletedEvents(trace),
+  ];
+}
+
+function authorityInvariantFailureEvents(trace: AuthorityTurnTrace): PendingSafeEvent[] {
+  const failures: string[] = [];
+  if (
+    trace.activeFlowBefore === "reservation" &&
+    trace.nluSlotsExtracted.length > 0 &&
+    trace.slotsApplied.length === 0 &&
+    trace.slotsIgnored.length === 0 &&
+    trace.policyAction !== "ask_time_target_clarification"
+  ) {
+    failures.push("slot_use_unaccounted");
+  }
+  if (
+    trace.policyAction === "answer_faq_then_resume" &&
+    trace.activeFlowBefore === "reservation" &&
+    trace.activeFlowAfter !== "reservation"
+  ) {
+    failures.push("faq_did_not_preserve_reservation_flow");
+  }
+  if (failures.length === 0) {
+    return [];
+  }
+  return [
+    {
+      eventType: "authority_turn_invariant_failed",
+      payload: {
+        turnId: trace.turnId,
+        failures,
+        policyAction: trace.policyAction,
+        activeFlowBefore: trace.activeFlowBefore,
+        activeFlowAfter: trace.activeFlowAfter,
+      },
+    },
+  ];
 }
 
 function lastBotReplyBody(record: ConversationRecord): string | undefined {
@@ -2503,8 +2766,27 @@ export async function handleInboundWhatsApp(
 
     if (isReservationFlowCancelEscape(safeBody)) {
       const cancelled = buildReservationFlowCancelledRecord(latestBeforeFlow);
+      const turnTrace = buildAuthorityTurnTrace({
+        turnId: createId("turn"),
+        recordBefore: latestBeforeFlow,
+        recordAfter: cancelled,
+        message: safeBody,
+        nluIntent: flowInterruptionPlan.intent,
+        nluGlobalIntent: authorityGlobalIntent({
+          message: safeBody,
+          intent: flowInterruptionPlan.intent,
+          isCancelEscape: true,
+        }),
+        nluSlotsExtracted: [],
+        nluTargetSlots: [],
+        policyAction: "cancel_flow",
+        policyReason: "reservation_flow_cancel_escape",
+        renderKey: "reservation.cancelled",
+        outboxKind: "twiml_response",
+      });
       await store.replaceConversation(cancelled);
       await addSafeEvents(store, latestBeforeFlow.id, [
+        ...authorityRuntimeEvents(turnTrace),
         ...assistiveEvents,
         {
           eventType: "nlu_assistive_global_intent_detected",
@@ -2615,6 +2897,46 @@ export async function handleInboundWhatsApp(
     }
 
     if (shouldInterruptReservationFlowWithFaq(latestBeforeFlow, safeBody, flowInterruptionPlan)) {
+      const latestForFaq = (await store.getById(latestBeforeFlow.id)) ?? latestBeforeFlow;
+      const renderedInterruptionReply = renderConversationReplyPlan(flowInterruptionPlan, safeBody);
+      const replyBody = flowInterruptionPlan.handoff
+        ? renderedInterruptionReply
+        : appendReservationResume(renderedInterruptionReply, latestForFaq);
+      const nextConversation: ConversationRecord = flowInterruptionPlan.handoff
+        ? {
+            ...latestForFaq,
+            mode: "human",
+            humanRequested: true,
+            requiresManualReview: true,
+            updatedAt: nowIso(),
+          }
+        : latestForFaq;
+      const attemptedSlots = extractReservationSlotsFromMessage(safeBody, {
+        flow: latestBeforeFlow.reservationFlow,
+        now: reservationBridgeDeps?.now?.() ?? new Date(),
+      });
+      const turnTrace = buildAuthorityTurnTrace({
+        turnId: createId("turn"),
+        recordBefore: latestBeforeFlow,
+        recordAfter: nextConversation,
+        message: safeBody,
+        nluIntent: flowInterruptionPlan.intent,
+        nluGlobalIntent: authorityGlobalIntent({
+          message: safeBody,
+          intent: flowInterruptionPlan.intent,
+        }),
+        nluSlotsExtracted: Object.keys(attemptedSlots),
+        nluTargetSlots: [],
+        slotsIgnored: ignoredSlotsWithReason(
+          Object.keys(attemptedSlots),
+          [],
+          "faq_interruption_preserves_reservation_state",
+        ),
+        policyAction: "answer_faq_then_resume",
+        policyReason: "faq_inside_reservation",
+        renderKey: "conversation.faq_reply",
+        outboxKind: "twiml_response",
+      });
       await store.addEvent(
         createEvent(latestBeforeFlow.id, "nlu_classified", {
           intent: flowInterruptionPlan.intent,
@@ -2627,6 +2949,7 @@ export async function handleInboundWhatsApp(
         }),
       );
       await addSafeEvents(store, latestBeforeFlow.id, [
+        ...authorityRuntimeEvents(turnTrace),
         ...assistiveEvents,
         {
           eventType: "nlu_assistive_global_intent_detected",
@@ -2645,21 +2968,6 @@ export async function handleInboundWhatsApp(
           },
         },
       ]);
-
-      const latestForFaq = (await store.getById(latestBeforeFlow.id)) ?? latestBeforeFlow;
-      const renderedInterruptionReply = renderConversationReplyPlan(flowInterruptionPlan, safeBody);
-      const replyBody = flowInterruptionPlan.handoff
-        ? renderedInterruptionReply
-        : appendReservationResume(renderedInterruptionReply, latestForFaq);
-      const nextConversation: ConversationRecord = flowInterruptionPlan.handoff
-        ? {
-            ...latestForFaq,
-            mode: "human",
-            humanRequested: true,
-            requiresManualReview: true,
-            updatedAt: nowIso(),
-          }
-        : latestForFaq;
 
       if (flowInterruptionPlan.handoff) {
         await store.replaceConversation(nextConversation);
@@ -2893,8 +3201,36 @@ export async function handleInboundWhatsApp(
         reply: flow.reply,
         appliedSlotNames,
       });
+      const ignoredReason = slotTargetResolution
+        ? appliedSlotNames.length > 0
+          ? "state_changed"
+          : targetedSlotNames.length > 0
+            ? "no_state_change"
+            : slotTargetResolution.reason
+        : "no_target_resolution";
+      const turnTrace = buildAuthorityTurnTrace({
+        turnId: createId("turn"),
+        recordBefore: latestBeforeFlow,
+        recordAfter: flow.conversation,
+        message: safeBody,
+        nluIntent: flowInterruptionPlan.intent,
+        nluGlobalIntent: authorityGlobalIntent({
+          message: safeBody,
+          intent: flowInterruptionPlan.intent,
+        }),
+        nluSlotsExtracted: attemptedSlotNames,
+        nluTargetSlots: targetedSlotNames,
+        slotsApplied: appliedSlotNames,
+        slotsIgnored: ignoredSlotsWithReason(attemptedSlotNames, appliedSlotNames, ignoredReason),
+        policyAction: missingFields.length > 0 ? "ask_missing_slot" : "propose_reservation",
+        policyReason: flow.eventType,
+        renderKey: missingFields.length > 0 ? "reservation.ask_entry_exit_date_time" : "reservation.proposal",
+        outboxKind: "twiml_response",
+        loopPrevented: Boolean(antiLoop.event),
+      });
       await store.replaceConversation(flow.conversation);
       await addSafeEvents(store, flow.conversation.id, [
+        ...authorityRuntimeEvents(turnTrace),
         ...assistiveEvents,
         {
           eventType: "reservation_slot_merge_attempted",
@@ -3226,7 +3562,31 @@ export async function handleInboundWhatsApp(
       inboundMessageId: inbound.id,
       now: reservationBridgeDeps?.now?.(),
     });
+    const turnTrace = buildAuthorityTurnTrace({
+      turnId: createId("turn"),
+      recordBefore: latestBeforePlan,
+      recordAfter: flow.conversation,
+      message: safeBody,
+      nluIntent: replyPlan.intent,
+      nluGlobalIntent: authorityGlobalIntent({
+        message: safeBody,
+        intent: replyPlan.intent,
+      }),
+      nluSlotsExtracted: Object.keys(replyPlan.slots),
+      nluTargetSlots: [],
+      slotsApplied: changedReservationSlotNames(
+        latestBeforePlan.reservationFlow,
+        flow.conversation.reservationFlow,
+      ),
+      policyAction: "start_reservation_flow",
+      policyReason: replyPlan.intent,
+      renderKey: flow.conversation.reservationFlow?.status === "asking_client_kind"
+        ? "reservation.ask_client_kind"
+        : "reservation.known_client_pet_prompt",
+      outboxKind: "twiml_response",
+    });
     await store.replaceConversation(flow.conversation);
+    await addSafeEvents(store, flow.conversation.id, authorityRuntimeEvents(turnTrace));
     await store.addEvent(
       createEvent(flow.conversation.id, flow.eventType, flow.eventPayload),
     );

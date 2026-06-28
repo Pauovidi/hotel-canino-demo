@@ -140,6 +140,8 @@ Eventos esperados:
 - `loop_prevented`
 - `legacy_bypass_blocked`
 
+`AuthorityTurnTrace` agrupa esos eventos por turno y debe permitir reconstruir `state_before`, slots extraidos/aplicados/ignorados, `pendingFieldsAfter`, accion de policy, `renderKey`, outbox y si hubo bypass legacy.
+
 No se deben registrar telefonos completos, secretos ni texto libre con PII salvo payloads ya sanitizados.
 
 ## Migracion progresiva

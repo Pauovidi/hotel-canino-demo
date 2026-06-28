@@ -18,10 +18,10 @@ Clasificaciones:
 | Archivo | Clasificacion | Copy visible | Next action | Tool critica | Accion |
 | --- | --- | --- | --- | --- | --- |
 | `src/lib/hotel/conversations/authority/copy-renderer.ts` | `renderer_only` | Si, fuente canonica de copy conversacional. | No. | No. | Nuevo punto unico para copy de NLU, reserva, reset, handoff, baño/post-stay y degradados seguros. |
-| `src/lib/hotel/conversations/authority/pipeline.ts` | `policy_only` / `reducer_only` / `outbox_only` | Solo via `renderCopy`. | Si: `decideNextConversationAction` y `decideReservationAction`. | No ejecuta tools. | Incluye `reduceReservationState`, policy de reserva y `buildOutboxMessage`. |
+| `src/lib/hotel/conversations/authority/pipeline.ts` | `policy_only` / `reducer_only` / `outbox_only` | Solo via `renderCopy`. | Si: `decideNextConversationAction` y `decideReservationAction`. | No ejecuta tools. | Incluye `reduceReservationState`, policy de reserva, `AuthorityTurnTrace` y `buildOutboxMessage`. |
 | `src/lib/hotel/conversations/reservation-flow.ts` | `reducer_only` + `renderer_only` adapter | No debe contener frases visibles de negocio; los `reply` de compatibilidad salen de `renderReservationFlowCopy`. | Aun conserva stage decisions del flujo. | `checkAvailability` sigue aqui temporalmente. | `migrate_now` hecho para copy. Pendiente separar disponibilidad a ToolExecutor. Tests: bridge golden + authority guardrails. |
 | `src/lib/hotel/conversations/nlu.ts` | `policy_only` interpretation adapter | No contiene respuestas visibles hardcodeadas ni campo publico `reply`; devuelve `renderKey` para `CopyRenderer`. | Clasifica intent, handoff y routing FAQ/quote. | No. | `migrate_now` hecho para copy hardcoded y contrato sin `reply`. Tests: NLU + guardrails. |
-| `src/lib/hotel/conversations/service.ts` | `keep_temporarily_with_reason` | Salida bot automatica pasa por `addRenderedBotMessage` y eventos `copy_rendered`/`outbox_sent`. | Si: orquestador principal. | Si: confirmacion, schedule, stores. | Mantener temporalmente por compatibilidad. Riesgo: mezcla policy/tool. Eliminacion: siguiente rama ToolExecutor. Tests: service + WhatsApp bridge. |
+| `src/lib/hotel/conversations/service.ts` | `keep_temporarily_with_reason` | Salida bot automatica pasa por `addRenderedBotMessage` y eventos `copy_rendered`/`outbox_sent`; resume FAQ usa pending fields desde estado conservado. | Si: orquestador principal. | Si: confirmacion, schedule, stores. | Mantener temporalmente por compatibilidad. Riesgo: mezcla policy/tool. Eliminacion: siguiente rama ToolExecutor. Tests: service + WhatsApp bridge + authority trace. |
 | `src/app/api/twilio/whatsapp/route.ts` | `outbox_only` + `keep_temporarily_with_reason` | Degraded reply sale de `CopyRenderer`; preview stateless sigue como guard previo documentado. | Auth/parse/reset/preview prerouter. | No escribe reservas. | Mantener reset/preview como hard guards. Riesgo: TwiML adapter aun vive aqui. Tests: conversations-security. |
 | `src/lib/hotel/conversations/conversation-intelligence.ts` | `keep_temporarily_with_reason` | Aun genera copy de quote/fechas vagas/raza. | Interpreta precio/raza/fechas. | No. | Pendiente mover builders a CopyRenderer. Riesgo medio. Tests: service + nlu price/breed. |
 | `src/lib/hotel/conversations/reservation-bridge.ts` | `keep_temporarily_with_reason` | Aun genera copy de confirmacion/fallo. | Decide confirmacion segura. | Si: Sheets/ReservationRecords/CLIENTES. | Pendiente ToolExecutor + renderer de confirmacion. Riesgo alto si se toca sin tests. Tests: bridge contract/confirmation/no availability. |
@@ -46,12 +46,21 @@ Clasificaciones:
 - `src/lib/hotel/conversations/nlu.ts`: respuestas visibles hardcoded migradas a `CopyRenderer`; el plan NLU ya no expone `reply`, `replyText`, `message`, `botReply` ni `visibleText`.
 - `src/lib/hotel/conversations/client-templates.ts`: capa de plantillas autorizada, no bypass arbitrario.
 
+## Hallazgos Nuevos En State Consistency
+
+- Causa raiz confirmada: `buildReservationFlowResumePrompt` reanudaba FAQ por `reservationFlow.status` y para `collecting_dates` devolvia siempre "me faltan la fecha de entrada y la fecha de salida", aunque `state_after` ya tuviera `checkInDate` y `checkInTime`.
+- Causa raiz confirmada: una hora suelta como "a las 10" no siempre entraba en `ExtractedReservationSlots`; el targeting no podia aplicar o justificar la hora si faltaba una fecha paralela.
+- Correccion: la reanudacion FAQ calcula `computeMissingReservationFields(state_after)` y llama al renderer de siguiente pregunta con el flujo conservado.
+- Correccion: las horas sueltas entran en slots deterministas y, cuando solo falta `check_out_time`, se aplican a salida con traza `slotsApplied`.
+- Trazabilidad: los turnos principales de reserva emiten `authority_turn_started`, `nlu_slots_extracted`, `nlu_slots_applied`, `nlu_slots_ignored`, `state_reducer_applied`, `pending_fields_after_merge`, `policy_decision` y `authority_turn_completed` sin texto completo ni telefono completo.
+
 ## Guardrails Activos
 
 - No se permite `client.messages.create` ni `messages.create` dentro de `src/lib/hotel/conversations/*`.
 - `reservation-flow.ts` no puede introducir frases visibles de negocio fuera de `renderReservationFlowCopy`.
 - `nlu.ts` no puede reintroducir respuestas visibles hardcoded como fallback/handoff/reserva/reset.
 - `nlu.ts` no puede reintroducir campo `reply:` en `ConversationReplyPlan`.
+- La traza de autoridad no puede incluir telefono completo ni texto raw de usuario; tests golden comprueban eventos sanitizados.
 - La salida bot automatica de `service.ts` debe usar `addRenderedBotMessage` o `addRenderedBotMessageBestEffort`.
 - Twilio route debe usar `CopyRenderer` para degraded copy y solo adaptar a TwiML.
 - Nuevas excepciones deben añadir motivo, riesgo, fecha/branch de eliminacion y test.

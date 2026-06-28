@@ -105,3 +105,35 @@ export interface OutboxMessage {
   source: "copy_renderer";
   metadata: Record<string, unknown>;
 }
+
+export interface AuthorityTurnTrace {
+  turnId: string;
+  conversationIdHash: string;
+  channel: ConversationChannel;
+  inboundKind: Record<string, unknown>;
+  activeFlowBefore?: string;
+  lastBotQuestionKindBefore?: string;
+  pendingFieldsBefore: string[];
+  nluCalled: boolean;
+  nluProviderUsed: "openai" | "deterministic" | "skipped";
+  nluIntent?: string;
+  nluGlobalIntent?: string;
+  nluSlotsExtracted: string[];
+  nluTargetSlots: string[];
+  slotsApplied: string[];
+  slotsIgnored: Array<{ slotName: string; reason: string }>;
+  statePatchSummary: {
+    statusBefore?: string;
+    statusAfter?: string;
+    stateChanged: boolean;
+  };
+  pendingFieldsAfter: string[];
+  activeFlowAfter?: string;
+  policyAction?: string;
+  policyReason?: string;
+  renderKey?: ConversationRenderKey;
+  outboxKind?: "twiml_response" | "manual_send" | "suppressed";
+  legacyBypassUsed: boolean;
+  legacyBypassName?: string;
+  loopPrevented: boolean;
+}

@@ -426,6 +426,16 @@ async function collectNewClientPet(input: {
   );
 }
 
+type TestAuthorityTrace = Record<string, unknown> & { pendingFieldsAfter: string[] };
+
+function latestAuthorityTrace(record: ConversationRecord): TestAuthorityTrace {
+  const event = record.events
+    .filter((entry) => entry.eventType === "authority_turn_completed")
+    .at(-1);
+  expect(event).toBeDefined();
+  return event?.payload as TestAuthorityTrace;
+}
+
 async function collectNewClientDatesWithoutTimes(input: {
   store: ConversationStore;
   deps: ReturnType<typeof makeBridgeDeps>["deps"];
@@ -3190,6 +3200,160 @@ describe("WhatsApp reservation bridge", () => {
     expect(counters.clientUpserts).toHaveLength(1);
   });
 
+  it("traces the real reset to partial time and FAQ reservation transcript without stale state", async () => {
+    const store = new MemoryConversationStore();
+    const { deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-06-28T10:00:00.000Z"),
+    };
+    const directory = createStaticClientDirectory([
+      {
+        nombre: "Pau QA",
+        email: "pau.qa@example.test",
+        telefonoNormalizado: "34600009991",
+        rowNumber: 12,
+        sheetName: "CLIENTES_QA",
+      },
+    ]);
+    const from = "whatsapp:+34600009991";
+
+    const reset = await handleInboundWhatsApp(
+      { from, body: "reiniciar", messageSid: "SM_AUTH_TRACE_RESET" },
+      store,
+      directory,
+      timedDeps,
+    );
+    const greeting = await handleInboundWhatsApp(
+      { from, body: "hola", messageSid: "SM_AUTH_TRACE_HOLA" },
+      store,
+      directory,
+      timedDeps,
+    );
+    const start = await handleInboundWhatsApp(
+      { from, body: "quiero reservar", messageSid: "SM_AUTH_TRACE_START" },
+      store,
+      directory,
+      timedDeps,
+    );
+    const pet = await handleInboundWhatsApp(
+      { from, body: "PIPO", messageSid: "SM_AUTH_TRACE_PET" },
+      store,
+      directory,
+      timedDeps,
+    );
+    const entryDate = await handleInboundWhatsApp(
+      { from, body: "mañana", messageSid: "SM_AUTH_TRACE_ENTRY_DATE" },
+      store,
+      directory,
+      timedDeps,
+    );
+    const entryTime = await handleInboundWhatsApp(
+      { from, body: "a las 10", messageSid: "SM_AUTH_TRACE_ENTRY_TIME" },
+      store,
+      directory,
+      timedDeps,
+    );
+    const faq = await handleInboundWhatsApp(
+      { from, body: "diferencia entre hotel y guardería", messageSid: "SM_AUTH_TRACE_FAQ" },
+      store,
+      directory,
+      timedDeps,
+    );
+    const cancelled = await handleInboundWhatsApp(
+      { from, body: "ya no quiero reservar", messageSid: "SM_AUTH_TRACE_CANCEL" },
+      store,
+      directory,
+      timedDeps,
+    );
+
+    expect(reset.botReply?.body).toBe("Reiniciado.");
+    expect(greeting.botReply?.body).toContain("¡Hola, Pau!");
+    expect(start.botReply?.body).toContain("Genial, Pau");
+    expect(start.botReply?.body).toContain("Dime el nombre de tu mascota");
+    expect(pet.botReply?.body).toContain("fecha y hora de entrada");
+
+    expect(entryDate.conversation.reservationFlow).toMatchObject({
+      status: "collecting_dates",
+      petName: "PIPO",
+      checkInDate: "2026-06-29",
+    });
+    expect(entryDate.botReply?.body).toContain("Me falta la salida y las horas");
+
+    expect(entryTime.conversation.reservationFlow).toMatchObject({
+      status: "collecting_dates",
+      checkInDate: "2026-06-29",
+      checkInTime: "10:00",
+    });
+    expect(entryTime.botReply?.body).toContain("salida");
+    expect(entryTime.botReply?.body).not.toContain("las horas");
+    expect(entryTime.botReply?.body).not.toBe("Entiendo parte de la reserva. Me falta la salida y las horas. ¿Me las indicas?");
+
+    const entryTimeTrace = latestAuthorityTrace(entryTime.conversation);
+    expect(entryTimeTrace).toMatchObject({
+      activeFlowBefore: "reservation",
+      activeFlowAfter: "reservation",
+      nluSlotsExtracted: expect.arrayContaining(["checkInTime"]),
+      nluTargetSlots: expect.arrayContaining(["checkInTime"]),
+      slotsApplied: expect.arrayContaining(["checkInTime"]),
+      pendingFieldsAfter: expect.arrayContaining(["check_out_date", "check_out_time"]),
+      policyAction: "ask_missing_slot",
+      legacyBypassUsed: false,
+    });
+    expect(entryTimeTrace.pendingFieldsAfter).not.toContain("check_in_date");
+    expect(entryTimeTrace.pendingFieldsAfter).not.toContain("check_in_time");
+
+    expect(faq.conversation.reservationFlow).toMatchObject({
+      status: "collecting_dates",
+      checkInDate: "2026-06-29",
+      checkInTime: "10:00",
+    });
+    expect(faq.botReply?.body.toLowerCase()).toContain("guardería");
+    expect(faq.botReply?.body).toContain("Seguimos con la reserva");
+    expect(faq.botReply?.body).toContain("salida");
+    expect(faq.botReply?.body).not.toContain("fecha de entrada");
+    const faqTrace = latestAuthorityTrace(faq.conversation);
+    expect(faqTrace).toMatchObject({
+      policyAction: "answer_faq_then_resume",
+      renderKey: "conversation.faq_reply",
+      pendingFieldsAfter: expect.arrayContaining(["check_out_date", "check_out_time"]),
+      legacyBypassUsed: false,
+    });
+    expect(faqTrace.pendingFieldsAfter).not.toContain("check_in_date");
+
+    expect(cancelled.botReply?.body).toBe(
+      "De acuerdo, dejamos la reserva sin continuar. Si necesitas otra cosa, estoy por aquí.",
+    );
+    expect(cancelled.conversation.reservationFlow).toBeUndefined();
+    const cancelTrace = latestAuthorityTrace(cancelled.conversation);
+    expect(cancelTrace).toMatchObject({
+      policyAction: "cancel_flow",
+      activeFlowAfter: "none",
+      pendingFieldsAfter: [],
+      legacyBypassUsed: false,
+    });
+
+    const events = cancelled.conversation.events.map((event) => event.eventType);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        "authority_turn_started",
+        "nlu_called",
+        "nlu_result_received",
+        "nlu_slots_extracted",
+        "nlu_slots_applied",
+        "state_reducer_applied",
+        "pending_fields_after_merge",
+        "policy_decision",
+        "copy_rendered",
+        "outbox_sent",
+        "authority_turn_completed",
+      ]),
+    );
+    expect(events).not.toContain("authority_turn_invariant_failed");
+    expect(JSON.stringify(cancelled.conversation.events)).not.toContain("whatsapp:+34600009991");
+    expect(JSON.stringify(cancelled.conversation.events)).not.toContain("PIPO");
+  });
+
   it("marks existing clients without duplicating CLIENTES rows", async () => {
     const store = new MemoryConversationStore();
     const { counters, deps } = makeBridgeDeps({
@@ -3601,6 +3765,70 @@ describe("WhatsApp reservation bridge", () => {
     });
     expect(result.botReply?.body).toContain("A qué hora sería");
     expect(result.botReply?.body).not.toBe("Gracias. Ahora dime la fecha y hora de entrada, y la fecha y hora de salida.");
+  });
+
+  it("applies a bare time to checkout time when only checkout time is pending", async () => {
+    const store = new MemoryConversationStore();
+    const { deps } = makeBridgeDeps();
+    const timedDeps = {
+      ...deps,
+      now: () => new Date("2026-06-01T10:00:00.000Z"),
+    };
+
+    await collectNewClientPet({
+      store,
+      deps: timedDeps,
+      prefix: "SM_SLOT_EXIT_BARE_TIME",
+      petName: "PIPO",
+    });
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "entrada el 25 de diciembre a las 10",
+        messageSid: "SM_SLOT_EXIT_BARE_TIME_ENTRY",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+    await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "el día 27",
+        messageSid: "SM_SLOT_EXIT_BARE_TIME_DAY",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "a las 10",
+        messageSid: "SM_SLOT_EXIT_BARE_TIME_VALUE",
+      },
+      store,
+      createStaticClientDirectory([]),
+      timedDeps,
+    );
+
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_notes",
+      checkInDate: "2026-12-25",
+      checkInTime: "10:00",
+      checkOutDate: "2026-12-27",
+      checkOutTime: "10:00",
+    });
+    expect(result.botReply?.body).toContain("alimentación");
+    expect(result.botReply?.body).not.toContain("las horas");
+    const trace = latestAuthorityTrace(result.conversation);
+    expect(trace).toMatchObject({
+      nluSlotsExtracted: expect.arrayContaining(["checkInTime"]),
+      nluTargetSlots: expect.arrayContaining(["checkOutTime"]),
+      slotsApplied: expect.arrayContaining(["checkOutTime"]),
+      pendingFieldsAfter: ["notes"],
+      legacyBypassUsed: false,
+    });
   });
 
   it("answers FAQ while checkout is pending and preserves entry slots", async () => {

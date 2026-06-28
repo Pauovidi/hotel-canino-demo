@@ -519,8 +519,19 @@ function buildMissingMonthReply(): string {
   return renderReservationFlowCopy({ key: "reservation.missing_month" });
 }
 
-function extractLooseTimeMentions(message: string): string[] {
+function extractLooseTimeMentions(
+  message: string,
+  options: { allowBareNumbers?: boolean } = {},
+): string[] {
   const normalized = normalizeDateTimeText(message);
+  if (
+    !options.allowBareNumbers &&
+    !/\b(?:a\s+las?|a\s+la|sobre|hacia|por\s+la|las?\s+\d{1,2}|ambas|ambos|las\s+dos|los\s+dos|tambien|igual|misma\s+hora|mismo\s+horario)\b/.test(
+      normalized,
+    )
+  ) {
+    return [];
+  }
   const mentions: string[] = [];
   const matcher =
     /\b(?:a\s+las?\s+)?(\d{1,2})(?:(?::|\.)\s*(\d{2}))?(?:\s*(am|pm|a\s*m|p\s*m))?(?:\s+de\s+la\s+(manana|tarde|noche))?\b/g;
@@ -721,7 +732,7 @@ function resolveAwaitingTimeInput(
     };
   }
 
-  const looseTimes = extractLooseTimeMentions(message);
+  const looseTimes = extractLooseTimeMentions(message, { allowBareNumbers: true });
   if (looseTimes.length >= 2) {
     const [checkInTime, checkOutTime] = looseTimes;
     const outOfRange = [checkInTime, checkOutTime].filter(isOutsideReceptionDay);
@@ -759,6 +770,36 @@ function resolveAwaitingTimeInput(
         }),
         eventType: "reservation_flow_time_out_of_range",
         eventPayload: { outOfRangeTimes: [looseTimes[0]] },
+      };
+    }
+
+    const pendingFields = computeMissingReservationFields(flow);
+    if (hasOnlyExitFieldsPending(pendingFields) && !flow.checkOutTime) {
+      return {
+        patch: {
+          checkOutTime: looseTimes[0],
+          checkOutSlot: slotFromTime(looseTimes[0]),
+          timePreferencePrompted: undefined,
+          pendingSharedTimeConfirmation: undefined,
+        },
+        eventPayload: {
+          source: "loose_time_pending_exit",
+          checkOutTime: looseTimes[0],
+        },
+      };
+    }
+    if (hasOnlyEntryFieldsPending(pendingFields) && !flow.checkInTime) {
+      return {
+        patch: {
+          checkInTime: looseTimes[0],
+          checkInSlot: slotFromTime(looseTimes[0]),
+          timePreferencePrompted: undefined,
+          pendingSharedTimeConfirmation: undefined,
+        },
+        eventPayload: {
+          source: "loose_time_pending_entry",
+          checkInTime: looseTimes[0],
+        },
       };
     }
 
@@ -1622,6 +1663,15 @@ export function extractReservationSlotsFromMessage(
   context: { flow?: ConversationReservationFlow; now?: Date } = {},
 ): ExtractedReservationSlots {
   const dateTime = parseDatesAndTimes(message, context.now ?? new Date());
+  if (!dateTime.checkInTime && !dateTime.checkOutTime) {
+    const looseTimes = extractLooseTimeMentions(message);
+    if (looseTimes.length >= 2) {
+      dateTime.checkInTime = looseTimes[0];
+      dateTime.checkOutTime = looseTimes[1];
+    } else if (looseTimes.length === 1) {
+      dateTime.checkInTime = looseTimes[0];
+    }
+  }
   const petDetails = context.flow?.status === "collecting_dates" ? {} : extractPetDetails(message);
   return defined({
     petName: petDetails.petName,

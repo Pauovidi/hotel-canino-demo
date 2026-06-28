@@ -93,4 +93,26 @@ describe("conversation authority guardrails", () => {
     expect(service).toContain("copy_rendered");
     expect(service).toContain("outbox_sent");
   });
+
+  it("keeps authority turn trace events available without raw message payloads", () => {
+    const service = readRepoFile("src/lib/hotel/conversations/service.ts");
+    const types = readRepoFile("src/lib/hotel/conversations/authority/types.ts");
+
+    expect(types).toContain("export interface AuthorityTurnTrace");
+    for (const eventName of [
+      "authority_turn_started",
+      "nlu_slots_extracted",
+      "nlu_slots_applied",
+      "nlu_slots_ignored",
+      "state_reducer_applied",
+      "pending_fields_after_merge",
+      "authority_turn_completed",
+      "authority_turn_invariant_failed",
+      "legacy_bypass_used",
+    ]) {
+      expect(service).toContain(eventName);
+    }
+    expect(types).not.toContain("rawMessage");
+    expect(types).not.toContain("phoneE164");
+  });
 });
