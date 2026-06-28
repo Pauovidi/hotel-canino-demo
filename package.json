@@ -17,6 +17,7 @@
     "smoke": "npm run lint && npm run test:run && npm run build",
     "smoke:http": "node scripts/smoke-http.mjs",
     "smoke:conversation": "tsx scripts/conversation-e2e-smoke.ts",
+    "smoke:conversation:latency": "tsx scripts/conversation-latency-smoke.ts",
     "smoke:conversation:sheets-real": "tsx scripts/conversation-sheets-real-smoke.ts",
     "conversations:reset": "tsx scripts/conversations-reset.ts",
     "reminders:reservation-prearrival": "node scripts/reservation-prearrival-reminders.mjs",

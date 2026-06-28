@@ -153,26 +153,57 @@ export class ClientDirectoryService {
   }
 
   async resolveClientIdentity(input: ClientIdentityInput): Promise<ClientIdentityResult> {
-    const phone = input.phone ? await this.findClientByPhone(input.phone) : this.unknown();
-    if (phone.status !== "unknown") {
-      return phone;
+    const read = await this.directory.listClients();
+    const phone = input.phone ? normalizePhone(input.phone) : undefined;
+    if (phone) {
+      const matches = read.records.filter((record) => {
+        const phones = [
+          record.telefonoNormalizado,
+          record.telefonoMovil,
+          record.telefonoFijo,
+        ]
+          .map((value) => (value ? normalizePhone(value) : null))
+          .filter(Boolean);
+
+        return phones.includes(phone);
+      });
+      if (matches.length > 0) {
+        return withBlockedStatus(matches, "strong", "phone", read.warnings);
+      }
     }
 
-    const email = input.email ? await this.findClientByEmail(input.email) : this.unknown();
-    if (email.status !== "unknown") {
-      return {
-        ...email,
-        warnings: Array.from(new Set([...(phone.warnings ?? []), ...(email.warnings ?? [])])),
-      };
+    const email = input.email ? normalizeEmail(input.email) : undefined;
+    if (email) {
+      const matches = read.records.filter(
+        (record) => record.email && normalizeEmail(record.email) === email,
+      );
+      if (matches.length > 0) {
+        return withBlockedStatus(matches, "strong", "email", read.warnings);
+      }
     }
 
-    const name = input.name ? await this.findClientByNameWeak(input.name) : this.unknown();
-    return {
-      ...name,
-      warnings: Array.from(
-        new Set([...(phone.warnings ?? []), ...(email.warnings ?? []), ...(name.warnings ?? [])]),
-      ),
-    };
+    const name = input.name ? normalizeName(input.name) : undefined;
+    if (name) {
+      const exact = read.records.filter(
+        (record) => normalizeName(record.nombre) === name,
+      );
+      if (exact.length > 0) {
+        return this.nameOnlySuggestion(exact, "medium", read.warnings);
+      }
+
+      const approximate = read.records.filter((record) => {
+        const candidate = normalizeName(record.nombre);
+        return (
+          candidate.length >= 4 &&
+          (candidate.includes(name) || name.includes(candidate))
+        );
+      });
+      if (approximate.length > 0) {
+        return this.nameOnlySuggestion(approximate, "weak", read.warnings);
+      }
+    }
+
+    return this.unknown(read.warnings);
   }
 
   private unknown(warnings: string[] = []): ClientIdentityResult {

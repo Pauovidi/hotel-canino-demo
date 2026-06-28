@@ -140,6 +140,34 @@ function safeErrorPayload(error: unknown) {
   };
 }
 
+function nowMs(): number {
+  return Date.now();
+}
+
+function durationSince(startMs: number): number {
+  return Math.max(0, nowMs() - startMs);
+}
+
+function logTwilioWebhookTiming(input: {
+  branch: string;
+  receivedAtMs: number;
+  routeAuthMs: number;
+  parseMs: number;
+  clientLookupMs?: number;
+  twimlBuildMs?: number;
+  hasTwimlMessage?: boolean;
+}): void {
+  console.info("twilio_webhook_timing_completed", {
+    branch: input.branch,
+    totalDurationMs: durationSince(input.receivedAtMs),
+    routeAuthMs: input.routeAuthMs,
+    parseMs: input.parseMs,
+    clientLookupMs: input.clientLookupMs ?? 0,
+    twimlBuildMs: input.twimlBuildMs ?? 0,
+    hasTwimlMessage: Boolean(input.hasTwimlMessage),
+  });
+}
+
 function buildTemplatePreviewWebhookTwiml(
   body: string,
 ): { kind: string; twiml: string } | undefined {
@@ -261,10 +289,14 @@ export async function POST(request: Request) {
 }
 
 async function handlePost(request: Request) {
+  const receivedAtMs = nowMs();
+  const authStartedAt = nowMs();
   if (!validateWebhookToken(request)) {
     return twilioXmlResponse(undefined, 401);
   }
+  const routeAuthMs = durationSince(authStartedAt);
 
+  const parseStartedAt = nowMs();
   const contentType = request.headers.get("content-type") ?? "";
   const form = contentType.includes("application/json") ? undefined : await request.formData();
   const json = form ? undefined : ((await request.json()) as Record<string, unknown>);
@@ -280,6 +312,7 @@ async function handlePost(request: Request) {
   const to = String(raw.To ?? raw.to ?? "");
   const body = getInboundBody(raw);
   const messageSid = String(raw.MessageSid ?? raw.messageSid ?? "");
+  const parseMs = durationSince(parseStartedAt);
 
   if (!from || !body) {
     return twilioXmlResponse();
@@ -313,11 +346,26 @@ async function handlePost(request: Request) {
       messageSid,
       displayName: String(raw.ProfileName ?? raw.profileName ?? ""),
       rawPayload: sanitizedRawPayload,
+      timing: {
+        receivedAtMs,
+        routeAuthMs,
+        parseMs,
+      },
     });
+    const twimlStartedAt = nowMs();
     const twiml = resolveTwilioWebhookTwiml(result);
+    const twimlBuildMs = durationSince(twimlStartedAt);
 
     console.info("twilio_webhook_reset_command_replied", {
       hasBotReply: Boolean(result.botReply?.body),
+      hasTwimlMessage: twiml.includes("<Message>"),
+    });
+    logTwilioWebhookTiming({
+      branch: "reset",
+      receivedAtMs,
+      routeAuthMs,
+      parseMs,
+      twimlBuildMs,
       hasTwimlMessage: twiml.includes("<Message>"),
     });
 
@@ -328,6 +376,13 @@ async function handlePost(request: Request) {
   if (templatePreviewTwiml) {
     console.info("twilio_webhook_template_preview_prerouter_replied", {
       kind: templatePreviewTwiml.kind,
+      hasTwimlMessage: templatePreviewTwiml.twiml.includes("<Message>"),
+    });
+    logTwilioWebhookTiming({
+      branch: "template_preview",
+      receivedAtMs,
+      routeAuthMs,
+      parseMs,
       hasTwimlMessage: templatePreviewTwiml.twiml.includes("<Message>"),
     });
 
@@ -343,11 +398,6 @@ async function handlePost(request: Request) {
 
   const displayName = String(raw.ProfileName ?? raw.profileName ?? "");
   const clientDirectory = resolveTwilioClientDirectory();
-  const clientIdentity = await resolveClientIdentitySafe({
-    from,
-    displayName,
-    clientDirectory,
-  });
 
   try {
     const result = await handleInboundWhatsApp({
@@ -357,8 +407,15 @@ async function handlePost(request: Request) {
       messageSid,
       displayName,
       rawPayload: sanitizedRawPayload,
+      timing: {
+        receivedAtMs,
+        routeAuthMs,
+        parseMs,
+      },
     }, undefined, clientDirectory);
+    const twimlStartedAt = nowMs();
     const twiml = resolveTwilioWebhookTwiml(result);
+    const twimlBuildMs = durationSince(twimlStartedAt);
 
     console.info("twilio_webhook_reply_built", {
       hasBotReply: Boolean(result.botReply?.body),
@@ -368,14 +425,42 @@ async function handlePost(request: Request) {
       status: 200,
       contentType: "text/xml",
     });
+    logTwilioWebhookTiming({
+      branch: "normal",
+      receivedAtMs,
+      routeAuthMs,
+      parseMs,
+      twimlBuildMs,
+      hasTwimlMessage: twiml.includes("<Message>"),
+    });
 
     return twilioXmlResponse(twiml);
   } catch (error) {
+    const clientLookupStartedAt = nowMs();
+    const clientIdentity = await resolveClientIdentitySafe({
+      from,
+      displayName,
+      clientDirectory,
+    });
+    const clientLookupMs = durationSince(clientLookupStartedAt);
     console.error("twilio_webhook_store_failed", safeErrorPayload(error));
     console.warn("twilio_degraded_due_to_conversation_store", {
       hasClientIdentity: isStrongClientIdentity(clientIdentity.identity),
+      clientLookupMs,
       ...safeErrorPayload(error),
     });
-    return twilioXmlResponse(buildStoreFailureTwiml(body, error, clientIdentity.identity));
+    const twimlStartedAt = nowMs();
+    const twiml = buildStoreFailureTwiml(body, error, clientIdentity.identity);
+    const twimlBuildMs = durationSince(twimlStartedAt);
+    logTwilioWebhookTiming({
+      branch: "degraded_store_failure",
+      receivedAtMs,
+      routeAuthMs,
+      parseMs,
+      clientLookupMs,
+      twimlBuildMs,
+      hasTwimlMessage: twiml.includes("<Message>"),
+    });
+    return twilioXmlResponse(twiml);
   }
 }

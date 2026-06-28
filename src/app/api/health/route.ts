@@ -38,6 +38,10 @@ function readRuntimeSafetyHealth() {
   const llmNluEnabled = process.env.HOTEL_LLM_NLU_ENABLED === "true";
   const openaiConfigured = Boolean(process.env.OPENAI_API_KEY?.trim());
   const decisionMode = process.env.HOTEL_LLM_NLU_DECISION_MODE?.trim() || "shadow";
+  const configuredNluTimeoutMs = Number.parseInt(process.env.HOTEL_LLM_NLU_TIMEOUT_MS ?? "", 10);
+  const nluTimeoutMs = Number.isFinite(configuredNluTimeoutMs)
+    ? Math.max(250, Math.min(configuredNluTimeoutMs, 5000))
+    : 1500;
 
   return {
     sheets: {
@@ -51,10 +55,17 @@ function readRuntimeSafetyHealth() {
       assistiveSafe: decisionMode === "assistive_safe",
       openaiConfigured,
       modelConfigured: Boolean(process.env.OPENAI_MODEL?.trim()),
+      nluTimeoutMs,
       warning:
         llmNluEnabled && !openaiConfigured
           ? "HOTEL_LLM_NLU_ENABLED=true pero OPENAI_API_KEY no está configurada."
           : undefined,
+    },
+    latency: {
+      latencyInstrumentationEnabled: true,
+      deterministicFastPathEnabled: true,
+      traceBestEffortEnabled: true,
+      clientDirectoryCacheTtlMs: readGoogleSheetsClientDirectoryHealth().cacheTtlMs,
     },
   };
 }

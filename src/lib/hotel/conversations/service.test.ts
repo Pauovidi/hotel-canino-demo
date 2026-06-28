@@ -1685,4 +1685,41 @@ describe("conversation service", () => {
     expect(result.conversation.mode).toBe("human");
     expect(result.conversation.events.some((event) => event.eventType === "post_stay_negative_manual_review")).toBe(true);
   });
+
+  it("does not reread the client directory once strong identity is already persisted", async () => {
+    const store = new MemoryConversationStore();
+    let clientDirectoryReads = 0;
+    const directory = {
+      async listClients() {
+        clientDirectoryReads += 1;
+        return {
+          records: [
+            {
+              nombre: "Cliente Cache QA",
+              telefonoMovil: "+34 612 340 777",
+              telefonoNormalizado: "34612340777",
+              rowNumber: 77,
+              sheetName: "CLIENTES_QA",
+            },
+          ],
+          warnings: [],
+        };
+      },
+    };
+
+    const first = await handleInboundWhatsApp(
+      { from: "whatsapp:+34612340777", body: "hola", messageSid: "SM_CACHE_1" },
+      store,
+      directory,
+    );
+    const second = await handleInboundWhatsApp(
+      { from: "whatsapp:+34612340777", body: "hola buenas tardes", messageSid: "SM_CACHE_2" },
+      store,
+      directory,
+    );
+
+    expect(first.conversation.clientStatus).toBe("known");
+    expect(second.conversation.clientStatus).toBe("known");
+    expect(clientDirectoryReads).toBe(1);
+  });
 });

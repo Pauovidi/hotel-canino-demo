@@ -428,6 +428,46 @@ async function collectNewClientPet(input: {
 
 type TestAuthorityTrace = Record<string, unknown> & { pendingFieldsAfter: string[] };
 
+function expectNonNegativeTraceTimings(trace: TestAuthorityTrace): void {
+  for (const key of [
+    "totalDurationMs",
+    "routeAuthMs",
+    "parseMs",
+    "loadStateMs",
+    "clientLookupMs",
+    "nluTotalMs",
+    "nluProviderMs",
+    "deterministicParserMs",
+    "reducerMs",
+    "policyMs",
+    "toolsMs",
+    "rendererMs",
+    "persistenceMs",
+    "eventLogMs",
+    "outboxBuildMs",
+    "twimlBuildMs",
+    "postgresReads",
+    "postgresWrites",
+    "sheetsReads",
+    "sheetsWrites",
+    "openaiCalls",
+    "eventsWritten",
+  ]) {
+    expect(typeof trace[key]).toBe("number");
+    expect(trace[key] as number).toBeGreaterThanOrEqual(0);
+  }
+  for (const key of [
+    "clientDirectoryCacheHit",
+    "conversationStoreCacheHit",
+    "usedOpenAI",
+    "usedDeterministicFallback",
+    "tracePersisted",
+    "traceDroppedBestEffort",
+  ]) {
+    expect(typeof trace[key]).toBe("boolean");
+  }
+}
+
 function latestAuthorityTrace(record: ConversationRecord): TestAuthorityTrace {
   const event = record.events
     .filter((entry) => entry.eventType === "authority_turn_completed")
@@ -3300,6 +3340,8 @@ describe("WhatsApp reservation bridge", () => {
       policyAction: "ask_missing_slot",
       legacyBypassUsed: false,
     });
+    expectNonNegativeTraceTimings(entryTimeTrace);
+    expect(entryTimeTrace.openaiCalls).toBeLessThanOrEqual(1);
     expect(entryTimeTrace.pendingFieldsAfter).not.toContain("check_in_date");
     expect(entryTimeTrace.pendingFieldsAfter).not.toContain("check_in_time");
 
@@ -3319,6 +3361,7 @@ describe("WhatsApp reservation bridge", () => {
       pendingFieldsAfter: expect.arrayContaining(["check_out_date", "check_out_time"]),
       legacyBypassUsed: false,
     });
+    expectNonNegativeTraceTimings(faqTrace);
     expect(faqTrace.pendingFieldsAfter).not.toContain("check_in_date");
 
     expect(cancelled.botReply?.body).toBe(
@@ -3332,6 +3375,7 @@ describe("WhatsApp reservation bridge", () => {
       pendingFieldsAfter: [],
       legacyBypassUsed: false,
     });
+    expectNonNegativeTraceTimings(cancelTrace);
 
     const events = cancelled.conversation.events.map((event) => event.eventType);
     expect(events).toEqual(

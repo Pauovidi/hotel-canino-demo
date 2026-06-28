@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { buildConversationSeed } from "./demo-seed";
 import {
+  CLIENT_DIRECTORY_SOURCE,
   ClientDirectoryService,
   getClientDirectory,
   type ClientDirectory,
@@ -89,6 +90,39 @@ export interface InboundWhatsAppPayload {
   messageSid?: string;
   displayName?: string;
   rawPayload?: unknown;
+  timing?: InboundWhatsAppTimingHints;
+}
+
+export interface InboundWhatsAppTimingHints {
+  receivedAtMs?: number;
+  routeAuthMs?: number;
+  parseMs?: number;
+  loadStateMs?: number;
+  clientLookupMs?: number;
+  nluTotalMs?: number;
+  nluProviderMs?: number;
+  deterministicParserMs?: number;
+  reducerMs?: number;
+  policyMs?: number;
+  toolsMs?: number;
+  rendererMs?: number;
+  persistenceMs?: number;
+  eventLogMs?: number;
+  outboxBuildMs?: number;
+  twimlBuildMs?: number;
+  clientDirectoryCacheHit?: boolean;
+  conversationStoreCacheHit?: boolean;
+  postgresReads?: number;
+  postgresWrites?: number;
+  sheetsReads?: number;
+  sheetsWrites?: number;
+  openaiCalls?: number;
+  eventsWritten?: number;
+  usedOpenAI?: boolean;
+  usedDeterministicFallback?: boolean;
+  tracePersisted?: boolean;
+  traceDroppedBestEffort?: boolean;
+  timedOutStage?: string;
 }
 
 export interface OutboundSender {
@@ -253,6 +287,388 @@ function safeConversationStoreError(error: unknown): Record<string, unknown> {
 
 function safeConversationId(value: string): string {
   return value ? `${value.slice(0, 12)}${value.length > 12 ? "…" : ""}` : "";
+}
+
+type DurationMetricKey =
+  | "routeAuthMs"
+  | "parseMs"
+  | "loadStateMs"
+  | "clientLookupMs"
+  | "nluTotalMs"
+  | "nluProviderMs"
+  | "deterministicParserMs"
+  | "reducerMs"
+  | "policyMs"
+  | "toolsMs"
+  | "rendererMs"
+  | "persistenceMs"
+  | "eventLogMs"
+  | "outboxBuildMs"
+  | "twimlBuildMs";
+
+type CountMetricKey =
+  | "postgresReads"
+  | "postgresWrites"
+  | "sheetsReads"
+  | "sheetsWrites"
+  | "openaiCalls"
+  | "eventsWritten";
+
+type AuthorityTimingSnapshot = Pick<
+  AuthorityTurnTrace,
+  | "receivedAtMs"
+  | "completedAtMs"
+  | "totalDurationMs"
+  | DurationMetricKey
+  | "clientDirectoryCacheHit"
+  | "conversationStoreCacheHit"
+  | CountMetricKey
+  | "usedOpenAI"
+  | "usedDeterministicFallback"
+  | "tracePersisted"
+  | "traceDroppedBestEffort"
+  | "timedOutStage"
+>;
+
+type AuthorityTurnTimingAccumulator = AuthorityTimingSnapshot;
+
+const DURATION_METRIC_KEYS: DurationMetricKey[] = [
+  "routeAuthMs",
+  "parseMs",
+  "loadStateMs",
+  "clientLookupMs",
+  "nluTotalMs",
+  "nluProviderMs",
+  "deterministicParserMs",
+  "reducerMs",
+  "policyMs",
+  "toolsMs",
+  "rendererMs",
+  "persistenceMs",
+  "eventLogMs",
+  "outboxBuildMs",
+  "twimlBuildMs",
+];
+
+const COUNT_METRIC_KEYS: CountMetricKey[] = [
+  "postgresReads",
+  "postgresWrites",
+  "sheetsReads",
+  "sheetsWrites",
+  "openaiCalls",
+  "eventsWritten",
+];
+
+function nowMs(): number {
+  return Date.now();
+}
+
+function durationSince(startMs: number): number {
+  return Math.max(0, nowMs() - startMs);
+}
+
+function createAuthorityTiming(input?: InboundWhatsAppTimingHints): AuthorityTurnTimingAccumulator {
+  const receivedAtMs = input?.receivedAtMs ?? nowMs();
+  const timing: AuthorityTurnTimingAccumulator = {
+    receivedAtMs,
+    completedAtMs: receivedAtMs,
+    totalDurationMs: 0,
+    routeAuthMs: 0,
+    parseMs: 0,
+    loadStateMs: 0,
+    clientLookupMs: 0,
+    nluTotalMs: 0,
+    nluProviderMs: 0,
+    deterministicParserMs: 0,
+    reducerMs: 0,
+    policyMs: 0,
+    toolsMs: 0,
+    rendererMs: 0,
+    persistenceMs: 0,
+    eventLogMs: 0,
+    outboxBuildMs: 0,
+    twimlBuildMs: 0,
+    clientDirectoryCacheHit: false,
+    conversationStoreCacheHit: false,
+    postgresReads: 0,
+    postgresWrites: 0,
+    sheetsReads: 0,
+    sheetsWrites: 0,
+    openaiCalls: 0,
+    eventsWritten: 0,
+    usedOpenAI: false,
+    usedDeterministicFallback: false,
+    tracePersisted: false,
+    traceDroppedBestEffort: false,
+    timedOutStage: undefined,
+  };
+
+  for (const key of DURATION_METRIC_KEYS) {
+    timing[key] = Math.max(0, input?.[key] ?? 0);
+  }
+  for (const key of COUNT_METRIC_KEYS) {
+    timing[key] = Math.max(0, input?.[key] ?? 0);
+  }
+  timing.clientDirectoryCacheHit = Boolean(input?.clientDirectoryCacheHit);
+  timing.conversationStoreCacheHit = Boolean(input?.conversationStoreCacheHit);
+  timing.usedOpenAI = Boolean(input?.usedOpenAI);
+  timing.usedDeterministicFallback = Boolean(input?.usedDeterministicFallback);
+  timing.tracePersisted = Boolean(input?.tracePersisted);
+  timing.traceDroppedBestEffort = Boolean(input?.traceDroppedBestEffort);
+  timing.timedOutStage = input?.timedOutStage;
+
+  return timing;
+}
+
+function addDuration(
+  timing: AuthorityTurnTimingAccumulator | undefined,
+  key: DurationMetricKey,
+  startMs: number,
+): void {
+  if (!timing) return;
+  timing[key] += durationSince(startMs);
+}
+
+function incrementCount(
+  timing: AuthorityTurnTimingAccumulator | undefined,
+  key: CountMetricKey,
+  amount = 1,
+): void {
+  if (!timing) return;
+  timing[key] += amount;
+}
+
+async function measureAuthorityStage<T>(
+  timing: AuthorityTurnTimingAccumulator | undefined,
+  key: DurationMetricKey,
+  stage: string,
+  callback: () => Promise<T>,
+): Promise<T> {
+  const startedAt = nowMs();
+  try {
+    return await callback();
+  } catch (error) {
+    if (timing && !timing.timedOutStage) {
+      timing.timedOutStage = stage;
+    }
+    console.warn("authority_turn_timing_stage_failed", {
+      stage,
+      ...safeConversationStoreError(error),
+    });
+    throw error;
+  } finally {
+    addDuration(timing, key, startedAt);
+  }
+}
+
+function measureSyncAuthorityStage<T>(
+  timing: AuthorityTurnTimingAccumulator | undefined,
+  key: DurationMetricKey,
+  stage: string,
+  callback: () => T,
+): T {
+  const startedAt = nowMs();
+  try {
+    return callback();
+  } catch (error) {
+    if (timing && !timing.timedOutStage) {
+      timing.timedOutStage = stage;
+    }
+    console.warn("authority_turn_timing_stage_failed", {
+      stage,
+      ...safeConversationStoreError(error),
+    });
+    throw error;
+  } finally {
+    addDuration(timing, key, startedAt);
+  }
+}
+
+function finalizeAuthorityTiming(
+  timing?: AuthorityTurnTimingAccumulator,
+): AuthorityTimingSnapshot {
+  const snapshot = timing ?? createAuthorityTiming();
+  const completedAtMs = nowMs();
+  return {
+    ...snapshot,
+    completedAtMs,
+    totalDurationMs: Math.max(0, completedAtMs - snapshot.receivedAtMs),
+  };
+}
+
+function pickAuthorityTimingPayload(trace: AuthorityTurnTrace): AuthorityTimingSnapshot {
+  return {
+    receivedAtMs: trace.receivedAtMs,
+    completedAtMs: trace.completedAtMs,
+    totalDurationMs: trace.totalDurationMs,
+    routeAuthMs: trace.routeAuthMs,
+    parseMs: trace.parseMs,
+    loadStateMs: trace.loadStateMs,
+    clientLookupMs: trace.clientLookupMs,
+    nluTotalMs: trace.nluTotalMs,
+    nluProviderMs: trace.nluProviderMs,
+    deterministicParserMs: trace.deterministicParserMs,
+    reducerMs: trace.reducerMs,
+    policyMs: trace.policyMs,
+    toolsMs: trace.toolsMs,
+    rendererMs: trace.rendererMs,
+    persistenceMs: trace.persistenceMs,
+    eventLogMs: trace.eventLogMs,
+    outboxBuildMs: trace.outboxBuildMs,
+    twimlBuildMs: trace.twimlBuildMs,
+    clientDirectoryCacheHit: trace.clientDirectoryCacheHit,
+    conversationStoreCacheHit: trace.conversationStoreCacheHit,
+    postgresReads: trace.postgresReads,
+    postgresWrites: trace.postgresWrites,
+    sheetsReads: trace.sheetsReads,
+    sheetsWrites: trace.sheetsWrites,
+    openaiCalls: trace.openaiCalls,
+    eventsWritten: trace.eventsWritten,
+    usedOpenAI: trace.usedOpenAI,
+    usedDeterministicFallback: trace.usedDeterministicFallback,
+    tracePersisted: trace.tracePersisted,
+    traceDroppedBestEffort: trace.traceDroppedBestEffort,
+    timedOutStage: trace.timedOutStage,
+  };
+}
+
+function isPostgresConversationStore(store: ConversationStore): boolean {
+  return store.constructor?.name?.toLowerCase().includes("postgres") ?? false;
+}
+
+function isGoogleSheetsBackedStore(store: ConversationStore | ClientDirectory): boolean {
+  return store.constructor?.name?.toLowerCase().includes("googlesheets") ?? false;
+}
+
+function countStoreRead(store: ConversationStore, timing?: AuthorityTurnTimingAccumulator): void {
+  if (isPostgresConversationStore(store)) {
+    incrementCount(timing, "postgresReads");
+  } else if (isGoogleSheetsBackedStore(store)) {
+    incrementCount(timing, "sheetsReads");
+  }
+}
+
+function countStoreWrite(store: ConversationStore, timing?: AuthorityTurnTimingAccumulator): void {
+  if (isPostgresConversationStore(store)) {
+    incrementCount(timing, "postgresWrites");
+  } else if (isGoogleSheetsBackedStore(store)) {
+    incrementCount(timing, "sheetsWrites");
+  }
+}
+
+function instrumentConversationStore(
+  store: ConversationStore,
+  timing?: AuthorityTurnTimingAccumulator,
+): ConversationStore {
+  if (!timing) {
+    return store;
+  }
+
+  return {
+    async load() {
+      const startedAt = nowMs();
+      try {
+        countStoreRead(store, timing);
+        return await store.load();
+      } finally {
+        addDuration(timing, "loadStateMs", startedAt);
+      }
+    },
+    async save(snapshot) {
+      const startedAt = nowMs();
+      try {
+        countStoreWrite(store, timing);
+        return await store.save(snapshot);
+      } finally {
+        addDuration(timing, "persistenceMs", startedAt);
+      }
+    },
+    async list(filters) {
+      const startedAt = nowMs();
+      try {
+        countStoreRead(store, timing);
+        return await store.list(filters);
+      } finally {
+        addDuration(timing, "loadStateMs", startedAt);
+      }
+    },
+    async getById(id) {
+      const startedAt = nowMs();
+      try {
+        countStoreRead(store, timing);
+        return await store.getById(id);
+      } finally {
+        addDuration(timing, "loadStateMs", startedAt);
+      }
+    },
+    async getByPhone(phoneNormalized) {
+      const startedAt = nowMs();
+      try {
+        countStoreRead(store, timing);
+        return await store.getByPhone(phoneNormalized);
+      } finally {
+        addDuration(timing, "loadStateMs", startedAt);
+      }
+    },
+    async upsertConversation(conversation) {
+      const startedAt = nowMs();
+      try {
+        countStoreWrite(store, timing);
+        return await store.upsertConversation(conversation);
+      } finally {
+        addDuration(timing, "persistenceMs", startedAt);
+      }
+    },
+    async addMessage(message) {
+      const startedAt = nowMs();
+      try {
+        if (isPostgresConversationStore(store)) {
+          incrementCount(timing, "postgresReads");
+        }
+        countStoreWrite(store, timing);
+        return await store.addMessage(message);
+      } finally {
+        addDuration(timing, "persistenceMs", startedAt);
+      }
+    },
+    async addEvent(event) {
+      const startedAt = nowMs();
+      try {
+        if (isPostgresConversationStore(store)) {
+          incrementCount(timing, "postgresReads");
+        }
+        countStoreWrite(store, timing);
+        const written = await store.addEvent(event);
+        incrementCount(timing, "eventsWritten");
+        if (event.eventType === "authority_turn_completed") {
+          timing.tracePersisted = true;
+        }
+        return written;
+      } finally {
+        const duration = durationSince(startedAt);
+        timing.eventLogMs += duration;
+        timing.persistenceMs += duration;
+      }
+    },
+    async replaceConversation(record) {
+      const startedAt = nowMs();
+      try {
+        countStoreWrite(store, timing);
+        return await store.replaceConversation(record);
+      } finally {
+        addDuration(timing, "persistenceMs", startedAt);
+      }
+    },
+    async seed(records) {
+      const startedAt = nowMs();
+      try {
+        countStoreWrite(store, timing);
+        return await store.seed(records);
+      } finally {
+        addDuration(timing, "persistenceMs", startedAt);
+      }
+    },
+  };
 }
 
 async function addEventBestEffort(
@@ -683,6 +1099,7 @@ function buildAuthorityTurnTrace(input: {
   recordBefore: ConversationRecord;
   recordAfter?: ConversationRecord;
   message: string;
+  timing?: AuthorityTurnTimingAccumulator;
   nluIntent?: string;
   nluGlobalIntent?: string;
   nluSlotsExtracted?: string[];
@@ -700,10 +1117,12 @@ function buildAuthorityTurnTrace(input: {
   const lastReply = lastBotReplyBody(input.recordBefore);
   const stateBefore = input.recordBefore.reservationFlow;
   const stateAfter = input.recordAfter?.reservationFlow;
+  const timing = finalizeAuthorityTiming(input.timing);
   return {
     turnId: input.turnId,
     conversationIdHash: safeConversationId(input.recordBefore.id),
     channel: "whatsapp",
+    ...timing,
     inboundKind: safeBodyKind(input.message),
     activeFlowBefore: activeFlowName(input.recordBefore),
     lastBotQuestionKindBefore: inferLastBotQuestionKindForTrace(lastReply),
@@ -750,10 +1169,15 @@ function authorityTurnStartedEvent(trace: Pick<
 }
 
 function authorityTurnCompletedEvents(trace: AuthorityTurnTrace): PendingSafeEvent[] {
+  trace.tracePersisted = true;
   const events: PendingSafeEvent[] = [
     {
       eventType: "authority_turn_completed",
       payload: trace as unknown as Record<string, unknown>,
+    },
+    {
+      eventType: "authority_turn_timing_completed",
+      payload: pickAuthorityTimingPayload(trace) as unknown as Record<string, unknown>,
     },
   ];
   if (trace.legacyBypassUsed) {
@@ -953,9 +1377,21 @@ async function addSafeEvents(
   store: ConversationStore,
   conversationId: string,
   events: PendingSafeEvent[],
+  timing?: AuthorityTurnTimingAccumulator,
 ): Promise<void> {
   for (const event of events) {
-    await store.addEvent(createEvent(conversationId, event.eventType, event.payload));
+    try {
+      await store.addEvent(createEvent(conversationId, event.eventType, event.payload));
+    } catch (error) {
+      if (timing) {
+        timing.traceDroppedBestEffort = true;
+      }
+      console.warn("authority_trace_event_dropped_best_effort", {
+        eventType: event.eventType,
+        conversationId: safeConversationId(conversationId),
+        ...safeConversationStoreError(error),
+      });
+    }
   }
 }
 
@@ -964,13 +1400,18 @@ function readAssistiveNluConfig(): {
   assistiveSafe: boolean;
   shadow: boolean;
   openaiConfigured: boolean;
+  timeoutMs: number;
   model?: string;
 } {
+  const configuredTimeout = Number.parseInt(process.env.HOTEL_LLM_NLU_TIMEOUT_MS ?? "", 10);
   return {
     enabled: process.env.HOTEL_LLM_NLU_ENABLED === "true",
     assistiveSafe: process.env.HOTEL_LLM_NLU_DECISION_MODE === "assistive_safe",
     shadow: process.env.HOTEL_LLM_NLU_SHADOW !== "false",
     openaiConfigured: Boolean(process.env.OPENAI_API_KEY?.trim()),
+    timeoutMs: Number.isFinite(configuredTimeout)
+      ? Math.max(250, Math.min(configuredTimeout, 5000))
+      : 1500,
     model: process.env.OPENAI_MODEL?.trim() || undefined,
   };
 }
@@ -1024,24 +1465,57 @@ async function buildAssistiveNluEvents(input: {
   message: string;
   replyPlan: ReturnType<typeof buildConversationReplyPlan>;
   now: Date;
+  timing?: AuthorityTurnTimingAccumulator;
 }): Promise<PendingSafeEvent[]> {
   const config = readAssistiveNluConfig();
   const flow = input.record.reservationFlow;
   const pendingFields = flow ? computeMissingReservationFields(flow) : [];
-  const deterministicSlots = extractReservationSlotsFromMessage(input.message, {
-    flow,
-    now: input.now,
-  });
+  const deterministicSlots = measureSyncAuthorityStage(
+    input.timing,
+    "deterministicParserMs",
+    "assistive_deterministic_slots",
+    () => extractReservationSlotsFromMessage(input.message, {
+      flow,
+      now: input.now,
+    }),
+  );
+  const deterministicSlotNames = Object.keys(deterministicSlots);
   const basePayload = {
     activeFlow: flow ? "reservation" : undefined,
     status: flow?.status,
     pendingFields,
-    deterministicSlotNames: Object.keys(deterministicSlots),
+    deterministicSlotNames,
     intent: input.replyPlan.intent,
     ...safeBodyKind(input.message),
   };
 
+  if (deterministicSlotNames.length > 0) {
+    if (input.timing) {
+      input.timing.usedDeterministicFallback = true;
+    }
+    return [
+      {
+        eventType: "nlu_assistive_ignored_reason",
+        payload: {
+          ...basePayload,
+          reason: "deterministic_high_confidence",
+        },
+      },
+      {
+        eventType: "nlu_assistive_slots_extracted",
+        payload: {
+          source: "deterministic_fast_path",
+          slotNames: deterministicSlotNames,
+          pendingFields,
+        },
+      },
+    ];
+  }
+
   if (!config.enabled || !config.assistiveSafe || config.shadow || !config.openaiConfigured || !config.model) {
+    if (input.timing) {
+      input.timing.usedDeterministicFallback = true;
+    }
     return [
       {
         eventType: "nlu_assistive_ignored_reason",
@@ -1062,7 +1536,7 @@ async function buildAssistiveNluEvents(input: {
         eventType: "nlu_assistive_slots_extracted",
         payload: {
           source: "deterministic_fallback",
-          slotNames: Object.keys(deterministicSlots),
+          slotNames: deterministicSlotNames,
           pendingFields,
         },
       },
@@ -1076,40 +1550,52 @@ async function buildAssistiveNluEvents(input: {
     },
   ];
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 1500);
+  const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
-    const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: config.model,
-        input: [
-          "Eres un clasificador NLU seguro para un hotel canino.",
-          "Devuelve solo JSON con globalIntent y slots. No confirmes reservas ni escribas datos.",
-          JSON.stringify({
-            message: input.message,
-            context: {
-              activeFlow: "reservation",
-              status: flow?.status,
-              pendingFields,
-              hasPet: Boolean(flow?.petName),
-              hasCheckInDate: Boolean(flow?.checkInDate),
-              hasCheckInTime: Boolean(flow?.checkInTime),
-              hasCheckOutDate: Boolean(flow?.checkOutDate),
-              hasCheckOutTime: Boolean(flow?.checkOutTime),
-            },
-          }),
-        ].join("\n"),
-        max_output_tokens: 180,
+    if (input.timing) {
+      input.timing.usedOpenAI = true;
+      incrementCount(input.timing, "openaiCalls");
+    }
+    const response = await measureAuthorityStage(
+      input.timing,
+      "nluProviderMs",
+      "openai_responses",
+      () => fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: config.model,
+          input: [
+            "Eres un clasificador NLU seguro para un hotel canino.",
+            "Devuelve solo JSON con globalIntent y slots. No confirmes reservas ni escribas datos.",
+            JSON.stringify({
+              message: input.message,
+              context: {
+                activeFlow: "reservation",
+                status: flow?.status,
+                pendingFields,
+                hasPet: Boolean(flow?.petName),
+                hasCheckInDate: Boolean(flow?.checkInDate),
+                hasCheckInTime: Boolean(flow?.checkInTime),
+                hasCheckOutDate: Boolean(flow?.checkOutDate),
+                hasCheckOutTime: Boolean(flow?.checkOutTime),
+              },
+            }),
+          ].join("\n"),
+          max_output_tokens: 180,
+        }),
+        signal: controller.signal,
       }),
-      signal: controller.signal,
-    });
+    );
     const result = (await response.json().catch(() => undefined)) as unknown;
     const outputText = extractOutputTextFromOpenAiResponse(result);
     const assistiveSlotNames = safeAssistiveSlotNamesFromText(outputText);
+    if (input.timing && (!response.ok || assistiveSlotNames.length === 0)) {
+      input.timing.usedDeterministicFallback = true;
+    }
     events.push({
       eventType: "nlu_assistive_result_received",
       payload: {
@@ -1122,15 +1608,24 @@ async function buildAssistiveNluEvents(input: {
       eventType: "nlu_assistive_slots_extracted",
       payload: {
         source: response.ok && assistiveSlotNames.length > 0 ? "assistive_safe" : "deterministic_fallback",
-        slotNames: assistiveSlotNames.length > 0 ? assistiveSlotNames : Object.keys(deterministicSlots),
+        slotNames: assistiveSlotNames.length > 0 ? assistiveSlotNames : deterministicSlotNames,
         pendingFields,
       },
     });
   } catch (error) {
+    if (input.timing) {
+      input.timing.usedDeterministicFallback = true;
+      if (error instanceof Error && error.name === "AbortError") {
+        input.timing.timedOutStage = "openai_responses";
+      }
+    }
     events.push({
-      eventType: "nlu_assistive_failed_fallback_used",
+      eventType: error instanceof Error && error.name === "AbortError"
+        ? "nlu_provider_timeout_fallback_used"
+        : "nlu_assistive_failed_fallback_used",
       payload: {
         ...basePayload,
+        timeoutMs: config.timeoutMs,
         ...safeConversationStoreError(error),
       },
     });
@@ -1138,7 +1633,7 @@ async function buildAssistiveNluEvents(input: {
       eventType: "nlu_assistive_slots_extracted",
       payload: {
         source: "deterministic_fallback",
-        slotNames: Object.keys(deterministicSlots),
+        slotNames: deterministicSlotNames,
         pendingFields,
       },
     });
@@ -1873,10 +2368,44 @@ async function resolveAndPersistClientIdentity(
   record: ConversationRecord,
   payload: InboundWhatsAppPayload,
   clientDirectory: ClientDirectory,
+  timing?: AuthorityTurnTimingAccumulator,
 ): Promise<{ conversation: ConversationRecord; identity: ClientIdentityResult }> {
-  const identity = await new ClientDirectoryService(clientDirectory).resolveClientIdentity({
-    phone: payload.from,
-    name: payload.displayName,
+  if (isStrongDirectoryConversation(record) && hasPersistedClientDirectoryMatch(record)) {
+    if (timing) {
+      timing.clientDirectoryCacheHit = true;
+    }
+    return {
+      conversation: record,
+      identity: {
+        status: "known",
+        confidence: record.clientConfidence ?? "strong",
+        matchType: record.clientMatchType ?? "phone",
+        client: {
+          nombre: record.clientName ?? record.customerName ?? "Cliente conocido",
+          telefonoMovil: record.phoneE164,
+          telefonoNormalizado: record.phoneNormalized,
+          email: record.clientEmail,
+          mascotas: record.clientPets,
+          mascotasCount: record.clientPetsCount,
+          mascotasMatchStatus: record.clientPetsMatchStatus,
+          mascotasMeta: record.clientPetsMeta,
+          rowNumber: record.clientSheetRow,
+          sheetName: record.clientSheetName,
+        },
+        warnings: record.clientWarnings,
+        source: CLIENT_DIRECTORY_SOURCE,
+      },
+    };
+  }
+
+  const identity = await measureAuthorityStage(timing, "clientLookupMs", "client_directory_lookup", async () => {
+    if (isGoogleSheetsBackedStore(clientDirectory)) {
+      incrementCount(timing, "sheetsReads");
+    }
+    return new ClientDirectoryService(clientDirectory).resolveClientIdentity({
+      phone: payload.from,
+      name: payload.displayName,
+    });
   });
   const next = applyClientIdentity(record, identity);
   const conversation = await store.replaceConversation(next);
@@ -2126,6 +2655,10 @@ function isStrongDirectoryConversation(record: ConversationRecord): boolean {
     record.clientConfidence === "strong" &&
     (record.clientMatchType === "phone" || record.clientMatchType === "email")
   );
+}
+
+function hasPersistedClientDirectoryMatch(record: ConversationRecord): boolean {
+  return record.events.some((event) => event.eventType === "client_directory_match");
 }
 
 function knownClientFirstName(record: ConversationRecord): string | undefined {
@@ -2618,6 +3151,24 @@ export async function handleInboundWhatsApp(
   clientDirectory: ClientDirectory = getClientDirectory(),
   reservationBridgeDeps?: WhatsAppReservationBridgeDeps,
 ): Promise<InboundResult> {
+  const timing = createAuthorityTiming(payload.timing);
+  const instrumentedStore = instrumentConversationStore(store, timing);
+  return handleInboundWhatsAppWithTiming(
+    payload,
+    instrumentedStore,
+    clientDirectory,
+    reservationBridgeDeps,
+    timing,
+  );
+}
+
+async function handleInboundWhatsAppWithTiming(
+  payload: InboundWhatsAppPayload,
+  store: ConversationStore,
+  clientDirectory: ClientDirectory,
+  reservationBridgeDeps: WhatsAppReservationBridgeDeps | undefined,
+  timing: AuthorityTurnTimingAccumulator,
+): Promise<InboundResult> {
   const safeBody = redactConversationSensitiveText(payload.body);
 
   if (isConversationResetCommand(safeBody)) {
@@ -2645,6 +3196,7 @@ export async function handleInboundWhatsApp(
     fresh,
     payload,
     clientDirectory,
+    timing,
   );
   const freshWithClient = clientIdentity.conversation;
 
@@ -2728,7 +3280,12 @@ export async function handleInboundWhatsApp(
 
   const latestBeforeFlow = (await store.getById(freshWithClient.id)) ?? freshWithClient;
   if (isReservationChangeFlowActive(latestBeforeFlow)) {
-    const changePlan = buildConversationReplyPlan(safeBody);
+    const changePlan = measureSyncAuthorityStage(
+      timing,
+      "nluTotalMs",
+      "reservation_change_deterministic_nlu",
+      () => buildConversationReplyPlan(safeBody),
+    );
     const outcome = await advanceReservationChangeFlow({
       conversation: latestBeforeFlow,
       message: safeBody,
@@ -2756,13 +3313,24 @@ export async function handleInboundWhatsApp(
   }
 
   if (isReservationFlowActive(latestBeforeFlow)) {
-    const flowInterruptionPlan = buildConversationReplyPlan(safeBody);
-    const assistiveEvents = await buildAssistiveNluEvents({
-      record: latestBeforeFlow,
-      message: safeBody,
-      replyPlan: flowInterruptionPlan,
-      now: reservationBridgeDeps?.now?.() ?? new Date(),
-    });
+    const flowInterruptionPlan = measureSyncAuthorityStage(
+      timing,
+      "nluTotalMs",
+      "reservation_flow_deterministic_nlu",
+      () => buildConversationReplyPlan(safeBody),
+    );
+    const assistiveEvents = await measureAuthorityStage(
+      timing,
+      "nluTotalMs",
+      "reservation_flow_assistive_nlu",
+      () => buildAssistiveNluEvents({
+        record: latestBeforeFlow,
+        message: safeBody,
+        replyPlan: flowInterruptionPlan,
+        now: reservationBridgeDeps?.now?.() ?? new Date(),
+        timing,
+      }),
+    );
 
     if (isReservationFlowCancelEscape(safeBody)) {
       const cancelled = buildReservationFlowCancelledRecord(latestBeforeFlow);
@@ -2771,6 +3339,7 @@ export async function handleInboundWhatsApp(
         recordBefore: latestBeforeFlow,
         recordAfter: cancelled,
         message: safeBody,
+        timing,
         nluIntent: flowInterruptionPlan.intent,
         nluGlobalIntent: authorityGlobalIntent({
           message: safeBody,
@@ -2811,7 +3380,7 @@ export async function handleInboundWhatsApp(
             clearedReservationFlow: Boolean(latestBeforeFlow.reservationFlow),
           },
         },
-      ]);
+      ], timing);
       const botReply = await addRenderedBotMessage(
         store,
         latestBeforeFlow.id,
@@ -2880,7 +3449,7 @@ export async function handleInboundWhatsApp(
             intent: flowInterruptionPlan.intent,
           },
         },
-      ]);
+      ], timing);
       const botReply = await addRenderedBotMessage(
         store,
         latestBeforeFlow.id,
@@ -2911,15 +3480,21 @@ export async function handleInboundWhatsApp(
             updatedAt: nowIso(),
           }
         : latestForFaq;
-      const attemptedSlots = extractReservationSlotsFromMessage(safeBody, {
-        flow: latestBeforeFlow.reservationFlow,
-        now: reservationBridgeDeps?.now?.() ?? new Date(),
-      });
+      const attemptedSlots = measureSyncAuthorityStage(
+        timing,
+        "deterministicParserMs",
+        "faq_resume_slot_parse",
+        () => extractReservationSlotsFromMessage(safeBody, {
+          flow: latestBeforeFlow.reservationFlow,
+          now: reservationBridgeDeps?.now?.() ?? new Date(),
+        }),
+      );
       const turnTrace = buildAuthorityTurnTrace({
         turnId: createId("turn"),
         recordBefore: latestBeforeFlow,
         recordAfter: nextConversation,
         message: safeBody,
+        timing,
         nluIntent: flowInterruptionPlan.intent,
         nluGlobalIntent: authorityGlobalIntent({
           message: safeBody,
@@ -2967,7 +3542,7 @@ export async function handleInboundWhatsApp(
             status: latestBeforeFlow.reservationFlow?.status,
           },
         },
-      ]);
+      ], timing);
 
       if (flowInterruptionPlan.handoff) {
         await store.replaceConversation(nextConversation);
@@ -3168,25 +3743,40 @@ export async function handleInboundWhatsApp(
     }
 
     const slotTargetResolution = latestBeforeFlow.reservationFlow
-      ? resolveReservationSlotTarget(safeBody, latestBeforeFlow.reservationFlow, {
-          now: reservationBridgeDeps?.now?.() ?? new Date(),
-        })
+      ? measureSyncAuthorityStage(
+          timing,
+          "deterministicParserMs",
+          "reservation_slot_target_resolution",
+          () => resolveReservationSlotTarget(safeBody, latestBeforeFlow.reservationFlow!, {
+            now: reservationBridgeDeps?.now?.() ?? new Date(),
+          }),
+        )
       : undefined;
     const attemptedSlots =
       slotTargetResolution?.extractedSlots ??
-      extractReservationSlotsFromMessage(safeBody, {
-        flow: latestBeforeFlow.reservationFlow,
-        now: reservationBridgeDeps?.now?.() ?? new Date(),
-      });
+      measureSyncAuthorityStage(
+        timing,
+        "deterministicParserMs",
+        "reservation_slot_parse",
+        () => extractReservationSlotsFromMessage(safeBody, {
+          flow: latestBeforeFlow.reservationFlow,
+          now: reservationBridgeDeps?.now?.() ?? new Date(),
+        }),
+      );
     const attemptedSlotNames = Object.keys(attemptedSlots);
     const targetedSlotNames = slotTargetResolution?.targetedSlotNames ?? [];
-    const flow = await advanceReservationFlow({
-      conversation: latestBeforeFlow,
-      inboundMessageId: inbound.id,
-      message: safeBody,
-      clientDirectory,
-      deps: reservationBridgeDeps,
-    });
+    const flow = await measureAuthorityStage(
+      timing,
+      "reducerMs",
+      "advance_reservation_flow",
+      () => advanceReservationFlow({
+        conversation: latestBeforeFlow,
+        inboundMessageId: inbound.id,
+        message: safeBody,
+        clientDirectory,
+        deps: reservationBridgeDeps,
+      }),
+    );
 
     if (flow) {
       const appliedSlotNames = changedReservationSlotNames(
@@ -3213,6 +3803,7 @@ export async function handleInboundWhatsApp(
         recordBefore: latestBeforeFlow,
         recordAfter: flow.conversation,
         message: safeBody,
+        timing,
         nluIntent: flowInterruptionPlan.intent,
         nluGlobalIntent: authorityGlobalIntent({
           message: safeBody,
@@ -3322,7 +3913,7 @@ export async function handleInboundWhatsApp(
           },
         },
         ...(antiLoop.event ? [antiLoop.event] : []),
-      ]);
+      ], timing);
       await store.addEvent(
         createEvent(flow.conversation.id, flow.eventType, flow.eventPayload),
       );
@@ -3437,7 +4028,12 @@ export async function handleInboundWhatsApp(
     });
   }
 
-  const initialReplyPlan = buildConversationReplyPlan(safeBody);
+  const initialReplyPlan = measureSyncAuthorityStage(
+    timing,
+    "nluTotalMs",
+    "deterministic_nlu",
+    () => buildConversationReplyPlan(safeBody),
+  );
   const replyPlan = shouldTreatAsReservationSlotFill(
     latestBeforePlan,
     initialReplyPlan,
@@ -3498,7 +4094,7 @@ export async function handleInboundWhatsApp(
       handoff: replyPlan.handoff,
       },
     },
-  ]);
+  ], timing);
 
   if (isStrongDirectoryConversation(latestBeforePlan) && isExplicitNotClientClaim(safeBody)) {
     const replyBody = renderCopy({ key: "service.client_override_reservation" });
@@ -3557,16 +4153,23 @@ export async function handleInboundWhatsApp(
       };
     }
 
-    const flow = startReservationFlow({
-      conversation: (await store.getById(freshWithClient.id)) ?? latestBeforePlan,
-      inboundMessageId: inbound.id,
-      now: reservationBridgeDeps?.now?.(),
-    });
+    const latestForStart = (await store.getById(freshWithClient.id)) ?? latestBeforePlan;
+    const flow = measureSyncAuthorityStage(
+      timing,
+      "reducerMs",
+      "start_reservation_flow",
+      () => startReservationFlow({
+        conversation: latestForStart,
+        inboundMessageId: inbound.id,
+        now: reservationBridgeDeps?.now?.(),
+      }),
+    );
     const turnTrace = buildAuthorityTurnTrace({
       turnId: createId("turn"),
       recordBefore: latestBeforePlan,
       recordAfter: flow.conversation,
       message: safeBody,
+      timing,
       nluIntent: replyPlan.intent,
       nluGlobalIntent: authorityGlobalIntent({
         message: safeBody,
@@ -3586,7 +4189,7 @@ export async function handleInboundWhatsApp(
       outboxKind: "twiml_response",
     });
     await store.replaceConversation(flow.conversation);
-    await addSafeEvents(store, flow.conversation.id, authorityRuntimeEvents(turnTrace));
+    await addSafeEvents(store, flow.conversation.id, authorityRuntimeEvents(turnTrace), timing);
     await store.addEvent(
       createEvent(flow.conversation.id, flow.eventType, flow.eventPayload),
     );

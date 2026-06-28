@@ -537,9 +537,14 @@ function mapFaqIntent(intent: FaqIntentId): ConversationIntent {
 
 export function buildConversationReplyPlan(message: string): ConversationReplyPlan {
   const nlu = classifyConversationIntent(message);
+  let faqMatch: ReturnType<typeof matchFaqIntent> | undefined;
+  const getFaqMatch = () => {
+    faqMatch ??= matchFaqIntent(message);
+    return faqMatch;
+  };
 
   if (!SHARED_FAQ_BYPASS_INTENTS.includes(nlu.intent)) {
-    const faqMatch = matchFaqIntent(message);
+    const faqMatch = getFaqMatch();
 
     if (faqMatch) {
       return {
@@ -603,8 +608,7 @@ export function buildConversationReplyPlan(message: string): ConversationReplyPl
     case "conversation_reset":
       return { ...nlu, handoff: false, renderKey: "conversation.reset", source: "conversation_nlu" };
     case "price_quote": {
-      const intelligence = analyzeConversationIntelligence(message);
-      if (intelligence.needsExactDate) {
+      if (nlu.slots.needsExactDate) {
         return {
           ...nlu,
           handoff: false,
@@ -612,7 +616,7 @@ export function buildConversationReplyPlan(message: string): ConversationReplyPl
           source: "conversation_nlu",
         };
       }
-      if (intelligence.checkInDate && intelligence.checkOutDate && intelligence.petCount) {
+      if (nlu.slots.checkInDate && nlu.slots.checkOutDate && nlu.slots.petCount) {
         return {
           ...nlu,
           handoff: false,
@@ -640,7 +644,7 @@ export function buildConversationReplyPlan(message: string): ConversationReplyPl
     case "faq_services":
     case "faq_cancellation":
     case "faq_contact": {
-      const faqMatch = matchFaqIntent(message);
+      const faqMatch = getFaqMatch();
       return {
         ...nlu,
         handoff: Boolean(faqMatch?.isFallback || faqMatch?.resolution.outputType === "handoff"),
