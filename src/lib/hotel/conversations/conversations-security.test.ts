@@ -568,12 +568,14 @@ describe("conversations security", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("Content-Type")).toContain("text/xml");
-    expect(text).toBe(
-      '<?xml version="1.0" encoding="UTF-8"?><Response><Message>Buenos días. ¿En qué podemos ayudarte?</Message></Response>',
-    );
+    expect(text).toContain("<Response><Message>Buenos días. bienvenido/a a Somos Muy Perros.");
+    expect(text).toContain("puedo ayudarte con reservas, disponibilidad, precios, cambios o dudas del hotel.");
+    expect(text).not.toContain("Vista previa");
     expect(text.trim()).not.toMatch(/^\{/);
     expect(messages.some((message) => message.senderType === "user")).toBe(true);
-    expect(botReply?.body).toBe("Buenos días. ¿En qué podemos ayudarte?");
+    expect(botReply?.body).toBe(
+      "Buenos días. bienvenido/a a Somos Muy Perros. Soy el asistente del Hotel Canino; puedo ayudarte con reservas, disponibilidad, precios, cambios o dudas del hotel.",
+    );
     expect(text).toContain(botReply?.body ?? "");
     expect(infoSpy).toHaveBeenCalledWith(
       "conversation_id_derived",

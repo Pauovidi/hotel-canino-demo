@@ -291,6 +291,12 @@ export function extractRelativeDateRange(message: string): RelativeDateRangeMatc
   if (/\b(?:este\s+finde|este\s+fin\s+de\s+semana|finde)\b/.test(normalized)) {
     return { id: "este_fin_de_semana", label: "este fin de semana" };
   }
+  if (/\bviernes\s+(?:a|al|hasta)\s+domingo\b/.test(normalized)) {
+    return { id: "viernes_a_domingo", label: "viernes a domingo" };
+  }
+  if (/\bsabado\s+y\s+domingo\b/.test(normalized)) {
+    return { id: "sabado_domingo", label: "sábado y domingo" };
+  }
   if (/\bmanana\b/.test(normalized)) {
     return { id: "manana", label: "mañana" };
   }

@@ -220,7 +220,9 @@ export function buildReservationConfirmReplyPlan(
 function extractSlots(rawText: string, normalized: string): ConversationSlots {
   const email = rawText.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
   const phone = rawText.match(/(?:\+34\s*)?(?:\d[\s.-]?){9,}/)?.[0]?.trim();
-  const reservationId = rawText.match(/\b(?:res|reserva)[-_ ]?[a-z0-9-]{4,}\b/i)?.[0];
+  const reservationId = rawText.match(
+    /\b(?:(?:res|reserva)[-_ ]+[a-z0-9-]{4,}|(?:res|reserva)\d{4,})\b/i,
+  )?.[0];
   const petMatch =
     rawText.match(
       /\b(?:el\s+)?nombre\s+de\s+(?:mi\s+)?(?:mascota|perro|perra)\s+es\s+([A-ZÁÉÍÓÚÑ][\p{L}'-]{1,24})/u,
@@ -263,6 +265,27 @@ export function classifyConversationIntent(message: string): ConversationNluResu
     needsExactDate: intelligence.needsExactDate || undefined,
   };
   const matchedSignals: string[] = [];
+  const hasReservationVerb = matchAny(normalized, [
+    /\b(?:quiero|queria|querria|quisiera|necesito|me\s+gustaria|puedo)\s+(?:hacer\s+)?(?:una\s+)?reserva(?:r)?\b/,
+    /\breservar\b/,
+  ]);
+  const hasAvailabilityTerm = matchAny(normalized, [
+    /\b(?:disponibilidad|sitio|hueco|plaza|plazas)\b/,
+    /\b(?:hay|teneis|tenéis|tendriais|tendríais)\b.*\b(?:sitio|hueco|plaza|plazas)\b/,
+  ]);
+  const asksIfPossible = matchAny(normalized, [
+    /\b(?:es|seria|sería)\s+posible\b/,
+    /\b(?:se|se\s+podria|se\s+podría)\s+puede\b/,
+    /\b(?:podria|podría|podriamos|podríamos|podriais|podríais)\b/,
+    /\b(?:hay|habria|habría)\s+(?:opcion|opción)\b/,
+  ]);
+  const isBareRelativeRange =
+    Boolean(relativeDateRange) &&
+    matchAny(normalized, [
+      /^(?:este\s+finde|este\s+fin\s+de\s+semana|finde)$/,
+      /^(?:viernes\s+(?:a|al|hasta)\s+domingo)$/,
+      /^(?:sabado\s+y\s+domingo)$/,
+    ]);
 
   function result(
     intent: ConversationIntent,
@@ -296,14 +319,21 @@ export function classifyConversationIntent(message: string): ConversationNluResu
 
   if (
     relativeDateRange &&
-    matchAny(normalized, [
-      /\b(?:teneis|tenéis|hay|tendriais|tendríais)\s+(?:disponibilidad|sitio|hueco|plaza)\b/,
-      /\b(?:disponibilidad|sitio|hueco|plaza)\b.*\b(?:finde|fin\s+de\s+semana|manana|pasado\s+manana|agosto|vacaciones|sabado|domingo|viernes)\b/,
-    ])
+    (hasAvailabilityTerm ||
+      isBareRelativeRange ||
+      (hasReservationVerb && asksIfPossible) ||
+      (hasReservationVerb && /\b(?:finde|fin\s+de\s+semana|sabado|domingo|viernes)\b/.test(normalized)))
   ) {
     matchedSignals.push("informal_availability_query");
     if (relativeDateRange) {
       matchedSignals.push(`relative_date:${relativeDateRange.id}`);
+    }
+    if (hasReservationVerb) {
+      matchedSignals.push("reservation_intent_with_relative_range");
+      slots.wantsToReserve = true;
+    }
+    if (asksIfPossible) {
+      matchedSignals.push("availability_first_possibility_question");
     }
     return result("informal_availability_query");
   }

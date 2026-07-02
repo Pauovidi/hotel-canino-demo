@@ -18,6 +18,7 @@ describe("production smoke scripts", () => {
       "smoke:identity",
       "smoke:conversation",
       "smoke:conversation:latency",
+      "smoke:functional-baseline",
     ];
 
     for (const scriptName of productionSmokes) {
@@ -28,7 +29,7 @@ describe("production smoke scripts", () => {
     }
 
     expect(packageJson.scripts["smoke:production"]).toBe(
-      "npm run smoke:templates && npm run smoke:identity && npm run smoke:conversation && npm run smoke:conversation:latency",
+      "npm run smoke:templates && npm run smoke:identity && npm run smoke:conversation && npm run smoke:conversation:latency && npm run smoke:functional-baseline",
     );
     expect(packageJson.scripts.postbuild).toBe("npm run smoke:scripts:build");
   });
@@ -41,6 +42,7 @@ describe("production smoke scripts", () => {
       "scripts/conversation-identity-smoke.ts",
       "scripts/conversation-e2e-smoke.ts",
       "scripts/conversation-latency-smoke.ts",
+      "scripts/functional-baseline-smoke.ts",
     ]) {
       expect(existsSync(path.join(root, filePath)), filePath).toBe(true);
     }
@@ -51,6 +53,7 @@ describe("production smoke scripts", () => {
       "conversation-identity-smoke.mjs",
       "conversation-e2e-smoke.mjs",
       "conversation-latency-smoke.mjs",
+      "functional-baseline-smoke.mjs",
     ]) {
       expect(builder).toContain(expected);
     }
@@ -60,6 +63,7 @@ describe("production smoke scripts", () => {
     const identity = readProjectFile("scripts/conversation-identity-smoke.ts");
     const conversation = readProjectFile("scripts/conversation-e2e-smoke.ts");
     const latency = readProjectFile("scripts/conversation-latency-smoke.ts");
+    const functional = readProjectFile("scripts/functional-baseline-smoke.ts");
 
     expect(identity).toContain("class MemoryConversationStore");
     expect(identity).toContain("const directory: ClientDirectory");
@@ -74,5 +78,10 @@ describe("production smoke scripts", () => {
     expect(latency).toContain("openaiCalls");
     expect(latency).not.toContain("OPENAI_API_KEY");
     expect(latency).not.toContain("fetch(");
+
+    expect(functional).toContain("class MemoryConversationStore");
+    expect(functional).toContain("createStaticClientDirectory");
+    expect(functional).not.toContain("getClientDirectory(");
+    expect(functional).not.toContain("GoogleSheetsClient");
   });
 });

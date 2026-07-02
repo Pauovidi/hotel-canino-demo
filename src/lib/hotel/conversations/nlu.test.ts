@@ -39,6 +39,10 @@ describe("conversation NLU", () => {
     ["Buenos días, me gustaría saber más sobre el hotel", "general_info_query"],
     ["Quiero hacer una reserva pero me gustaría saber antes algunas cosas", "mixed_reservation_and_info"],
     ["Buenos días, tenéis disponibilidad para este finde?", "informal_availability_query"],
+    ["quería reservar para este fin de semana, ¿es posible?", "informal_availability_query"],
+    ["este finde", "informal_availability_query"],
+    ["sábado y domingo", "informal_availability_query"],
+    ["viernes a domingo", "informal_availability_query"],
     ["¿Qué tengo que llevar?", "faq_what_to_bring"],
     ["¿Puedo visitar el hotel?", "faq_visits"],
     ["¿Qué vacunas necesita?", "faq_vaccines"],
@@ -170,6 +174,7 @@ describe("conversation NLU", () => {
     ["este fin de semana", "este_fin_de_semana"],
     ["el próximo finde", "proximo_fin_de_semana"],
     ["sábado y domingo", "sabado_domingo"],
+    ["viernes a domingo", "viernes_a_domingo"],
   ])("classifies informal availability for %s", (phrase, relativeDateRange) => {
     const { plan, reply } = buildRenderedPlan(`Buenos días, tenéis disponibilidad para ${phrase}?`);
 
@@ -178,6 +183,18 @@ describe("conversation NLU", () => {
     expect(plan.handoff).toBe(false);
     expect(reply).toContain("No te confirmo plaza");
     expect(reply).not.toContain("Gracias, revisamos");
+  });
+
+  it("routes reservation phrased as possibility for this weekend to availability-first", () => {
+    const plan = buildConversationReplyPlan(
+      "quería reservar para este fin de semana, ¿es posible?",
+    );
+
+    expect(plan.intent).toBe("informal_availability_query");
+    expect(plan.slots.relativeDateRange).toBe("este_fin_de_semana");
+    expect(plan.slots.wantsToReserve).toBe(true);
+    expect(plan.matchedSignals).toContain("availability_first_possibility_question");
+    expect(plan.renderKey).toBe("conversation.availability_informal_collect_details");
   });
 
   it("answers pure greetings with a short natural reply", () => {

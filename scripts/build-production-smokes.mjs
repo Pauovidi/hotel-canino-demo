@@ -24,6 +24,10 @@ export const PRODUCTION_SMOKE_BUNDLES = {
     entry: "scripts/conversation-latency-smoke.ts",
     outfile: "conversation-latency-smoke.mjs",
   },
+  "functional-baseline": {
+    entry: "scripts/functional-baseline-smoke.ts",
+    outfile: "functional-baseline-smoke.mjs",
+  },
 };
 
 function selectedBundles(names) {

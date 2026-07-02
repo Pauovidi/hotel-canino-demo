@@ -3096,6 +3096,77 @@ function personalizeGreetingReply(reply: string, record: ConversationRecord): st
   return personalizeReplyWithClientName(reply, knownClientFirstName(record));
 }
 
+function lastConversationEventIndex(record: ConversationRecord, eventType: string): number {
+  for (let index = record.events.length - 1; index >= 0; index -= 1) {
+    if (record.events[index]?.eventType === eventType) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function hasWelcomeSinceLastReset(record: ConversationRecord): boolean {
+  return (
+    lastConversationEventIndex(record, "welcome_template_selected") >
+    lastConversationEventIndex(record, "conversation_reset_requested")
+  );
+}
+
+function welcomeRenderKey(record: ConversationRecord): ConversationRenderKey {
+  return isStrongDirectoryConversation(record)
+    ? "conversation.welcome_known_client"
+    : "conversation.welcome_unknown_client";
+}
+
+function renderGreetingWithWelcomeLock(input: {
+  message: string;
+  replyPlan: { renderKey: ConversationRenderKey };
+  record: ConversationRecord;
+}): {
+  reply: string;
+  renderKey: ConversationRenderKey;
+  eventType: "welcome_template_selected" | "welcome_template_skipped";
+  reason?: string;
+} {
+  if (hasWelcomeSinceLastReset(input.record)) {
+    return {
+      reply: personalizeGreetingReply(
+        renderConversationReplyPlan(input.replyPlan, input.message),
+        input.record,
+      ),
+      renderKey: input.replyPlan.renderKey,
+      eventType: "welcome_template_skipped",
+      reason: "already_sent_since_last_reset",
+    };
+  }
+
+  const renderKey = welcomeRenderKey(input.record);
+  return {
+    reply: renderCopy({
+      key: renderKey,
+      message: input.message,
+      firstName: knownClientFirstName(input.record),
+    }),
+    renderKey,
+    eventType: "welcome_template_selected",
+  };
+}
+
+function availabilityFirstRenderKey(
+  missingFields: Array<"petName" | "dateRange">,
+): ConversationRenderKey {
+  if (missingFields.length === 0) {
+    return "availability_first_handoff_contextual";
+  }
+  if (missingFields.length === 1 && missingFields[0] === "petName") {
+    return "availability_first_collect_pet";
+  }
+  if (missingFields.length === 1 && missingFields[0] === "dateRange") {
+    return "availability_first_clarify_range";
+  }
+  return "availability_first_needs_details";
+}
+
 export async function resetConversations(
   options: { dryRun?: boolean; confirm?: string } = {},
   store: ConversationStore = getConversationStore(),
@@ -4817,9 +4888,10 @@ async function handleInboundWhatsAppWithTiming(
     if (!replyPlan.slots.checkInDate && !replyPlan.slots.checkOutDate && !relativeRange) {
       missingFields.push("dateRange");
     }
+    const renderKey = availabilityFirstRenderKey(missingFields);
     const replyBody = personalizeGreetingReply(
       renderCopy({
-        key: "conversation.availability_informal_collect_details",
+        key: renderKey,
         message: safeBody,
         relativeDateRange: relativeRange?.label,
       }),
@@ -4841,18 +4913,43 @@ async function handleInboundWhatsAppWithTiming(
       updatedAt: nowIso(),
     };
 
-    return sendBotOutcome({
-      store,
-      conversation: nextConversation,
-      inbound,
-      reply: replyBody,
-      eventType: "availability_inquiry_started",
-      eventPayload: {
+    await store.replaceConversation(nextConversation);
+    await store.addEvent(
+      createEvent(nextConversation.id, "availability_first_triggered", {
+        relativeDateRange: relativeRange?.id,
+        wantsToReserve: Boolean(replyPlan.slots.wantsToReserve),
+        renderKey,
+      }),
+    );
+    if (missingFields.length > 0) {
+      await store.addEvent(
+        createEvent(nextConversation.id, "availability_precheck_missing_fields", {
+          missingFields,
+          noAvailabilityPromised: true,
+        }),
+      );
+    }
+    await store.addEvent(
+      createEvent(nextConversation.id, "availability_inquiry_started", {
         relativeDateRange: relativeRange?.id,
         missingFields,
         noAvailabilityPromised: true,
-      },
-    });
+        renderKey,
+      }),
+    );
+    const botReply = await addRenderedBotMessage(
+      store,
+      nextConversation.id,
+      replyBody,
+      renderKey,
+    );
+
+    return {
+      conversation: (await store.getById(nextConversation.id)) ?? nextConversation,
+      inbound,
+      botReply,
+      twiml: buildTwilioMessageResponse(replyBody),
+    };
   }
 
   if (isStrongDirectoryConversation(latestBeforePlan) && isExplicitNotClientClaim(safeBody)) {
@@ -5055,9 +5152,45 @@ async function handleInboundWhatsAppWithTiming(
     };
   }
 
+  const latestForReply = (await store.getById(freshWithClient.id)) ?? freshWithClient;
+  if (replyPlan.intent === "greeting") {
+    const rendered = renderGreetingWithWelcomeLock({
+      message: safeBody,
+      replyPlan,
+      record: latestForReply,
+    });
+    await store.addEvent(
+      createEvent(freshWithClient.id, rendered.eventType, {
+        renderTemplateId: rendered.renderKey,
+        reason: rendered.reason,
+        clientStatus: latestForReply.clientStatus ?? "unknown",
+      }),
+    );
+    const botReply = await addRenderedBotMessage(
+      store,
+      freshWithClient.id,
+      rendered.reply,
+      rendered.renderKey,
+    );
+    await store.addEvent(
+      createEvent(freshWithClient.id, "bot_reply_sent", {
+        source: replyPlan.source,
+        intent: replyPlan.intent,
+        renderTemplateId: rendered.renderKey,
+      }),
+    );
+
+    return {
+      conversation: (await store.getById(freshWithClient.id)) ?? latestForReply,
+      inbound,
+      botReply,
+      twiml: buildTwilioMessageResponse(rendered.reply),
+    };
+  }
+
   const reply = personalizeGreetingReply(
     renderConversationReplyPlan(replyPlan, safeBody),
-    (await store.getById(freshWithClient.id)) ?? freshWithClient,
+    latestForReply,
   );
   const botReply = await addRenderedBotMessage(
     store,

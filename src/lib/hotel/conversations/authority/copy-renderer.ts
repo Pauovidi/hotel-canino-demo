@@ -21,6 +21,8 @@ export const CONVERSATION_RESET_REPLY = "Reiniciado.";
 
 export type ConversationRenderKey =
   | "conversation.greeting"
+  | "conversation.welcome_known_client"
+  | "conversation.welcome_unknown_client"
   | "conversation.general_information"
   | "conversation.human_handoff"
   | "conversation.stay_status"
@@ -38,6 +40,14 @@ export type ConversationRenderKey =
   | "conversation.mixed_reservation_info_intro"
   | "conversation.availability_informal_collect_details"
   | "conversation.availability_needs_pet_and_dates"
+  | "availability_first_collect_pet"
+  | "availability_first_clarify_range"
+  | "availability_first_checking"
+  | "availability_first_available"
+  | "availability_first_unavailable"
+  | "availability_first_needs_details"
+  | "availability_first_offer_reservation"
+  | "availability_first_handoff_contextual"
   | "conversation.kb_topic_answer"
   | "conversation.kb_topic_unknown_clarify"
   | "conversation.info_answer_then_resume_reservation"
@@ -311,6 +321,16 @@ export function renderCopy(input: RenderCopyInput): string {
   switch (input.key) {
     case "conversation.greeting":
       return `${greetingPrefix(input.message ?? "") ?? "¡Hola!"} ¿En qué podemos ayudarte?`;
+    case "conversation.welcome_known_client":
+      return withGreeting(
+        input.message,
+        `${input.firstName ? `${input.firstName}, ` : ""}bienvenido/a a Somos Muy Perros. Soy el asistente del Hotel Canino; puedo ayudarte con reservas, disponibilidad, precios, cambios o dudas del hotel.`,
+      );
+    case "conversation.welcome_unknown_client":
+      return withGreeting(
+        input.message,
+        "bienvenido/a a Somos Muy Perros. Soy el asistente del Hotel Canino; puedo ayudarte con reservas, disponibilidad, precios, cambios o dudas del hotel.",
+      );
     case "conversation.general_information":
       return withGreeting(
         input.message,
@@ -340,6 +360,33 @@ export function renderCopy(input: RenderCopyInput): string {
     }
     case "conversation.availability_needs_pet_and_dates":
       return "Para revisar disponibilidad necesito el nombre de la mascota y las fechas aproximadas de entrada y salida.";
+    case "availability_first_collect_pet": {
+      const range = input.relativeDateRange ? ` para ${input.relativeDateRange}` : "";
+      return withGreeting(
+        input.message,
+        `Puedo preparar la consulta de disponibilidad${range}. Me falta solo el nombre de la mascota. No te confirmo plaza hasta comprobarlo con el flujo operativo.`,
+      );
+    }
+    case "availability_first_clarify_range":
+      return withGreeting(
+        input.message,
+        "Puedo preparar la consulta de disponibilidad. Me falta la fecha o rango aproximado de entrada y salida. No te confirmo plaza hasta comprobarlo con el flujo operativo.",
+      );
+    case "availability_first_checking":
+      return "Gracias. Con esos datos puedo revisar disponibilidad con el flujo operativo antes de seguir con la reserva.";
+    case "availability_first_available":
+      return "Hay disponibilidad según la comprobación operativa. Si quieres, seguimos con la reserva.";
+    case "availability_first_unavailable":
+      return "No aparece disponibilidad según la comprobación operativa. Si quieres, lo puede revisar el equipo.";
+    case "availability_first_needs_details":
+      return withGreeting(
+        input.message,
+        "Puedo preparar la consulta de disponibilidad. Me faltan el nombre de la mascota y el rango aproximado de entrada y salida. No te confirmo plaza hasta comprobarlo con el flujo operativo.",
+      );
+    case "availability_first_offer_reservation":
+      return "Si quieres, con esos datos seguimos con la reserva.";
+    case "availability_first_handoff_contextual":
+      return "Gracias. Con esos datos lo puede revisar el equipo y contestarte con disponibilidad real por aquí.";
     case "conversation.kb_topic_answer": {
       if (input.topicAnswer) {
         return input.topicAnswer;

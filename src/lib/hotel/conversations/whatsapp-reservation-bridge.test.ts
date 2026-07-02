@@ -3273,7 +3273,8 @@ describe("WhatsApp reservation bridge", () => {
     );
 
     expect(reset.twiml).toContain("Reiniciado");
-    expect(greeting.botReply?.body).toContain("¡Hola, Pau!");
+    expect(greeting.botReply?.body).toContain("Pau, bienvenido/a a Somos Muy Perros");
+    expect(greeting.botReply?.body).toContain("asistente del Hotel Canino");
     expect(start.botReply?.body).toContain("me confirmas el email");
     expect(start.botReply?.body).not.toContain("¿Ya eres cliente");
     expect(email.botReply?.body).toContain("Dime el nombre de tu mascota");
@@ -3404,7 +3405,8 @@ describe("WhatsApp reservation bridge", () => {
     );
 
     expect(reset.botReply?.body).toBe("Reiniciado.");
-    expect(greeting.botReply?.body).toContain("¡Hola, Pau!");
+    expect(greeting.botReply?.body).toContain("Pau, bienvenido/a a Somos Muy Perros");
+    expect(greeting.botReply?.body).toContain("asistente del Hotel Canino");
     expect(start.botReply?.body).toContain("Genial, Pau");
     expect(start.botReply?.body).toContain("Dime el nombre de tu mascota");
     expect(pet.botReply?.body).toContain("fecha y hora de entrada");

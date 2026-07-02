@@ -58,4 +58,44 @@ describe("conversation CopyRenderer", () => {
     expect(mixed).toContain("después seguimos con la reserva");
     expect(mixed).not.toContain("Perfecto, te paso");
   });
+
+  it("renders welcome keys without preview or preconfirmation copy", () => {
+    const known = renderCopy({
+      key: "conversation.welcome_known_client",
+      message: "hola buenas tardes",
+      firstName: "Laura",
+    });
+    const unknown = renderCopy({
+      key: "conversation.welcome_unknown_client",
+      message: "hola",
+    });
+
+    expect(known).toContain("Laura, bienvenido/a a Somos Muy Perros");
+    expect(known).toContain("reservas, disponibilidad, precios, cambios o dudas");
+    expect(known).not.toContain("Vista previa");
+    expect(known).not.toContain("Soy Maria Jose");
+    expect(unknown).toContain("bienvenido/a a Somos Muy Perros");
+    expect(unknown).not.toContain("A continuación te detallo la confirmación");
+  });
+
+  it("renders availability-first keys without fake availability", () => {
+    const collectPet = renderCopy({
+      key: "availability_first_collect_pet",
+      message: "quería reservar para este fin de semana, ¿es posible?",
+      relativeDateRange: "este fin de semana",
+    });
+    const clarifyRange = renderCopy({ key: "availability_first_clarify_range" });
+    const needsDetails = renderCopy({ key: "availability_first_needs_details" });
+    const contextual = renderCopy({ key: "availability_first_handoff_contextual" });
+    const offer = renderCopy({ key: "availability_first_offer_reservation" });
+
+    expect(collectPet).toContain("Me falta solo el nombre de la mascota");
+    expect(collectPet).toContain("No te confirmo plaza");
+    expect(collectPet).not.toContain("Tenemos disponibilidad");
+    expect(collectPet).not.toContain("fecha de entrada, la fecha de salida y el nombre");
+    expect(clarifyRange).toContain("Me falta la fecha o rango aproximado");
+    expect(needsDetails).toContain("Me faltan el nombre de la mascota");
+    expect(contextual).toContain("disponibilidad real");
+    expect(offer).toContain("seguimos con la reserva");
+  });
 });
