@@ -222,6 +222,18 @@ function resolveRelativeEntry(normalized: string, now: Date): { date?: string; l
 }
 
 function parseExactDateRange(normalized: string, now: Date) {
+  function normalizeCoherentRange(checkInDate?: string, checkOutDate?: string) {
+    if (!checkInDate || !checkOutDate) {
+      return { checkInDate, checkOutDate };
+    }
+    if (Date.parse(`${checkOutDate}T00:00:00.000Z`) >= Date.parse(`${checkInDate}T00:00:00.000Z`)) {
+      return { checkInDate, checkOutDate };
+    }
+    const end = new Date(`${checkOutDate}T00:00:00.000Z`);
+    end.setUTCFullYear(end.getUTCFullYear() + 1);
+    return { checkInDate, checkOutDate: end.toISOString().slice(0, 10) };
+  }
+
   const numeric = normalized.match(
     /\b(?:del|desde)?\s*(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\s*(?:al|hasta|a)\s*(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b/,
   );
@@ -232,8 +244,11 @@ function parseExactDateRange(normalized: string, now: Date) {
     const endMonth = Number.parseInt(numeric[5], 10);
     const startYear = normalizeYear(numeric[3] ?? numeric[6], now, startMonth, startDay);
     const endYear = normalizeYear(numeric[6] ?? numeric[3], now, endMonth, endDay);
-    const checkInDate = isoDate(startYear, startMonth, startDay);
-    const checkOutDate = isoDate(endYear, endMonth, endDay);
+    const range = normalizeCoherentRange(
+      isoDate(startYear, startMonth, startDay),
+      isoDate(endYear, endMonth, endDay),
+    );
+    const { checkInDate, checkOutDate } = range;
     return checkInDate && checkOutDate
       ? { checkInDate, checkOutDate, checkInLabel: formatShortDate(checkInDate), checkOutLabel: formatShortDate(checkOutDate) }
       : {};
@@ -256,8 +271,11 @@ function parseExactDateRange(normalized: string, now: Date) {
   const endDay = Number.parseInt(natural[3], 10);
   const startYear = normalizeYear(natural[5], now, startMonth, startDay);
   const endYear = normalizeYear(natural[5], now, endMonth, endDay);
-  const checkInDate = isoDate(startYear, startMonth, startDay);
-  const checkOutDate = isoDate(endYear, endMonth, endDay);
+  const range = normalizeCoherentRange(
+    isoDate(startYear, startMonth, startDay),
+    isoDate(endYear, endMonth, endDay),
+  );
+  const { checkInDate, checkOutDate } = range;
   return checkInDate && checkOutDate
     ? { checkInDate, checkOutDate, checkInLabel: formatShortDate(checkInDate), checkOutLabel: formatShortDate(checkOutDate) }
     : {};

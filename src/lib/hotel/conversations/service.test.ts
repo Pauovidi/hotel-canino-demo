@@ -960,6 +960,114 @@ describe("conversation service", () => {
     expect(result.conversation.events.some((event) => event.eventType === "human_requested")).toBe(false);
   });
 
+  it("answers open hotel information after reset without generic fallback", async () => {
+    const store = new MemoryConversationStore();
+
+    await handleInboundWhatsApp({ from: "+34612345678", body: "reiniciar" }, store);
+    const result = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "Buenos días, me gustaría saber más sobre el hotel" },
+      store,
+    );
+
+    expect(result.conversation.mode).toBe("bot");
+    expect(result.conversation.humanRequested).toBe(false);
+    expect(result.botReply?.body).toContain("Somos Muy Perros");
+    expect(result.botReply?.body).toContain("servicios");
+    expect(result.botReply?.body).not.toContain("Gracias, revisamos");
+    expect(result.botReply?.body).not.toContain("Perdona, no te he entendido");
+    expect(result.conversation.events.some((event) => event.eventType === "nlu_fast_path_skipped_quality_gate")).toBe(true);
+    expect(result.conversation.events.some((event) => event.eventType === "nlu_knowledge_base_match")).toBe(true);
+  });
+
+  it("collects minimum details for informal weekend availability without promising a slot", async () => {
+    const store = new MemoryConversationStore();
+
+    await handleInboundWhatsApp({ from: "+34612345678", body: "reiniciar" }, store);
+    const result = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "Buenos días, tenéis disponibilidad para este finde?" },
+      store,
+    );
+
+    expect(result.conversation.mode).toBe("bot");
+    expect(result.conversation.humanRequested).toBe(false);
+    expect(result.conversation.activeFlow).toBe("availabilityInquiry");
+    expect(result.conversation.availabilityInquiry).toMatchObject({
+      relativeDateRange: "este_fin_de_semana",
+      missingFields: ["petName"],
+      readyForTool: false,
+    });
+    expect(result.botReply?.body).toContain("este fin de semana");
+    expect(result.botReply?.body).toContain("nombre de la mascota");
+    expect(result.botReply?.body).toContain("No te confirmo plaza");
+    expect(result.botReply?.body).not.toContain("Gracias, revisamos");
+    expect(result.conversation.events.some((event) => event.eventType === "availability_inquiry_started")).toBe(true);
+  });
+
+  it("holds reservation intent for prior questions and resumes after answering a topic", async () => {
+    const store = new MemoryConversationStore();
+
+    await handleInboundWhatsApp({ from: "+34612345678", body: "reiniciar" }, store);
+    const intro = await handleInboundWhatsApp(
+      {
+        from: "+34612345678",
+        body: "Quiero hacer una reserva pero me gustaría saber antes algunas cosas",
+      },
+      store,
+    );
+    const hours = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "¿qué horarios tenéis?" },
+      store,
+    );
+
+    expect(intro.conversation.heldReservationIntent).toBe(true);
+    expect(intro.conversation.activeFlow).toBe("info");
+    expect(intro.botReply?.body).toContain("después seguimos con la reserva");
+    expect(hours.conversation.heldReservationIntent).toBe(true);
+    expect(hours.botReply?.body).toContain("El horario de recepción");
+    expect(hours.botReply?.body).toContain("Cuando quieras, seguimos con la reserva.");
+    expect(hours.botReply?.body).not.toContain("Gracias, revisamos");
+    expect(hours.conversation.events.some((event) => event.eventType === "info_answered_then_resume_reservation")).toBe(true);
+  });
+
+  it("preserves known client identity across reset and greets with the stored first name", async () => {
+    const store = new MemoryConversationStore();
+    const directory = createStaticClientDirectory([
+      {
+        nombre: "Laura Cliente",
+        telefonoMovil: "+34 612 345 678",
+        telefonoNormalizado: "34612345678",
+        mascotas: ["Kira"],
+        mascotasCount: 1,
+        rowNumber: 2,
+        sheetName: "CLIENTES",
+      },
+    ]);
+
+    const first = await handleInboundWhatsApp(
+      { from: "whatsapp:+34612345678", body: "hola" },
+      store,
+      directory,
+    );
+    const reset = await handleInboundWhatsApp(
+      { from: "whatsapp:+34612345678", body: "reiniciar" },
+      store,
+      directory,
+    );
+    const greeting = await handleInboundWhatsApp(
+      { from: "whatsapp:+34612345678", body: "hola buenas tardes" },
+      store,
+      directory,
+    );
+
+    expect(first.conversation.clientStatus).toBe("known");
+    expect(reset.conversation.clientStatus).toBe("known");
+    expect(greeting.conversation.clientStatus).toBe("known");
+    expect(greeting.botReply?.body).toBe("Buenas tardes, Laura. ¿En qué podemos ayudarte?");
+    expect(greeting.conversation.clientPets).toEqual(["Kira"]);
+    expect(greeting.conversation.events.some((event) => event.eventType === "client_identity_preserved_after_reset")).toBe(true);
+    expect(greeting.conversation.events.some((event) => event.eventType === "client_identity_lookup_cache_hit")).toBe(true);
+  });
+
   it("answers a payment FAQ during an active reservation flow and resumes the missing field", async () => {
     const store = new MemoryConversationStore();
 

@@ -95,8 +95,8 @@ export function renderBathOfferTemplate(input: { petNames?: string[] } = {}): st
     : "tu perro";
   return [
     `¿Quieres que bañemos a ${pets} antes de la salida?`,
-    "El precio es de 15€ para perros pequeños, 20€ para perros medianos y 25€ para perros grandes, siempre que sea pelo corto.",
-    "Para pelo largo, nudos o cortes de razas específicas, envíanos una foto y lo revisa recepción.",
+    "El precio es de 15€ para perros pequeños, 20 para perros medianos y 25 para perros grandes, siempre que sea pelo corto.",
+    "para pelo largo , nudos o corte de razas especificas preguntar adjuntado una foto",
   ].join("\n");
 }
 

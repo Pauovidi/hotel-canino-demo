@@ -58,9 +58,13 @@ function currentStateFromConversation(record?: ConversationRecord): NormalizedUs
       ? "reservation"
       : record.pendingReservationModificationFlow || record.pendingReservationCancellationFlow
         ? "reservation_change"
-        : record.pendingPriceQuoteFlow
-          ? "price_quote"
-          : "none",
+        : record.availabilityInquiry || record.activeFlow === "availabilityInquiry"
+          ? "availabilityInquiry"
+          : record.activeFlow === "info"
+            ? "info"
+            : record.pendingPriceQuoteFlow
+              ? "price_quote"
+              : "none",
     reservationStatus: record.reservationFlow?.status,
     proposalStatus: record.pendingReservationProposal?.status,
     termsStatus: record.pendingReservationProposal?.termsAccepted
@@ -222,6 +226,38 @@ export function decideNextConversationAction(input: {
       requiresToolSuccess: false,
       reason: decision.reason,
       renderKey: "conversation.faq_reply",
+    };
+  }
+  if (decision.route === "knowledge_base") {
+    return {
+      type: "answer_kb_topic",
+      kind: "answer_faq_then_resume",
+      policyRoute: decision.route,
+      requiresToolSuccess: false,
+      reason: decision.reason,
+      renderKey: input.interpretation.intent === "general_info_query"
+        ? "conversation.general_hotel_info"
+        : "conversation.kb_topic_answer",
+    };
+  }
+  if (decision.route === "mixed_reservation_info") {
+    return {
+      type: "hold_reservation_intent_while_answering_info",
+      kind: "answer_faq_then_resume",
+      policyRoute: decision.route,
+      requiresToolSuccess: false,
+      reason: decision.reason,
+      renderKey: "conversation.mixed_reservation_info_intro",
+    };
+  }
+  if (decision.route === "availability_inquiry") {
+    return {
+      type: "collect_availability_minimum_details",
+      kind: "ask_missing_slot",
+      policyRoute: decision.route,
+      requiresToolSuccess: false,
+      reason: decision.reason,
+      renderKey: "conversation.availability_informal_collect_details",
     };
   }
   if (decision.route === "reservation_confirmation") {

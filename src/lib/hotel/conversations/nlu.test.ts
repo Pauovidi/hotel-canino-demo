@@ -36,6 +36,9 @@ describe("conversation NLU", () => {
     ["hola, tengo una duda", "general_information"],
     ["hola, quería información", "general_information"],
     ["Hola, quiero información", "general_information"],
+    ["Buenos días, me gustaría saber más sobre el hotel", "general_info_query"],
+    ["Quiero hacer una reserva pero me gustaría saber antes algunas cosas", "mixed_reservation_and_info"],
+    ["Buenos días, tenéis disponibilidad para este finde?", "informal_availability_query"],
     ["¿Qué tengo que llevar?", "faq_what_to_bring"],
     ["¿Puedo visitar el hotel?", "faq_visits"],
     ["¿Qué vacunas necesita?", "faq_vaccines"],
@@ -137,6 +140,46 @@ describe("conversation NLU", () => {
     expect(reply).not.toContain("por aqui");
   });
 
+  it("answers open hotel info from the quality KB path", () => {
+    const { plan, reply } = buildRenderedPlan("Buenos días, me gustaría saber más sobre el hotel");
+
+    expect(plan.intent).toBe("general_info_query");
+    expect(plan.renderKey).toBe("conversation.general_hotel_info");
+    expect(plan.handoff).toBe(false);
+    expect(reply).toContain("Somos Muy Perros");
+    expect(reply).toContain("servicios");
+    expect(reply).not.toContain("Gracias, revisamos");
+    expect(reply).not.toContain("Perdona, no te he entendido");
+  });
+
+  it("holds reservation intent while answering prior info questions", () => {
+    const { plan, reply } = buildRenderedPlan(
+      "Quiero hacer una reserva pero me gustaría saber antes algunas cosas",
+    );
+
+    expect(plan.intent).toBe("mixed_reservation_and_info");
+    expect(plan.slots.wantsToReserve).toBe(true);
+    expect(plan.slots.wantsInfoBeforeReserve).toBe(true);
+    expect(plan.handoff).toBe(false);
+    expect(reply).toContain("dime qué quieres saber");
+    expect(reply).toContain("después seguimos con la reserva");
+  });
+
+  it.each([
+    ["este finde", "este_fin_de_semana"],
+    ["este fin de semana", "este_fin_de_semana"],
+    ["el próximo finde", "proximo_fin_de_semana"],
+    ["sábado y domingo", "sabado_domingo"],
+  ])("classifies informal availability for %s", (phrase, relativeDateRange) => {
+    const { plan, reply } = buildRenderedPlan(`Buenos días, tenéis disponibilidad para ${phrase}?`);
+
+    expect(plan.intent).toBe("informal_availability_query");
+    expect(plan.slots.relativeDateRange).toBe(relativeDateRange);
+    expect(plan.handoff).toBe(false);
+    expect(reply).toContain("No te confirmo plaza");
+    expect(reply).not.toContain("Gracias, revisamos");
+  });
+
   it("answers pure greetings with a short natural reply", () => {
     const { plan, reply } = buildRenderedPlan("Buenos días");
 
@@ -211,8 +254,8 @@ describe("conversation NLU", () => {
     const plainFaq = buildConversationReplyPlan("¿cuánto cuesta?");
 
     expect(quote.intent).toBe("price_quote");
-    expect(quote.slots.checkInDate).toBe("2026-06-30");
-    expect(quote.slots.checkOutDate).toBe("2026-07-08");
+    expect(quote.slots.checkInDate).toBe("2027-06-30");
+    expect(quote.slots.checkOutDate).toBe("2027-07-08");
     expect(quoteReply).toContain("necesito saber cuántos perros");
     expect(quoteReply).not.toContain("Perdona, no te he entendido bien");
     expect(direct.intent).toBe("price_quote");

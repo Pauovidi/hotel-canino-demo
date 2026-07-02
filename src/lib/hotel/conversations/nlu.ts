@@ -1,6 +1,7 @@
 import type { FaqIntentId } from "@/lib/hotel/faq";
 import { matchFaqIntent } from "@/lib/hotel/knowledge/faq";
 import { analyzeConversationIntelligence } from "./conversation-intelligence";
+import { extractRelativeDateRange } from "./knowledge-base";
 import {
   CONVERSATION_RESET_REPLY,
   type ConversationRenderKey,
@@ -11,6 +12,18 @@ export { CONVERSATION_RESET_REPLY };
 export type ConversationIntent =
   | "greeting"
   | "general_information"
+  | "general_info_query"
+  | "topic_info_query"
+  | "mixed_reservation_and_info"
+  | "informal_availability_query"
+  | "faq_query"
+  | "clarify_or_followup_question"
+  | "price_query"
+  | "schedule_hours_query"
+  | "services_query"
+  | "requirements_query"
+  | "location_query"
+  | "bath_service_query"
   | "faq_hours"
   | "faq_prices"
   | "faq_visits"
@@ -43,10 +56,18 @@ export interface ConversationSlots {
   email?: string;
   reservationId?: string;
   requestedTopic?: string;
+  topic?: string;
   petCount?: number;
   petBreeds?: string[];
   checkInDate?: string;
   checkOutDate?: string;
+  dateRange?: string;
+  dateStart?: string;
+  dateEnd?: string;
+  relativeDateRange?: string;
+  reservationStage?: string;
+  wantsToReserve?: boolean;
+  wantsInfoBeforeReserve?: boolean;
   vagueDateMention?: string;
   needsExactDate?: boolean;
 }
@@ -68,6 +89,18 @@ const SHARED_FAQ_BYPASS_INTENTS: ConversationIntent[] = [
   "conversation_reset",
   "greeting",
   "general_information",
+  "general_info_query",
+  "topic_info_query",
+  "mixed_reservation_and_info",
+  "informal_availability_query",
+  "faq_query",
+  "clarify_or_followup_question",
+  "price_query",
+  "schedule_hours_query",
+  "services_query",
+  "requirements_query",
+  "location_query",
+  "bath_service_query",
   "human_handoff",
   "stay_status_question",
   "price_quote",
@@ -215,12 +248,17 @@ export function classifyConversationIntent(message: string): ConversationNluResu
   const normalized = normalizeText(message);
   const intelligence = analyzeConversationIntelligence(message);
   const baseSlots = extractSlots(message, normalized);
+  const relativeDateRange = extractRelativeDateRange(message);
   const slots: ConversationSlots = {
     ...baseSlots,
     petCount: intelligence.petCount,
     petBreeds: intelligence.petBreeds.length ? intelligence.petBreeds : undefined,
     checkInDate: intelligence.checkInDate,
     checkOutDate: intelligence.checkOutDate,
+    dateStart: intelligence.checkInDate,
+    dateEnd: intelligence.checkOutDate,
+    dateRange: relativeDateRange?.label,
+    relativeDateRange: relativeDateRange?.id,
     vagueDateMention: intelligence.vagueDateMention?.text,
     needsExactDate: intelligence.needsExactDate || undefined,
   };
@@ -241,6 +279,46 @@ export function classifyConversationIntent(message: string): ConversationNluResu
   if (isConversationResetCommand(message)) {
     matchedSignals.push("conversation_reset");
     return result("conversation_reset");
+  }
+
+  if (
+    matchAny(normalized, [
+      /\b(?:quiero|quisiera|me\s+gustaria|me\s+gustaría)\s+(?:hacer\s+)?(?:una\s+)?reserva\b.*\b(?:antes|primero)\b.*\b(?:dudas?|preguntar|saber|informacion|información|cosas)\b/,
+      /\b(?:antes|primero)\b.*\b(?:dudas?|preguntar|saber|informacion|información|cosas)\b.*\b(?:reserva|reservar)\b/,
+    ])
+  ) {
+    matchedSignals.push("mixed_reservation_and_info");
+    slots.wantsToReserve = true;
+    slots.wantsInfoBeforeReserve = true;
+    slots.reservationStage = "held_before_info";
+    return result("mixed_reservation_and_info");
+  }
+
+  if (
+    relativeDateRange &&
+    matchAny(normalized, [
+      /\b(?:teneis|tenéis|hay|tendriais|tendríais)\s+(?:disponibilidad|sitio|hueco|plaza)\b/,
+      /\b(?:disponibilidad|sitio|hueco|plaza)\b.*\b(?:finde|fin\s+de\s+semana|manana|pasado\s+manana|agosto|vacaciones|sabado|domingo|viernes)\b/,
+    ])
+  ) {
+    matchedSignals.push("informal_availability_query");
+    if (relativeDateRange) {
+      matchedSignals.push(`relative_date:${relativeDateRange.id}`);
+    }
+    return result("informal_availability_query");
+  }
+
+  if (
+    matchAny(normalized, [
+      /\b(?:me\s+gustaria|me\s+gustaría|quiero|quisiera)\s+saber\s+mas\s+sobre\s+el\s+hotel\b/,
+      /\b(?:saber\s+mas|mas\s+informacion|más\s+informacion|informacion\s+general|información\s+general)\b/,
+      /\b(?:como\s+funciona|cómo\s+funciona)\s+(?:el\s+)?(?:hotel|alojamiento|residencia)\b/,
+    ])
+  ) {
+    matchedSignals.push("general_info_query");
+    slots.topic = "general_hotel_info";
+    slots.requestedTopic = "general_hotel_info";
+    return result("general_info_query");
   }
 
   if (
@@ -579,6 +657,42 @@ export function buildConversationReplyPlan(message: string): ConversationReplyPl
         ...nlu,
         handoff: false,
         renderKey: "conversation.general_information",
+        source: "conversation_nlu",
+      };
+    case "general_info_query":
+      return {
+        ...nlu,
+        handoff: false,
+        renderKey: "conversation.general_hotel_info",
+        source: "conversation_nlu",
+      };
+    case "mixed_reservation_and_info":
+      return {
+        ...nlu,
+        handoff: false,
+        renderKey: "conversation.mixed_reservation_info_intro",
+        source: "conversation_nlu",
+      };
+    case "informal_availability_query":
+      return {
+        ...nlu,
+        handoff: false,
+        renderKey: "conversation.availability_informal_collect_details",
+        source: "conversation_nlu",
+      };
+    case "topic_info_query":
+    case "faq_query":
+    case "clarify_or_followup_question":
+    case "price_query":
+    case "schedule_hours_query":
+    case "services_query":
+    case "requirements_query":
+    case "location_query":
+    case "bath_service_query":
+      return {
+        ...nlu,
+        handoff: false,
+        renderKey: "conversation.kb_topic_answer",
         source: "conversation_nlu",
       };
     case "human_handoff":

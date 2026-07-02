@@ -14,7 +14,7 @@ export interface NormalizedUserEvent {
   timestamp: string;
   currentMode?: ConversationMode;
   currentState?: {
-    activeFlow?: "reservation" | "reservation_change" | "price_quote" | "none";
+    activeFlow?: "info" | "reservation" | "reservation_change" | "availabilityInquiry" | "price_quote" | "none";
     reservationStatus?: string;
     proposalStatus?: string;
     termsStatus?: string;
@@ -163,6 +163,19 @@ export interface AuthorityTurnTrace {
   policyAction?: string;
   policyReason?: string;
   renderKey?: ConversationRenderKey;
+  renderTemplateId?: string;
+  renderSource?: "client_template" | "kb" | "fallback" | "legacy";
+  clientIdentityStatus?: "known" | "unknown" | "ambiguous" | "blocked";
+  clientIdentitySource?: string;
+  fallbackReason?: string;
+  handoffReason?: string;
+  kbMatchTopic?: string;
+  kbConfidence?: number;
+  kbMissReason?: string;
+  usedKnowledgeBase?: boolean;
+  fastPathQualityGate?: "used" | "skipped";
+  openaiRequiredReason?: string;
+  policyHandoffReason?: string;
   outboxKind?: "twiml_response" | "manual_send" | "suppressed";
   legacyBypassUsed: boolean;
   legacyBypassName?: string;

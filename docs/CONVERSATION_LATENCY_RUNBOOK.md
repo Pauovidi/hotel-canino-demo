@@ -7,6 +7,8 @@ Use this after an authorized deploy to identify whether WhatsApp latency is caus
 - `authority_turn_timing_completed`: timing summary for an authority turn.
 - `authority_turn_completed`: full sanitized authority trace with state/policy fields.
 - `nlu_called` and `nlu_result_received`: deterministic NLU entry and result.
+- `nlu_fast_path_skipped_quality_gate`: open presales query intentionally skipped the deterministic shortcut.
+- `nlu_knowledge_base_match`: deterministic Knowledge Base match for safe business information.
 - `nlu_provider_timeout_fallback_used`: OpenAI exceeded timeout and deterministic fallback was used.
 - `authority_trace_event_dropped_best_effort`: non-critical trace write failed but reply continued.
 - `twilio_webhook_store_failed`: conversation store failure path.
@@ -48,6 +50,8 @@ HOTEL_TWILIO_SEND_ENABLED=false HOTEL_SHEETS_WRITE_ENABLED=false HOTEL_SHEETS_DR
 
 - Do not disable NLU or conversational authority as a speed fix.
 - Do not remove reset/cancel/FAQ escape hatches.
+- Do not route open presales, mixed reservation/info, or informal availability queries to early generic handoff.
+- Do not claim live availability unless the operational availability flow/tool has actually checked it.
 - Do not remove critical state persistence before replying.
 - Do not run real Sheets writes or real WhatsApp sends during diagnostics.
 - Do not expose raw traces, secrets or message bodies in public endpoints.

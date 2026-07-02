@@ -38,6 +38,10 @@ import {
   renderPositiveReviewRequestTemplate,
 } from "./client-templates";
 import {
+  extractRelativeDateRange,
+  matchConversationKnowledgeBase,
+} from "./knowledge-base";
+import {
   scheduleBathOfferAfterConfirmation,
 } from "./scheduled-messages";
 import {
@@ -1040,6 +1044,42 @@ function safeBodyKind(message: string): Record<string, unknown> {
   };
 }
 
+function safePhoneSummary(value?: string): string | undefined {
+  const digits = value?.replace(/\D/g, "");
+  if (!digits) {
+    return undefined;
+  }
+  return `***${digits.slice(-4)}`;
+}
+
+function inferRenderSource(renderKey?: ConversationRenderKey): AuthorityTurnTrace["renderSource"] | undefined {
+  if (!renderKey) {
+    return undefined;
+  }
+  if (
+    [
+      "reservation_confirmation",
+      "reservation_preconfirmation",
+      "reservation_denial",
+      "bath_offer",
+      "reservation_reminder",
+      "post_stay_new_client_checkin",
+      "positive_review_request",
+      "contract_link",
+      "contract_acceptance",
+    ].includes(renderKey)
+  ) {
+    return "client_template";
+  }
+  if (renderKey.includes("kb") || renderKey.includes("info") || renderKey.includes("availability")) {
+    return "kb";
+  }
+  if (renderKey.includes("unknown") || renderKey.includes("fallback") || renderKey.includes("manual_review")) {
+    return "fallback";
+  }
+  return "legacy";
+}
+
 function changedReservationSlotNames(
   before?: ConversationReservationFlow,
   after?: ConversationReservationFlow,
@@ -1058,6 +1098,12 @@ function activeFlowName(record?: ConversationRecord): string | undefined {
   if (isReservationFlowActive(record)) return "reservation";
   if (record.pendingReservationModificationFlow || record.pendingReservationCancellationFlow) {
     return "reservation_change";
+  }
+  if (record.availabilityInquiry || record.activeFlow === "availabilityInquiry") {
+    return "availabilityInquiry";
+  }
+  if (record.activeFlow === "info") {
+    return "info";
   }
   if (record.pendingPriceQuoteFlow) return "price_quote";
   return "none";
@@ -1109,6 +1155,19 @@ function buildAuthorityTurnTrace(input: {
   policyAction?: string;
   policyReason?: string;
   renderKey?: ConversationRenderKey;
+  renderTemplateId?: string;
+  renderSource?: AuthorityTurnTrace["renderSource"];
+  clientIdentityStatus?: AuthorityTurnTrace["clientIdentityStatus"];
+  clientIdentitySource?: string;
+  fallbackReason?: string;
+  handoffReason?: string;
+  kbMatchTopic?: string;
+  kbConfidence?: number;
+  kbMissReason?: string;
+  usedKnowledgeBase?: boolean;
+  fastPathQualityGate?: AuthorityTurnTrace["fastPathQualityGate"];
+  openaiRequiredReason?: string;
+  policyHandoffReason?: string;
   outboxKind?: AuthorityTurnTrace["outboxKind"];
   legacyBypassUsed?: boolean;
   legacyBypassName?: string;
@@ -1145,6 +1204,19 @@ function buildAuthorityTurnTrace(input: {
     policyAction: input.policyAction,
     policyReason: input.policyReason,
     renderKey: input.renderKey,
+    renderTemplateId: input.renderTemplateId ?? input.renderKey,
+    renderSource: input.renderSource ?? inferRenderSource(input.renderKey),
+    clientIdentityStatus: input.clientIdentityStatus ?? input.recordAfter?.clientStatus ?? input.recordBefore.clientStatus,
+    clientIdentitySource: input.clientIdentitySource ?? input.recordAfter?.clientSource ?? input.recordBefore.clientSource,
+    fallbackReason: input.fallbackReason,
+    handoffReason: input.handoffReason,
+    kbMatchTopic: input.kbMatchTopic,
+    kbConfidence: input.kbConfidence,
+    kbMissReason: input.kbMissReason,
+    usedKnowledgeBase: input.usedKnowledgeBase ?? input.renderKey?.includes("kb") ?? false,
+    fastPathQualityGate: input.fastPathQualityGate,
+    openaiRequiredReason: input.openaiRequiredReason,
+    policyHandoffReason: input.policyHandoffReason,
     outboxKind: input.outboxKind,
     legacyBypassUsed: input.legacyBypassUsed ?? false,
     legacyBypassName: input.legacyBypassName,
@@ -2315,6 +2387,16 @@ function shouldInterruptReservationFlowWithFaq(
   return isReservationFlowActive(record);
 }
 
+function isInformationReplyPlan(replyPlan: ReturnType<typeof buildConversationReplyPlan>): boolean {
+  return (
+    replyPlan.intent === "general_information" ||
+    replyPlan.intent === "general_info_query" ||
+    replyPlan.intent === "topic_info_query" ||
+    replyPlan.intent === "faq_query" ||
+    replyPlan.intent.startsWith("faq_")
+  );
+}
+
 function applyClientIdentity(
   record: ConversationRecord,
   identity: ClientIdentityResult,
@@ -2374,6 +2456,25 @@ async function resolveAndPersistClientIdentity(
     if (timing) {
       timing.clientDirectoryCacheHit = true;
     }
+    const preservedAfterReset = record.events.some(
+      (event) => event.eventType === "conversation_reset_requested",
+    );
+    await store.addEvent(
+      createEvent(record.id, "client_identity_lookup_cache_hit", {
+        status: "known",
+        matchType: record.clientMatchType,
+        source: record.clientSource ?? CLIENT_DIRECTORY_SOURCE,
+        preservedAfterReset,
+      }),
+    );
+    if (preservedAfterReset) {
+      await store.addEvent(
+        createEvent(record.id, "client_identity_preserved_after_reset", {
+          status: "known",
+          source: record.clientSource ?? CLIENT_DIRECTORY_SOURCE,
+        }),
+      );
+    }
     return {
       conversation: record,
       identity: {
@@ -2398,6 +2499,12 @@ async function resolveAndPersistClientIdentity(
     };
   }
 
+  await store.addEvent(
+    createEvent(record.id, "client_identity_lookup_started", {
+      source: CLIENT_DIRECTORY_SOURCE,
+      phoneNormalized: safePhoneSummary(record.phoneNormalized),
+    }),
+  );
   const identity = await measureAuthorityStage(timing, "clientLookupMs", "client_directory_lookup", async () => {
     if (isGoogleSheetsBackedStore(clientDirectory)) {
       incrementCount(timing, "sheetsReads");
@@ -2409,6 +2516,17 @@ async function resolveAndPersistClientIdentity(
   });
   const next = applyClientIdentity(record, identity);
   const conversation = await store.replaceConversation(next);
+  await store.addEvent(
+    createEvent(record.id, "client_identity_lookup_result", sanitizeClientIdentityPayload(identity)),
+  );
+  if (identity.status === "unknown") {
+    await store.addEvent(
+      createEvent(record.id, "client_identity_lookup_cache_miss", {
+        status: identity.status,
+        source: identity.source,
+      }),
+    );
+  }
 
   if (identity.status === "known") {
     await store.addEvent(createEvent(record.id, "client_directory_match", sanitizeClientIdentityPayload(identity)));
@@ -2447,6 +2565,11 @@ function buildResetRecord(record: ConversationRecord): ConversationRecord {
     pendingBathOffer: undefined,
     pendingPostStayFollowup: undefined,
     reservationFlow: undefined,
+    activeFlow: "none",
+    pendingInfoTopic: undefined,
+    heldReservationIntent: undefined,
+    availabilityInquiry: undefined,
+    lastAnsweredTopic: undefined,
     unreadCount: 0,
     requiresManualReview:
       record.clientStatus === "blocked" || record.clientStatus === "ambiguous",
@@ -4047,8 +4170,15 @@ async function handleInboundWhatsAppWithTiming(
           ...initialReplyPlan.matchedSignals,
           "contextual_reservation_slot_fill",
         ],
-      }
+    }
     : initialReplyPlan;
+  const kbMatchForPlan = matchConversationKnowledgeBase(safeBody);
+  const isOpenQualityQuery = [
+    "general_info_query",
+    "topic_info_query",
+    "mixed_reservation_and_info",
+    "informal_availability_query",
+  ].includes(replyPlan.intent);
   await addSafeEvents(store, freshWithClient.id, [
     {
       eventType: "nlu_called",
@@ -4072,13 +4202,19 @@ async function handleInboundWhatsAppWithTiming(
       payload: {
         intent: replyPlan.intent,
         route:
-          replyPlan.intent === "availability_request" || replyPlan.intent === "reservation_start"
-            ? "reservation_flow"
-            : replyPlan.intent === "reservation_modify" || replyPlan.intent === "reservation_cancel"
-              ? "reservation_change_flow"
-              : replyPlan.handoff
-                ? "manual_review"
-                : "direct_reply",
+          replyPlan.intent === "informal_availability_query"
+            ? "availability_inquiry"
+            : replyPlan.intent === "mixed_reservation_and_info"
+              ? "mixed_reservation_info"
+              : replyPlan.intent === "general_info_query" || replyPlan.intent === "topic_info_query"
+                ? "knowledge_base"
+                : replyPlan.intent === "availability_request" || replyPlan.intent === "reservation_start"
+                  ? "reservation_flow"
+                  : replyPlan.intent === "reservation_modify" || replyPlan.intent === "reservation_cancel"
+                    ? "reservation_change_flow"
+                    : replyPlan.handoff
+                      ? "manual_review"
+                      : "direct_reply",
         hasActiveReservationFlow: Boolean(latestBeforePlan.reservationFlow),
         hasPendingReservationProposal: Boolean(latestBeforePlan.pendingReservationProposal),
       },
@@ -4086,15 +4222,170 @@ async function handleInboundWhatsAppWithTiming(
     {
       eventType: "nlu_classified",
       payload: {
-      intent: replyPlan.intent,
-      confidence: replyPlan.confidence,
-      matchedSignals: replyPlan.matchedSignals,
-      slots: replyPlan.slots,
-      source: replyPlan.source,
-      handoff: replyPlan.handoff,
+        intent: replyPlan.intent,
+        confidence: replyPlan.confidence,
+        matchedSignals: replyPlan.matchedSignals,
+        slots: replyPlan.slots,
+        source: replyPlan.source,
+        handoff: replyPlan.handoff,
       },
     },
+    ...(isOpenQualityQuery
+      ? [
+          {
+            eventType: "nlu_fast_path_skipped_quality_gate",
+            payload: {
+              intent: replyPlan.intent,
+              reason: "open_or_mixed_presales_query",
+            },
+          },
+          {
+            eventType: "nlu_llm_required_for_open_query",
+            payload: {
+              intent: replyPlan.intent,
+              usedOpenAI: false,
+              fallback: "deterministic_knowledge_base",
+            },
+          },
+        ]
+      : [
+          {
+            eventType: "nlu_fast_path_used",
+            payload: {
+              intent: replyPlan.intent,
+              reason: "deterministic_high_confidence_or_stateful_flow",
+            },
+          },
+        ]),
+    ...(kbMatchForPlan
+      ? [
+          {
+            eventType: "nlu_knowledge_base_match",
+            payload: {
+              topic: kbMatchForPlan.entry.id,
+              confidence: kbMatchForPlan.confidence,
+              matchedSignals: kbMatchForPlan.matchedSignals,
+            },
+          },
+        ]
+      : isOpenQualityQuery
+        ? [
+            {
+              eventType: "nlu_knowledge_base_miss",
+              payload: {
+                intent: replyPlan.intent,
+                reason: "no_topic_match",
+              },
+            },
+          ]
+        : []),
   ], timing);
+
+  if (latestBeforePlan.heldReservationIntent && isInformationReplyPlan(replyPlan)) {
+    const latestForInfo = (await store.getById(freshWithClient.id)) ?? latestBeforePlan;
+    const topicAnswer = renderConversationReplyPlan(replyPlan, safeBody);
+    const replyBody = renderCopy({
+      key: "conversation.info_answer_then_resume_reservation",
+      message: safeBody,
+      topicAnswer,
+    });
+    const nextConversation: ConversationRecord = {
+      ...latestForInfo,
+      activeFlow: "info",
+      lastAnsweredTopic: replyPlan.slots.topic ?? kbMatchForPlan?.entry.id ?? replyPlan.intent,
+      updatedAt: nowIso(),
+    };
+
+    return sendBotOutcome({
+      store,
+      conversation: nextConversation,
+      inbound,
+      reply: replyBody,
+      eventType: "info_answered_then_resume_reservation",
+      eventPayload: {
+        intent: replyPlan.intent,
+        topic: nextConversation.lastAnsweredTopic,
+        heldReservationIntent: true,
+      },
+    });
+  }
+
+  if (replyPlan.intent === "mixed_reservation_and_info") {
+    const latestForInfo = (await store.getById(freshWithClient.id)) ?? latestBeforePlan;
+    const replyBody = personalizeGreetingReply(
+      renderConversationReplyPlan(replyPlan, safeBody),
+      latestForInfo,
+    );
+    const nextConversation: ConversationRecord = {
+      ...latestForInfo,
+      activeFlow: "info",
+      pendingInfoTopic: replyPlan.slots.topic ?? "unknown",
+      heldReservationIntent: true,
+      availabilityInquiry: undefined,
+      updatedAt: nowIso(),
+    };
+
+    return sendBotOutcome({
+      store,
+      conversation: nextConversation,
+      inbound,
+      reply: replyBody,
+      eventType: "reservation_intent_held_while_answering_info",
+      eventPayload: {
+        wantsToReserve: true,
+        wantsInfoBeforeReserve: true,
+        renderSource: "kb",
+      },
+    });
+  }
+
+  if (replyPlan.intent === "informal_availability_query") {
+    const latestForAvailability = (await store.getById(freshWithClient.id)) ?? latestBeforePlan;
+    const relativeRange = extractRelativeDateRange(safeBody);
+    const missingFields: Array<"petName" | "dateRange"> = [];
+    if (!replyPlan.slots.petName) {
+      missingFields.push("petName");
+    }
+    if (!replyPlan.slots.checkInDate && !replyPlan.slots.checkOutDate && !relativeRange) {
+      missingFields.push("dateRange");
+    }
+    const replyBody = personalizeGreetingReply(
+      renderCopy({
+        key: "conversation.availability_informal_collect_details",
+        message: safeBody,
+        relativeDateRange: relativeRange?.label,
+      }),
+      latestForAvailability,
+    );
+    const nextConversation: ConversationRecord = {
+      ...latestForAvailability,
+      activeFlow: "availabilityInquiry",
+      availabilityInquiry: {
+        relativeDateRange: relativeRange?.id,
+        dateRange: relativeRange?.label,
+        dateStart: replyPlan.slots.checkInDate,
+        dateEnd: replyPlan.slots.checkOutDate,
+        petName: replyPlan.slots.petName,
+        missingFields,
+        readyForHumanReview: missingFields.length === 0,
+        readyForTool: false,
+      },
+      updatedAt: nowIso(),
+    };
+
+    return sendBotOutcome({
+      store,
+      conversation: nextConversation,
+      inbound,
+      reply: replyBody,
+      eventType: "availability_inquiry_started",
+      eventPayload: {
+        relativeDateRange: relativeRange?.id,
+        missingFields,
+        noAvailabilityPromised: true,
+      },
+    });
+  }
 
   if (isStrongDirectoryConversation(latestBeforePlan) && isExplicitNotClientClaim(safeBody)) {
     const replyBody = renderCopy({ key: "service.client_override_reservation" });

@@ -103,6 +103,12 @@ Toda accion critica debe pasar por tool autorizado y devolver resultado verifica
 
 CopyRenderer es el unico que redacta respuesta visible. Mientras dure la migracion, una excepcion solo puede salir si esta marcada como `keep_temporarily_with_reason` en `docs/CONVERSATION_BYPASS_AUDIT.md`, con motivo, riesgo, rama de eliminacion y tests.
 
+### Knowledge Base / Preventa
+
+La informacion estable del negocio vive en una Knowledge Base estructurada, no en un system prompt ni en un fallback generico. La KB responde informacion segura; las tools responden verdad operativa como disponibilidad real; la policy decide si responder, pedir datos, usar tool o derivar.
+
+El fast path solo debe resolver casos inequivocos: reset, cancelacion explicita, handoff explicito, confirmacion simple dentro de un estado claro, slot simple dentro de un flujo activo y FAQ exacta de alta confianza. Preguntas abiertas, mensajes mixtos, disponibilidad informal y dudas de preventa deben pasar por NLU/KB/policy y no por handoff temprano.
+
 ### Outbox / canal
 
 Outbox recibe `RenderedConversationReply` y produce `OutboxMessage`. El adaptador de canal convierte a TwiML, API Twilio o panel, sin inventar textos.

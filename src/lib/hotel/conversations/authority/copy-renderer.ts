@@ -5,7 +5,16 @@ import {
   buildPriceQuoteReply,
   buildVagueDatePrecisionReply,
 } from "../conversation-intelligence";
-import { renderReservationDeniedTemplate } from "../client-templates";
+import {
+  renderBathOfferTemplate,
+  renderPositiveReviewRequestTemplate,
+  renderPostStayFollowupTemplate,
+  renderPrearrivalReminderTemplate,
+  renderReservationConfirmationTemplate,
+  renderReservationDeniedTemplate,
+  renderReservationWelcomeIntroTemplate,
+} from "../client-templates";
+import { buildKnowledgeBaseAnswer, matchConversationKnowledgeBase } from "../knowledge-base";
 import type { ConversationRecord, ConversationReservationFlow } from "../types";
 
 export const CONVERSATION_RESET_REPLY = "Reiniciado.";
@@ -24,6 +33,26 @@ export type ConversationRenderKey =
   | "conversation.reset"
   | "conversation.faq_reply"
   | "conversation.dynamic_reply"
+  | "conversation.general_hotel_info"
+  | "conversation.ask_info_topic"
+  | "conversation.mixed_reservation_info_intro"
+  | "conversation.availability_informal_collect_details"
+  | "conversation.availability_needs_pet_and_dates"
+  | "conversation.kb_topic_answer"
+  | "conversation.kb_topic_unknown_clarify"
+  | "conversation.info_answer_then_resume_reservation"
+  | "conversation.info_answer_then_offer_reservation"
+  | "conversation.handoff_after_collected_availability_details"
+  | "conversation.fallback_open_query_quality"
+  | "reservation_confirmation"
+  | "reservation_preconfirmation"
+  | "reservation_denial"
+  | "bath_offer"
+  | "reservation_reminder"
+  | "post_stay_new_client_checkin"
+  | "positive_review_request"
+  | "contract_link"
+  | "contract_acceptance"
   | "reservation.ask_client_kind"
   | "reservation.ask_existing_email"
   | "reservation.ask_owner"
@@ -102,12 +131,23 @@ export interface RenderCopyInput {
   nameCount?: number;
   statedCount?: number;
   date?: string;
+  checkIn?: string;
+  checkOut?: string;
+  checkInTime?: string;
+  checkOutTime?: string;
+  entryText?: string;
+  exitText?: string;
+  priceText?: string;
   time?: string;
   times?: string[];
   price?: number;
   flow?: ConversationReservationFlow;
   conversation?: ConversationRecord;
   waitlistSupported?: boolean;
+  topic?: string;
+  topicAnswer?: string;
+  relativeDateRange?: string;
+  contractUrl?: string;
 }
 
 export interface ConversationRenderPlan {
@@ -276,6 +316,58 @@ export function renderCopy(input: RenderCopyInput): string {
         input.message,
         "Claro. Te puedo ayudar con horarios, visitas, reservas, vacunas, alimentación, qué traer y funcionamiento del hotel. ¿Sobre qué necesitas información?",
       );
+    case "conversation.general_hotel_info":
+      return withGreeting(
+        input.message,
+        "Somos Muy Perros es hotel canino y guardería. Te puedo ayudar con servicios, horarios, precios publicados, requisitos, ubicación, baños/peluquería y cómo reservar. ¿Qué quieres saber primero?",
+      );
+    case "conversation.ask_info_topic":
+      return withGreeting(
+        input.message,
+        "Claro, dime qué quieres saber y te respondo con la información que tenemos confirmada.",
+      );
+    case "conversation.mixed_reservation_info_intro":
+      return withGreeting(
+        input.message,
+        "Claro, dime qué quieres saber y después seguimos con la reserva.",
+      );
+    case "conversation.availability_informal_collect_details": {
+      const range = input.relativeDateRange ? ` para ${input.relativeDateRange}` : "";
+      return withGreeting(
+        input.message,
+        `Puedo ayudarte a preparar la consulta de disponibilidad${range}. Para revisarlo con seguridad necesito el nombre de la mascota y las fechas aproximadas de entrada y salida. No te confirmo plaza hasta comprobarlo con el flujo operativo.`,
+      );
+    }
+    case "conversation.availability_needs_pet_and_dates":
+      return "Para revisar disponibilidad necesito el nombre de la mascota y las fechas aproximadas de entrada y salida.";
+    case "conversation.kb_topic_answer": {
+      if (input.topicAnswer) {
+        return input.topicAnswer;
+      }
+      const match = input.message ? matchConversationKnowledgeBase(input.message) : undefined;
+      return match
+        ? buildKnowledgeBaseAnswer(match.entry)
+        : renderCopy({ key: "conversation.kb_topic_unknown_clarify", message: input.message });
+    }
+    case "conversation.kb_topic_unknown_clarify":
+      return "Puedo ayudarte con horarios, precios, requisitos, ubicación, baños, comida, visitas o cómo reservar. ¿Qué punto quieres ver?";
+    case "conversation.info_answer_then_resume_reservation": {
+      const answer =
+        input.topicAnswer ??
+        (input.message
+          ? matchConversationKnowledgeBase(input.message)?.answer
+          : undefined) ??
+        renderCopy({ key: "conversation.kb_topic_unknown_clarify", message: input.message });
+      return `${answer}\n\nCuando quieras, seguimos con la reserva.`;
+    }
+    case "conversation.info_answer_then_offer_reservation": {
+      const answer = input.topicAnswer ?? renderCopy({ key: "conversation.general_hotel_info", message: input.message });
+      return `${answer}\n\nSi quieres reservar, dime fechas y mascota y empezamos.`;
+    }
+    case "conversation.handoff_after_collected_availability_details":
+      return "Gracias. Con esos datos lo puede revisar el equipo y contestarte con disponibilidad real por aquí.";
+    case "conversation.fallback_open_query_quality":
+      return "No quiero inventar esa información. Puedo ayudarte con horarios, precios publicados, requisitos, ubicación, servicios o cómo reservar. ¿Cuál de esos temas necesitas?";
     case "conversation.human_handoff":
       return "Perfecto, te paso con una persona del equipo. En cuanto puedan te responderán por aquí.";
     case "conversation.stay_status":
@@ -320,6 +412,49 @@ export function renderCopy(input: RenderCopyInput): string {
         return buildNeedPetCountForQuoteReply(intelligence);
       }
       return input.reply ?? "";
+    case "reservation_confirmation":
+      return renderReservationConfirmationTemplate({
+        clientName: input.name,
+        petNames: input.pets?.length ? input.pets : [input.petName ?? "tu mascota"],
+        checkIn: input.checkIn ?? input.date!,
+        checkOut: input.checkOut ?? input.date!,
+        checkInTime: input.checkInTime,
+        checkOutTime: input.checkOutTime,
+        price: input.price,
+        entryText: input.entryText,
+        exitText: input.exitText,
+        priceText: input.priceText,
+      });
+    case "reservation_preconfirmation":
+      return renderReservationWelcomeIntroTemplate({
+        clientName: input.name,
+        petNames: input.pets?.length ? input.pets : [input.petName ?? "tu mascota"],
+      });
+    case "reservation_denial":
+      return renderReservationDeniedTemplate({
+        clientName: input.name,
+        petNames: input.pets?.length ? input.pets : [input.petName ?? "tu mascota"],
+        waitlistSupported: Boolean(input.waitlistSupported),
+      });
+    case "bath_offer":
+      return renderBathOfferTemplate({ petNames: input.pets?.length ? input.pets : input.petName ? [input.petName] : undefined });
+    case "reservation_reminder":
+      return renderPrearrivalReminderTemplate({
+        clientName: input.name,
+        petNames: input.pets?.length ? input.pets : [input.petName ?? "tu mascota"],
+        entryText: input.entryText ?? input.date ?? "la fecha prevista",
+      });
+    case "post_stay_new_client_checkin":
+      return renderPostStayFollowupTemplate({
+        clientName: input.name,
+        petNames: input.pets?.length ? input.pets : [input.petName ?? "tu mascota"],
+      });
+    case "positive_review_request":
+      return renderPositiveReviewRequestTemplate();
+    case "contract_link":
+      return `Antes de confirmar, necesitamos que leas el contrato de admisión: ${input.contractUrl ?? "https://somosmuyperros.com/contrato-de-admision-e-ingreso/"}\n\n¿Confirmas que lo has leído y aceptas las condiciones?`;
+    case "contract_acceptance":
+      return "Gracias, dejamos registrada la aceptación del contrato para continuar con la reserva.";
     case "reservation.ask_client_kind":
       return "Genial. ¿Ya eres cliente de Somos Muy Perros? Responde sí o no.";
     case "reservation.ask_existing_email":

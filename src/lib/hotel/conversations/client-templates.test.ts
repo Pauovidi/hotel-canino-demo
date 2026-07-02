@@ -49,7 +49,11 @@ describe("SMP client templates", () => {
       "¿Quieres que bañemos a PIPO antes de la salida?",
     );
     expect(renderBathOfferTemplate()).toContain("15€ para perros pequeños");
-    expect(renderBathOfferTemplate()).toContain("envíanos una foto");
+    expect(renderBathOfferTemplate()).toContain("20 para perros medianos");
+    expect(renderBathOfferTemplate()).toContain("25 para perros grandes");
+    expect(renderBathOfferTemplate()).toContain(
+      "para pelo largo , nudos o corte de razas especificas preguntar adjuntado una foto",
+    );
   });
 
   it("renders the reservation welcome intro", () => {

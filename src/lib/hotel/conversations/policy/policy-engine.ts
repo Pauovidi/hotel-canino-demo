@@ -7,6 +7,9 @@ export type ConversationPolicyRoute =
   | "reservation_confirmation"
   | "reservation_flow"
   | "reservation_change"
+  | "knowledge_base"
+  | "availability_inquiry"
+  | "mixed_reservation_info"
   | "price_quote"
   | "faq"
   | "media_request"
@@ -85,6 +88,37 @@ export function decideConversationPolicy(
       allowBotReply: true,
       requiresToolSuccess: false,
       reason: "reservation_details_are_collected_by_stateful_flow",
+    };
+  }
+
+  if (input.intent === "mixed_reservation_and_info") {
+    return {
+      route: "mixed_reservation_info",
+      allowBotReply: true,
+      requiresToolSuccess: false,
+      reason: "hold_reservation_intent_while_answering_info",
+    };
+  }
+
+  if (input.intent === "informal_availability_query") {
+    return {
+      route: "availability_inquiry",
+      allowBotReply: true,
+      requiresToolSuccess: false,
+      reason: "collect_availability_minimum_details_before_tool_or_handoff",
+    };
+  }
+
+  if (
+    input.intent === "general_info_query" ||
+    input.intent === "topic_info_query" ||
+    input.intent === "general_information"
+  ) {
+    return {
+      route: "knowledge_base",
+      allowBotReply: true,
+      requiresToolSuccess: false,
+      reason: "answer_presales_information_from_knowledge_base",
     };
   }
 

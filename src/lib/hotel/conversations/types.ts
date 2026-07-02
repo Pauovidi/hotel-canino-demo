@@ -150,6 +150,17 @@ export interface PendingReservationContext {
   needsExactDate?: boolean;
 }
 
+export interface ConversationAvailabilityInquiry {
+  dateRange?: string;
+  dateStart?: string;
+  dateEnd?: string;
+  relativeDateRange?: string;
+  petName?: string;
+  missingFields: Array<"petName" | "dateRange">;
+  readyForHumanReview?: boolean;
+  readyForTool?: boolean;
+}
+
 export type PendingReservationChangeStatus =
   | "identifying_reservation"
   | "collecting_change"
@@ -301,6 +312,11 @@ export interface Conversation {
   pendingBathOffer?: PendingBathOfferFlow;
   pendingPostStayFollowup?: PendingPostStayFollowupFlow;
   reservationFlow?: ConversationReservationFlow;
+  activeFlow?: "info" | "reservation" | "availabilityInquiry" | "none";
+  pendingInfoTopic?: string;
+  heldReservationIntent?: boolean;
+  availabilityInquiry?: ConversationAvailabilityInquiry;
+  lastAnsweredTopic?: string;
   archivedAt?: string;
   archivedBy?: string;
   archivedReason?: string;
