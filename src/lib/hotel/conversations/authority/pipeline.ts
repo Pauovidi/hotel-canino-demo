@@ -25,6 +25,7 @@ export interface NormalizeWhatsAppEventInput {
   messageSid?: string;
   displayName?: string;
   rawPayload?: unknown;
+  conversationId?: string;
   conversation?: ConversationRecord;
   source?: NormalizedUserEvent["source"];
   now?: Date;
@@ -82,7 +83,7 @@ function pendingFieldsFromConversation(record?: ConversationRecord): string[] {
 export function normalizeWhatsAppUserEvent(input: NormalizeWhatsAppEventInput): NormalizedUserEvent {
   const lastReply = lastBotReply(input.conversation);
   return {
-    conversationId: input.conversation?.id,
+    conversationId: input.conversation?.id ?? input.conversationId,
     externalUserId: input.from,
     channel: "whatsapp",
     messageText: input.body.trim(),
@@ -100,6 +101,11 @@ export function normalizeWhatsAppUserEvent(input: NormalizeWhatsAppEventInput): 
       hasMessageSid: Boolean(input.messageSid),
       hasDisplayName: Boolean(input.displayName),
       hasRawPayload: Boolean(input.rawPayload),
+      conversationIdSource: input.conversation?.id
+        ? "store_record"
+        : input.conversationId
+          ? "derived_sender_hash"
+          : "missing",
     },
   };
 }

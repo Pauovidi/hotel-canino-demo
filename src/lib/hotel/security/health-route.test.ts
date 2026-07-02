@@ -41,6 +41,8 @@ describe("health route", () => {
     process.env.HOTEL_CONVERSATIONS_SHEET_NAME = "CONVERSATIONS";
     process.env.HOTEL_CLIENTS_SHEET_NAME = "CLIENTES";
     process.env.HOTEL_CLIENTS_CACHE_TTL_MS = "12345";
+    process.env.HOTEL_BUILD_COMMIT = "37675af7b5b36ccd826b8f757f912077aa578f58";
+    process.env.HOTEL_BUILD_BRANCH = "codex/smp-template-identity-kb-presales-quality-v0";
     process.env.HOTEL_GOOGLE_SHEETS_SPREADSHEET_ID = "sheet_secret_like_id";
     process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL = "service@example.test";
     process.env.GOOGLE_PRIVATE_KEY = "private-secret-key";
@@ -62,6 +64,17 @@ describe("health route", () => {
     expect(json.persistence.runtimeTarget).toBe("easypanel");
     expect(json.persistence.ready).toBe(true);
     expect(json.persistence.conversationStoreProvider).toBe("google_sheets");
+    expect(json.commitShort).toBe("37675af7b5b3");
+    expect(json.branch).toBe("codex/smp-template-identity-kb-presales-quality-v0");
+    expect(json.build).toEqual(
+      expect.objectContaining({
+        appVersion: "0.1.0",
+        commitShort: "37675af7b5b3",
+        commitSource: "HOTEL_BUILD_COMMIT",
+        branchSource: "HOTEL_BUILD_BRANCH",
+        buildMetadataConfigured: true,
+      }),
+    );
     expect(json.runtimeSafety.sheets).toEqual({
       writeEnabled: false,
       dryRun: true,
@@ -112,6 +125,22 @@ describe("health route", () => {
         hasSpreadsheetId: true,
         hasCredentialSource: true,
         derivedFrom: "reservationStore",
+      }),
+    );
+    expect(json.templates).toEqual(
+      expect.objectContaining({
+        renderer: "copy_renderer",
+        rendererReady: true,
+        previewCommandAvailable: true,
+        templatesMapped: expect.objectContaining({
+          reservationConfirmation: true,
+          reservationPreconfirmationWelcome: true,
+          reservationDenial: true,
+          bathOffer: true,
+          reservationReminder: true,
+          postStayNewClientCheckin: true,
+          positiveReviewRequest: true,
+        }),
       }),
     );
     expect(serialized).not.toContain("super-secret-token");

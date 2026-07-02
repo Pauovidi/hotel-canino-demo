@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import {
   buildTwilioMessageResponse,
@@ -5,6 +6,7 @@ import {
   handleInboundWhatsApp,
   isStrongClientIdentity,
   knownClientFirstNameFromIdentity,
+  normalizePhone,
   personalizeReplyWithClientIdentity,
   redactConversationSensitiveText,
 } from "@/lib/hotel/conversations/service";
@@ -35,6 +37,8 @@ export const dynamic = "force-dynamic";
 
 const STORE_DEGRADED_CRITICAL_REPLY =
   renderCopy({ key: "service.store_degraded_critical" });
+
+const EMPTY_REPLY_FALLBACK_REPLY = STORE_DEGRADED_CRITICAL_REPLY;
 
 const STATELESS_SAFE_INTENTS = new Set<ConversationIntent>([
   "greeting",
@@ -123,6 +127,88 @@ export function resolveTwilioWebhookTwiml(
   return buildTwilioMessageResponse(result?.botReply?.body);
 }
 
+function twimlHasMessage(twiml?: string): boolean {
+  return Boolean(twiml?.includes("<Message>"));
+}
+
+function deriveConversationTraceId(from: string): string | undefined {
+  try {
+    const normalized = normalizePhone(from).phoneNormalized;
+    if (!normalized) {
+      return undefined;
+    }
+    const digest = createHash("sha256").update(normalized).digest("hex").slice(0, 16);
+    return `whatsapp:${digest}`;
+  } catch {
+    return undefined;
+  }
+}
+
+export function ensureNonEmptyTwilioReply(input: {
+  twiml: string;
+  botReplyBody?: string;
+  hasValidInboundText: boolean;
+  allowEmptyTwiml?: boolean;
+  noReplyReason?: string;
+  fallbackReason: string;
+  timing?: {
+    totalDurationMs?: number;
+    loadStateMs?: number;
+    nluTotalMs?: number;
+    rendererMs?: number;
+    persistenceMs?: number;
+    eventLogMs?: number;
+    outboxBuildMs?: number;
+    openaiCalls?: number;
+  };
+}): {
+  twiml: string;
+  botReplyBody?: string;
+  hasTwimlMessage: boolean;
+  prevented: boolean;
+  fallbackReason?: string;
+} {
+  if (twimlHasMessage(input.twiml)) {
+    return {
+      twiml: input.twiml,
+      botReplyBody: input.botReplyBody,
+      hasTwimlMessage: true,
+      prevented: false,
+    };
+  }
+
+  if (!input.hasValidInboundText || input.allowEmptyTwiml) {
+    return {
+      twiml: input.twiml,
+      botReplyBody: input.botReplyBody,
+      hasTwimlMessage: false,
+      prevented: false,
+    };
+  }
+
+  console.warn("empty_reply_prevented", {
+    fallbackReason: input.fallbackReason,
+    noReplyReason: input.noReplyReason,
+    storeFailureMode: "pipeline_returned_empty_reply",
+    serviceTotalMs: input.timing?.totalDurationMs,
+    storeLoadMs: input.timing?.loadStateMs,
+    nluTotalMs: input.timing?.nluTotalMs,
+    rendererMs: input.timing?.rendererMs,
+    storeSaveMs: input.timing?.persistenceMs,
+    eventLogMs: input.timing?.eventLogMs,
+    outboxMs: input.timing?.outboxBuildMs,
+    openaiCalls: input.timing?.openaiCalls,
+  });
+
+  return {
+    twiml: buildTwilioMessageResponse(EMPTY_REPLY_FALLBACK_REPLY),
+    botReplyBody: EMPTY_REPLY_FALLBACK_REPLY,
+    hasTwimlMessage: true,
+    prevented: true,
+    fallbackReason: input.fallbackReason,
+  };
+}
+
 function twilioXmlResponse(twiml?: string, status = 200): NextResponse {
   return new NextResponse(twiml ?? buildTwilioMessageResponse(), {
     status,
@@ -155,6 +241,16 @@ function logTwilioWebhookTiming(input: {
   parseMs: number;
   clientLookupMs?: number;
   twimlBuildMs?: number;
+  serviceTotalMs?: number;
+  storeLoadMs?: number;
+  nluTotalMs?: number;
+  openaiCalls?: number;
+  reducerMs?: number;
+  policyMs?: number;
+  rendererMs?: number;
+  storeSaveMs?: number;
+  eventLogMs?: number;
+  outboxMs?: number;
   hasTwimlMessage?: boolean;
 }): void {
   console.info("twilio_webhook_timing_completed", {
@@ -164,6 +260,16 @@ function logTwilioWebhookTiming(input: {
     parseMs: input.parseMs,
     clientLookupMs: input.clientLookupMs ?? 0,
     twimlBuildMs: input.twimlBuildMs ?? 0,
+    serviceTotalMs: input.serviceTotalMs ?? 0,
+    storeLoadMs: input.storeLoadMs ?? 0,
+    nluTotalMs: input.nluTotalMs ?? 0,
+    openaiCalls: input.openaiCalls ?? 0,
+    reducerMs: input.reducerMs ?? 0,
+    policyMs: input.policyMs ?? 0,
+    rendererMs: input.rendererMs ?? 0,
+    storeSaveMs: input.storeSaveMs ?? 0,
+    eventLogMs: input.eventLogMs ?? 0,
+    outboxMs: input.outboxMs ?? 0,
     hasTwimlMessage: Boolean(input.hasTwimlMessage),
   });
 }
@@ -267,6 +373,7 @@ function buildStoreFailureTwiml(
     source: plan.source,
     handoff: plan.handoff,
     hasTwimlMessage: true,
+    storeFailureMode: "conversation_store_unavailable",
     ...sanitizeClientIdentityLog(clientIdentity),
     ...errorPayload,
   });
@@ -274,6 +381,7 @@ function buildStoreFailureTwiml(
     intent: plan.intent,
     source: plan.source,
     handoff: plan.handoff,
+    storeFailureMode: "conversation_store_unavailable",
     ...errorPayload,
   });
   return buildTwilioMessageResponse(buildCriticalStoreFailureReply(clientIdentity));
@@ -319,6 +427,22 @@ async function handlePost(request: Request) {
   }
 
   const sanitizedRawPayload = sanitizeTwilioPayload(raw);
+  const conversationTraceId = deriveConversationTraceId(from);
+  console.info("raw_inbound_created", {
+    channel: "whatsapp",
+    source: "webhook",
+    hasFrom: Boolean(from),
+    hasTo: Boolean(to),
+    hasBody: Boolean(body),
+    hasMessageSid: Boolean(messageSid),
+    bodyLength: body.length,
+  });
+  console.info("conversation_id_derived", {
+    channel: "whatsapp",
+    source: "from_phone_hash",
+    hasConversationTraceId: Boolean(conversationTraceId),
+    conversationTraceId,
+  });
   const normalizedEvent = normalizeWhatsAppUserEvent({
     from,
     to,
@@ -326,6 +450,7 @@ async function handlePost(request: Request) {
     messageSid,
     displayName: String(raw.ProfileName ?? raw.profileName ?? ""),
     rawPayload: sanitizedRawPayload,
+    conversationId: conversationTraceId,
     source: "webhook",
   });
   console.info("normalized_user_event_created", {
@@ -336,6 +461,7 @@ async function handlePost(request: Request) {
     hasMessageSid: Boolean(messageSid),
     currentMode: normalizedEvent.currentMode,
     pendingFields: normalizedEvent.pendingFields,
+    conversationIdSource: normalizedEvent.metadata.conversationIdSource,
   });
 
   if (isConversationResetCommand(body)) {
@@ -400,6 +526,7 @@ async function handlePost(request: Request) {
   const clientDirectory = resolveTwilioClientDirectory();
 
   try {
+    const serviceStartedAt = nowMs();
     const result = await handleInboundWhatsApp({
       from,
       to,
@@ -413,17 +540,33 @@ async function handlePost(request: Request) {
         parseMs,
       },
     }, undefined, clientDirectory);
+    const serviceTotalMs = durationSince(serviceStartedAt);
     const twimlStartedAt = nowMs();
-    const twiml = resolveTwilioWebhookTwiml(result);
+    const resolvedTwiml = resolveTwilioWebhookTwiml(result);
+    const ensuredReply = ensureNonEmptyTwilioReply({
+      twiml: resolvedTwiml,
+      botReplyBody: result.botReply?.body,
+      hasValidInboundText: Boolean(body),
+      allowEmptyTwiml: result.allowEmptyTwiml,
+      noReplyReason: result.noReplyReason,
+      fallbackReason: "normal_pipeline_empty_reply",
+      timing: result.timing,
+    });
+    const twiml = ensuredReply.twiml;
     const twimlBuildMs = durationSince(twimlStartedAt);
 
     console.info("twilio_webhook_reply_built", {
-      hasBotReply: Boolean(result.botReply?.body),
-      hasTwimlMessage: twiml.includes("<Message>"),
+      hasBotReply: Boolean(result.botReply?.body ?? ensuredReply.botReplyBody),
+      hasTwimlMessage: ensuredReply.hasTwimlMessage,
+      emptyReplyPrevented: ensuredReply.prevented,
+      noReplyReason: result.noReplyReason,
+      fallbackReason: ensuredReply.fallbackReason,
     });
     console.info("twilio_webhook_twiml_sent", {
       status: 200,
       contentType: "text/xml",
+      hasTwimlMessage: ensuredReply.hasTwimlMessage,
+      noReplyReason: result.noReplyReason,
     });
     logTwilioWebhookTiming({
       branch: "normal",
@@ -431,7 +574,17 @@ async function handlePost(request: Request) {
       routeAuthMs,
       parseMs,
       twimlBuildMs,
-      hasTwimlMessage: twiml.includes("<Message>"),
+      serviceTotalMs: result.timing?.totalDurationMs ?? serviceTotalMs,
+      storeLoadMs: result.timing?.loadStateMs,
+      nluTotalMs: result.timing?.nluTotalMs,
+      openaiCalls: result.timing?.openaiCalls,
+      reducerMs: result.timing?.reducerMs,
+      policyMs: result.timing?.policyMs,
+      rendererMs: result.timing?.rendererMs,
+      storeSaveMs: result.timing?.persistenceMs,
+      eventLogMs: result.timing?.eventLogMs,
+      outboxMs: result.timing?.outboxBuildMs,
+      hasTwimlMessage: ensuredReply.hasTwimlMessage,
     });
 
     return twilioXmlResponse(twiml);
@@ -447,10 +600,17 @@ async function handlePost(request: Request) {
     console.warn("twilio_degraded_due_to_conversation_store", {
       hasClientIdentity: isStrongClientIdentity(clientIdentity.identity),
       clientLookupMs,
+      storeFailureMode: "conversation_store_unavailable",
       ...safeErrorPayload(error),
     });
     const twimlStartedAt = nowMs();
-    const twiml = buildStoreFailureTwiml(body, error, clientIdentity.identity);
+    const resolvedTwiml = buildStoreFailureTwiml(body, error, clientIdentity.identity);
+    const ensuredReply = ensureNonEmptyTwilioReply({
+      twiml: resolvedTwiml,
+      hasValidInboundText: Boolean(body),
+      fallbackReason: "store_failure_empty_reply",
+    });
+    const twiml = ensuredReply.twiml;
     const twimlBuildMs = durationSince(twimlStartedAt);
     logTwilioWebhookTiming({
       branch: "degraded_store_failure",
@@ -459,7 +619,7 @@ async function handlePost(request: Request) {
       parseMs,
       clientLookupMs,
       twimlBuildMs,
-      hasTwimlMessage: twiml.includes("<Message>"),
+      hasTwimlMessage: ensuredReply.hasTwimlMessage,
     });
     return twilioXmlResponse(twiml);
   }

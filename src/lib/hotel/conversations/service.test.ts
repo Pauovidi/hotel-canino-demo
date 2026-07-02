@@ -688,6 +688,8 @@ describe("conversation service", () => {
 
     expect(created.conversation.mode).toBe("human");
     expect(inbound.botReply).toBeUndefined();
+    expect(inbound.allowEmptyTwiml).toBe(true);
+    expect(inbound.noReplyReason).toBe("human_mode_auto_reply_suppressed");
     expect(inbound.conversation.events.some((event) => event.eventType === "auto_reply_skipped_human_mode")).toBe(true);
   });
 
@@ -1232,6 +1234,8 @@ describe("conversation service", () => {
 
     expect(first.conversation.mode).toBe("human");
     expect(retry.inbound.id).toBe(first.inbound.id);
+    expect(retry.allowEmptyTwiml).toBe(true);
+    expect(retry.noReplyReason).toBe("duplicate_message_sid");
     expect((await store.list())[0].messages).toHaveLength(2);
   });
 

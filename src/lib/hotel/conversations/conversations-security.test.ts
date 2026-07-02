@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ensureNonEmptyTwilioReply,
   POST as postTwilioWebhook,
   resolveTwilioWebhookTwiml,
   setTwilioClientDirectoryForTests,
@@ -118,6 +119,41 @@ describe("conversations security", () => {
     expect(resolveTwilioWebhookTwiml({})).toBe(
       '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
     );
+  });
+
+  it("prevents empty TwiML for valid normal text inbound", () => {
+    const result = ensureNonEmptyTwilioReply({
+      twiml: buildTwilioMessageResponse(),
+      hasValidInboundText: true,
+      fallbackReason: "renderer_missing_render_key",
+    });
+
+    expect(result.prevented).toBe(true);
+    expect(result.hasTwimlMessage).toBe(true);
+    expect(result.twiml).toContain("<Message>");
+    expect(result.twiml).toContain("Ahora mismo no puedo consultar correctamente la conversación");
+  });
+
+  it("allows only explicitly documented empty TwiML no-reply cases", () => {
+    const humanMode = ensureNonEmptyTwilioReply({
+      twiml: buildTwilioMessageResponse(),
+      hasValidInboundText: true,
+      allowEmptyTwiml: true,
+      noReplyReason: "human_mode_auto_reply_suppressed",
+      fallbackReason: "normal_pipeline_empty_reply",
+    });
+    const duplicate = ensureNonEmptyTwilioReply({
+      twiml: buildTwilioMessageResponse(),
+      hasValidInboundText: true,
+      allowEmptyTwiml: true,
+      noReplyReason: "duplicate_message_sid",
+      fallbackReason: "normal_pipeline_empty_reply",
+    });
+
+    expect(humanMode.prevented).toBe(false);
+    expect(humanMode.hasTwimlMessage).toBe(false);
+    expect(duplicate.prevented).toBe(false);
+    expect(duplicate.hasTwimlMessage).toBe(false);
   });
 
   it("keeps all panel conversation API routes behind panel auth", () => {
@@ -507,6 +543,7 @@ describe("conversations security", () => {
     process.env.HOTEL_CONVERSATIONS_STORE_DIR = tempDir;
     process.env.TWILIO_WEBHOOK_AUTH_TOKEN = "expected-token";
     resetConversationStoreForTests();
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
     const response = await postTwilioWebhook(
       new Request("https://example.test/api/twilio/whatsapp?token=expected-token", {
@@ -538,6 +575,20 @@ describe("conversations security", () => {
     expect(messages.some((message) => message.senderType === "user")).toBe(true);
     expect(botReply?.body).toBe("Buenos días. ¿En qué podemos ayudarte?");
     expect(text).toContain(botReply?.body ?? "");
+    expect(infoSpy).toHaveBeenCalledWith(
+      "conversation_id_derived",
+      expect.objectContaining({
+        hasConversationTraceId: true,
+        conversationTraceId: expect.stringMatching(/^whatsapp:[a-f0-9]{16}$/),
+      }),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      "normalized_user_event_created",
+      expect.objectContaining({
+        hasConversationId: true,
+        conversationIdSource: "derived_sender_hash",
+      }),
+    );
   });
 
   it("returns exact TwiML for a global reset webhook before fallback handling", async () => {

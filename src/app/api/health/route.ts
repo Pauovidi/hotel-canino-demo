@@ -34,6 +34,63 @@ function shouldCheckClientsLive(request?: Request): boolean {
   return new URL(request.url).searchParams.get("clientsLive") === "1";
 }
 
+function readFirstConfiguredEnv(names: string[]): { name?: string; value: string | null } {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) {
+      return { name, value };
+    }
+  }
+
+  return { value: null };
+}
+
+function readBuildHealth() {
+  const commit = readFirstConfiguredEnv([
+    "HOTEL_BUILD_COMMIT",
+    "GIT_COMMIT",
+    "EASYPANEL_GIT_COMMIT_SHA",
+    "VERCEL_GIT_COMMIT_SHA",
+    "COMMIT_SHA",
+    "SOURCE_COMMIT",
+  ]);
+  const branch = readFirstConfiguredEnv([
+    "HOTEL_BUILD_BRANCH",
+    "GIT_BRANCH",
+    "EASYPANEL_GIT_BRANCH",
+    "VERCEL_GIT_COMMIT_REF",
+    "BRANCH_NAME",
+    "SOURCE_BRANCH",
+  ]);
+
+  return {
+    appVersion: packageJson.version,
+    commit: commit.value,
+    commitShort: commit.value ? commit.value.slice(0, 12) : null,
+    commitSource: commit.name ?? null,
+    branch: branch.value,
+    branchSource: branch.name ?? null,
+    buildMetadataConfigured: Boolean(commit.value || branch.value),
+  };
+}
+
+function readTemplateRuntimeHealth() {
+  return {
+    renderer: "copy_renderer",
+    rendererReady: true,
+    previewCommandAvailable: true,
+    templatesMapped: {
+      reservationConfirmation: true,
+      reservationPreconfirmationWelcome: true,
+      reservationDenial: true,
+      bathOffer: true,
+      reservationReminder: true,
+      postStayNewClientCheckin: true,
+      positiveReviewRequest: true,
+    },
+  };
+}
+
 function readRuntimeSafetyHealth() {
   const llmNluEnabled = process.env.HOTEL_LLM_NLU_ENABLED === "true";
   const openaiConfigured = Boolean(process.env.OPENAI_API_KEY?.trim());
@@ -74,6 +131,8 @@ export async function GET(request?: Request) {
   const twilio = readTwilioWhatsAppConfig();
   const persistence = readPersistenceHealth();
   const runtimeSafety = readRuntimeSafetyHealth();
+  const build = readBuildHealth();
+  const templates = readTemplateRuntimeHealth();
   const postgresHealth =
     persistence.conversationStoreProvider === "postgres"
       ? await checkPostgresConversationSchema()
@@ -93,11 +152,10 @@ export async function GET(request?: Request) {
     ok: true,
     app: "hotel-canino-demo",
     version: packageJson.version,
-    commit:
-      process.env.GIT_COMMIT ??
-      process.env.EASYPANEL_GIT_COMMIT_SHA ??
-      process.env.VERCEL_GIT_COMMIT_SHA ??
-      null,
+    commit: build.commit,
+    commitShort: build.commitShort,
+    branch: build.branch,
+    build,
     uptime: Math.round(process.uptime()),
     vercelEnv: process.env.VERCEL_ENV ?? null,
     whatsapp: {
@@ -127,6 +185,7 @@ export async function GET(request?: Request) {
         ),
     },
     runtimeSafety,
+    templates,
     conversationStore: {
       provider: persistence.conversationStoreProvider,
       sheetName: conversationStore.sheetName,

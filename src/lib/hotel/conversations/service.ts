@@ -147,6 +147,9 @@ export interface InboundResult {
   inbound: Message;
   botReply?: Message;
   twiml?: string;
+  allowEmptyTwiml?: boolean;
+  noReplyReason?: "duplicate_message_sid" | "human_mode_auto_reply_suppressed";
+  timing?: AuthorityTimingSnapshot;
 }
 
 export interface ManualReplyResult {
@@ -291,6 +294,143 @@ function safeConversationStoreError(error: unknown): Record<string, unknown> {
 
 function safeConversationId(value: string): string {
   return value ? `${value.slice(0, 12)}${value.length > 12 ? "…" : ""}` : "";
+}
+
+function conversationStoreProviderForLogs(store: ConversationStore): string {
+  const constructorName = store.constructor?.name?.toLowerCase() ?? "";
+  if (constructorName.includes("postgres")) return "postgres";
+  if (constructorName.includes("google")) return "google_sheets";
+  if (constructorName.includes("file")) return "file";
+  return constructorName || "unknown";
+}
+
+function logConversationStateStoreFailure(input: {
+  operation: string;
+  access: "load" | "save";
+  storeProvider: string;
+  error: unknown;
+}): void {
+  console.warn("conversation_state_store_failed", {
+    operation: input.operation,
+    access: input.access,
+    storeProvider: input.storeProvider,
+    ...safeConversationStoreError(input.error),
+  });
+}
+
+function shouldEmitRuntimeDiagnostics(): boolean {
+  return process.env.NODE_ENV !== "test" || process.env.HOTEL_RUNTIME_DIAGNOSTICS_IN_TEST === "true";
+}
+
+function safeRuntimeEventPayload(
+  eventType: string,
+  payload?: unknown,
+): Record<string, unknown> {
+  const record = payload && typeof payload === "object"
+    ? (payload as Record<string, unknown>)
+    : {};
+
+  if (eventType === "authority_turn_started") {
+    return {
+      turnId: record.turnId,
+      conversationIdHash: record.conversationIdHash,
+      channel: record.channel,
+      activeFlowBefore: record.activeFlowBefore,
+      pendingFieldsBefore: record.pendingFieldsBefore,
+    };
+  }
+
+  if (eventType === "policy_decision") {
+    return {
+      turnId: record.turnId,
+      action: record.action ?? record.route,
+      reason: record.reason,
+      intent: record.intent,
+      route: record.route,
+      renderKey: record.renderKey,
+      pendingFieldsAfter: record.pendingFieldsAfter,
+      hasActiveReservationFlow: record.hasActiveReservationFlow,
+      hasPendingReservationProposal: record.hasPendingReservationProposal,
+    };
+  }
+
+  if (eventType === "authority_turn_completed") {
+    return {
+      turnId: record.turnId,
+      conversationIdHash: record.conversationIdHash,
+      totalDurationMs: record.totalDurationMs,
+      renderSource: record.renderSource,
+      renderTemplateId: record.renderTemplateId,
+      clientIdentityStatus: record.clientIdentityStatus,
+      fallbackReason: record.fallbackReason,
+      policyAction: record.policyAction,
+      policyReason: record.policyReason,
+      kbMatchTopic: record.kbMatchTopic,
+      kbConfidence: record.kbConfidence,
+      outboxKind: record.outboxKind,
+    };
+  }
+
+  if (eventType === "authority_turn_timing_completed") {
+    return {
+      totalDurationMs: record.totalDurationMs,
+      loadStateMs: record.loadStateMs,
+      nluTotalMs: record.nluTotalMs,
+      openaiCalls: record.openaiCalls,
+      reducerMs: record.reducerMs,
+      policyMs: record.policyMs,
+      rendererMs: record.rendererMs,
+      persistenceMs: record.persistenceMs,
+      eventLogMs: record.eventLogMs,
+      outboxBuildMs: record.outboxBuildMs,
+      twimlBuildMs: record.twimlBuildMs,
+      tracePersisted: record.tracePersisted,
+      traceDroppedBestEffort: record.traceDroppedBestEffort,
+    };
+  }
+
+  if (eventType === "copy_rendered") {
+    return {
+      source: record.source,
+      renderSource: record.renderSource,
+      renderTemplateId: record.renderTemplateId,
+      operation: record.operation,
+      bodyKind: record.bodyKind,
+      hasTwimlMessage: record.hasTwimlMessage,
+    };
+  }
+
+  if (eventType === "outbox_sent") {
+    return {
+      channel: record.channel,
+      source: record.source,
+      operation: record.operation,
+      mode: record.mode,
+      outboxKind: record.outboxKind,
+    };
+  }
+
+  return {};
+}
+
+function logRuntimeConversationEvent(eventType: string, payload?: unknown): void {
+  if (!shouldEmitRuntimeDiagnostics()) {
+    return;
+  }
+
+  const runtimeLogEvents = new Set([
+    "authority_turn_started",
+    "authority_turn_completed",
+    "authority_turn_timing_completed",
+    "policy_decision",
+    "copy_rendered",
+    "outbox_sent",
+  ]);
+  if (!runtimeLogEvents.has(eventType)) {
+    return;
+  }
+
+  console.info(eventType, safeRuntimeEventPayload(eventType, payload));
 }
 
 type DurationMetricKey =
@@ -568,109 +708,150 @@ function instrumentConversationStore(
     return store;
   }
 
+  const activeTiming = timing;
+  const storeProvider = conversationStoreProviderForLogs(store);
+
+  async function runRead<T>(operation: string, callback: () => Promise<T>): Promise<T> {
+    const startedAt = nowMs();
+    if (shouldEmitRuntimeDiagnostics()) {
+      console.info("conversation_state_load_started", { operation, storeProvider });
+    }
+    try {
+      countStoreRead(store, activeTiming);
+      const result = await callback();
+      if (shouldEmitRuntimeDiagnostics()) {
+        console.info("conversation_state_load_completed", {
+          operation,
+          storeProvider,
+          durationMs: durationSince(startedAt),
+        });
+      }
+      return result;
+    } catch (error) {
+      logConversationStateStoreFailure({
+        operation,
+        access: "load",
+        storeProvider,
+        error,
+      });
+      throw error;
+    } finally {
+      addDuration(activeTiming, "loadStateMs", startedAt);
+    }
+  }
+
+  async function runWrite<T>(
+    operation: string,
+    callback: () => Promise<T>,
+  ): Promise<T> {
+    const startedAt = nowMs();
+    if (shouldEmitRuntimeDiagnostics()) {
+      console.info("conversation_state_save_started", { operation, storeProvider });
+    }
+    try {
+      countStoreWrite(store, activeTiming);
+      const result = await callback();
+      if (shouldEmitRuntimeDiagnostics()) {
+        console.info("conversation_state_save_completed", {
+          operation,
+          storeProvider,
+          durationMs: durationSince(startedAt),
+        });
+      }
+      return result;
+    } catch (error) {
+      logConversationStateStoreFailure({
+        operation,
+        access: "save",
+        storeProvider,
+        error,
+      });
+      throw error;
+    } finally {
+      addDuration(activeTiming, "persistenceMs", startedAt);
+    }
+  }
+
+  async function runEventWrite<T>(
+    operation: string,
+    callback: () => Promise<T>,
+  ): Promise<T> {
+    const startedAt = nowMs();
+    if (shouldEmitRuntimeDiagnostics()) {
+      console.info("conversation_state_save_started", { operation, storeProvider });
+    }
+    try {
+      if (isPostgresConversationStore(store)) {
+        incrementCount(activeTiming, "postgresReads");
+      }
+      countStoreWrite(store, activeTiming);
+      const result = await callback();
+      if (shouldEmitRuntimeDiagnostics()) {
+        console.info("conversation_state_save_completed", {
+          operation,
+          storeProvider,
+          durationMs: durationSince(startedAt),
+        });
+      }
+      return result;
+    } catch (error) {
+      logConversationStateStoreFailure({
+        operation,
+        access: "save",
+        storeProvider,
+        error,
+      });
+      throw error;
+    } finally {
+      const duration = durationSince(startedAt);
+      activeTiming.eventLogMs += duration;
+      activeTiming.persistenceMs += duration;
+    }
+  }
+
   return {
     async load() {
-      const startedAt = nowMs();
-      try {
-        countStoreRead(store, timing);
-        return await store.load();
-      } finally {
-        addDuration(timing, "loadStateMs", startedAt);
-      }
+      return runRead("load", () => store.load());
     },
     async save(snapshot) {
-      const startedAt = nowMs();
-      try {
-        countStoreWrite(store, timing);
-        return await store.save(snapshot);
-      } finally {
-        addDuration(timing, "persistenceMs", startedAt);
-      }
+      return runWrite("save", () => store.save(snapshot));
     },
     async list(filters) {
-      const startedAt = nowMs();
-      try {
-        countStoreRead(store, timing);
-        return await store.list(filters);
-      } finally {
-        addDuration(timing, "loadStateMs", startedAt);
-      }
+      return runRead("list", () => store.list(filters));
     },
     async getById(id) {
-      const startedAt = nowMs();
-      try {
-        countStoreRead(store, timing);
-        return await store.getById(id);
-      } finally {
-        addDuration(timing, "loadStateMs", startedAt);
-      }
+      return runRead("getById", () => store.getById(id));
     },
     async getByPhone(phoneNormalized) {
-      const startedAt = nowMs();
-      try {
-        countStoreRead(store, timing);
-        return await store.getByPhone(phoneNormalized);
-      } finally {
-        addDuration(timing, "loadStateMs", startedAt);
-      }
+      return runRead("getByPhone", () => store.getByPhone(phoneNormalized));
     },
     async upsertConversation(conversation) {
-      const startedAt = nowMs();
-      try {
-        countStoreWrite(store, timing);
-        return await store.upsertConversation(conversation);
-      } finally {
-        addDuration(timing, "persistenceMs", startedAt);
-      }
+      return runWrite("upsertConversation", () => store.upsertConversation(conversation));
     },
     async addMessage(message) {
-      const startedAt = nowMs();
-      try {
+      return runWrite("addMessage", () => {
         if (isPostgresConversationStore(store)) {
-          incrementCount(timing, "postgresReads");
+          incrementCount(activeTiming, "postgresReads");
         }
-        countStoreWrite(store, timing);
-        return await store.addMessage(message);
-      } finally {
-        addDuration(timing, "persistenceMs", startedAt);
-      }
+        return store.addMessage(message);
+      });
     },
     async addEvent(event) {
-      const startedAt = nowMs();
-      try {
-        if (isPostgresConversationStore(store)) {
-          incrementCount(timing, "postgresReads");
-        }
-        countStoreWrite(store, timing);
+      return runEventWrite("addEvent", async () => {
         const written = await store.addEvent(event);
-        incrementCount(timing, "eventsWritten");
+        incrementCount(activeTiming, "eventsWritten");
         if (event.eventType === "authority_turn_completed") {
-          timing.tracePersisted = true;
+          activeTiming.tracePersisted = true;
         }
+        logRuntimeConversationEvent(event.eventType, event.payload);
         return written;
-      } finally {
-        const duration = durationSince(startedAt);
-        timing.eventLogMs += duration;
-        timing.persistenceMs += duration;
-      }
+      });
     },
     async replaceConversation(record) {
-      const startedAt = nowMs();
-      try {
-        countStoreWrite(store, timing);
-        return await store.replaceConversation(record);
-      } finally {
-        addDuration(timing, "persistenceMs", startedAt);
-      }
+      return runWrite("replaceConversation", () => store.replaceConversation(record));
     },
     async seed(records) {
-      const startedAt = nowMs();
-      try {
-        countStoreWrite(store, timing);
-        return await store.seed(records);
-      } finally {
-        addDuration(timing, "persistenceMs", startedAt);
-      }
+      return runWrite("seed", () => store.seed(records));
     },
   };
 }
@@ -734,16 +915,22 @@ async function addRenderedBotMessage(
   body: string,
   operation: string,
 ): Promise<Message> {
-  await addEventBestEffort(
+  const copyRenderedPayload = {
+    source: "copy_renderer",
+    renderSource: "copy_renderer",
+    renderTemplateId: operation,
+    operation,
+    bodyKind: body.length <= 80 ? "short_text" : "long_text",
+    hasTwimlMessage: true,
+  };
+  const copyRenderedEvent = await addEventBestEffort(
     store,
-    createEvent(conversationId, "copy_rendered", {
-      source: "copy_renderer",
-      operation,
-      bodyKind: body.length <= 80 ? "short_text" : "long_text",
-      hasTwimlMessage: true,
-    }),
+    createEvent(conversationId, "copy_rendered", copyRenderedPayload),
     `${operation}_copy_rendered`,
   );
+  if (!copyRenderedEvent) {
+    logRuntimeConversationEvent("copy_rendered", copyRenderedPayload);
+  }
   const botReply = await store.addMessage(
     createMessage({
       conversationId,
@@ -752,16 +939,21 @@ async function addRenderedBotMessage(
       body,
     }),
   );
-  await addEventBestEffort(
+  const outboxSentPayload = {
+    channel: "whatsapp",
+    source: "copy_renderer",
+    operation,
+    mode: "twiml_response",
+    outboxKind: "twiml_response",
+  };
+  const outboxSentEvent = await addEventBestEffort(
     store,
-    createEvent(conversationId, "outbox_sent", {
-      channel: "whatsapp",
-      source: "copy_renderer",
-      operation,
-      mode: "twiml_response",
-    }),
+    createEvent(conversationId, "outbox_sent", outboxSentPayload),
     `${operation}_outbox_sent`,
   );
+  if (!outboxSentEvent) {
+    logRuntimeConversationEvent("outbox_sent", outboxSentPayload);
+  }
   return botReply;
 }
 
@@ -3276,13 +3468,17 @@ export async function handleInboundWhatsApp(
 ): Promise<InboundResult> {
   const timing = createAuthorityTiming(payload.timing);
   const instrumentedStore = instrumentConversationStore(store, timing);
-  return handleInboundWhatsAppWithTiming(
+  const result = await handleInboundWhatsAppWithTiming(
     payload,
     instrumentedStore,
     clientDirectory,
     reservationBridgeDeps,
     timing,
   );
+  return {
+    ...result,
+    timing: finalizeAuthorityTiming(timing),
+  };
 }
 
 async function handleInboundWhatsAppWithTiming(
@@ -3309,6 +3505,8 @@ async function handleInboundWhatsAppWithTiming(
         conversation,
         inbound: existing,
         twiml: buildTwilioMessageResponse(),
+        allowEmptyTwiml: true,
+        noReplyReason: "duplicate_message_sid",
       };
     }
   }
@@ -3398,6 +3596,8 @@ async function handleInboundWhatsAppWithTiming(
     return {
       conversation: (await store.getById(freshWithClient.id)) ?? freshWithClient,
       inbound,
+      allowEmptyTwiml: true,
+      noReplyReason: "human_mode_auto_reply_suppressed",
     };
   }
 
