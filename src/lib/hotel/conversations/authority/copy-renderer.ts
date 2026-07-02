@@ -48,6 +48,11 @@ export type ConversationRenderKey =
   | "availability_first_needs_details"
   | "availability_first_offer_reservation"
   | "availability_first_handoff_contextual"
+  | "availability_first_pet_recorded_checking"
+  | "availability_first_available_offer_reservation"
+  | "availability_first_clarify_times"
+  | "availability_first_clarify_pet_ambiguous"
+  | "availability_first_precheck_error_handoff_contextual"
   | "conversation.kb_topic_answer"
   | "conversation.kb_topic_unknown_clarify"
   | "conversation.info_answer_then_resume_reservation"
@@ -387,6 +392,18 @@ export function renderCopy(input: RenderCopyInput): string {
       return "Si quieres, con esos datos seguimos con la reserva.";
     case "availability_first_handoff_contextual":
       return "Gracias. Con esos datos lo puede revisar el equipo y contestarte con disponibilidad real por aquí.";
+    case "availability_first_pet_recorded_checking":
+      return `Perfecto${input.petName ? `, sería para ${input.petName}` : ""}. Compruebo disponibilidad con el flujo operativo antes de seguir con la reserva.`;
+    case "availability_first_available_offer_reservation":
+      return `Hay disponibilidad según la comprobación operativa${input.petName ? ` para ${input.petName}` : ""}. Si quieres, seguimos con la reserva.`;
+    case "availability_first_clarify_times":
+      return `Perfecto${input.petName ? `, sería para ${input.petName}` : ""}. Para comprobar disponibilidad me falta la hora aproximada de entrada y salida. No te confirmo plaza hasta comprobarlo con el flujo operativo.`;
+    case "availability_first_clarify_pet_ambiguous":
+      return input.pets?.length
+        ? `Tengo registradas a ${formatPetList(input.pets)}. ¿Para cuál de ellas quieres consultar disponibilidad?`
+        : "¿Me confirmas el nombre de la mascota para consultar disponibilidad?";
+    case "availability_first_precheck_error_handoff_contextual":
+      return "Con esos datos no he podido completar la comprobación automática. Lo puede revisar el equipo y contestarte con disponibilidad real por aquí.";
     case "conversation.kb_topic_answer": {
       if (input.topicAnswer) {
         return input.topicAnswer;

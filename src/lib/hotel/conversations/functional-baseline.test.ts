@@ -171,6 +171,31 @@ describe("functional baseline lock", () => {
     }
   });
 
+  it("locks availability-first continuation when the user replies with the pet name", async () => {
+    const store = new MemoryConversationStore();
+
+    await handleInboundWhatsApp(
+      { from: "+34612345002", body: "quería reservar para este fin de semana, ¿es posible?" },
+      store,
+      createStaticClientDirectory([]),
+    );
+    const result = await handleInboundWhatsApp(
+      { from: "+34612345002", body: "PAPO" },
+      store,
+      createStaticClientDirectory([]),
+    );
+
+    expect(result.conversation.activeFlow).toBe("availabilityInquiry");
+    expect(result.conversation.availabilityInquiry).toMatchObject({
+      petName: "PAPO",
+      missingFields: ["times"],
+      readyForTool: false,
+    });
+    expect(result.botReply?.body).toContain("hora aproximada de entrada y salida");
+    expect(result.botReply?.body).not.toContain("Perdona, no te he entendido bien");
+    expect(result.conversation.events.some((event) => event.eventType === "availability_pet_slot_applied")).toBe(true);
+  });
+
   it("locks template preview as preview-only and keeps real snippets", () => {
     const preview = buildStatelessTemplatePreviewResult("plantilla confirmación");
 

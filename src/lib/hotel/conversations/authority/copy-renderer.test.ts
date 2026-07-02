@@ -88,6 +88,16 @@ describe("conversation CopyRenderer", () => {
     const needsDetails = renderCopy({ key: "availability_first_needs_details" });
     const contextual = renderCopy({ key: "availability_first_handoff_contextual" });
     const offer = renderCopy({ key: "availability_first_offer_reservation" });
+    const times = renderCopy({ key: "availability_first_clarify_times", petName: "PAPO" });
+    const available = renderCopy({
+      key: "availability_first_available_offer_reservation",
+      petName: "PAPO",
+    });
+    const ambiguous = renderCopy({
+      key: "availability_first_clarify_pet_ambiguous",
+      pets: ["Kira", "Kiko"],
+    });
+    const error = renderCopy({ key: "availability_first_precheck_error_handoff_contextual" });
 
     expect(collectPet).toContain("Me falta solo el nombre de la mascota");
     expect(collectPet).toContain("No te confirmo plaza");
@@ -97,5 +107,11 @@ describe("conversation CopyRenderer", () => {
     expect(needsDetails).toContain("Me faltan el nombre de la mascota");
     expect(contextual).toContain("disponibilidad real");
     expect(offer).toContain("seguimos con la reserva");
+    expect(times).toContain("hora aproximada de entrada y salida");
+    expect(times).toContain("PAPO");
+    expect(available).toContain("Hay disponibilidad");
+    expect(available).toContain("seguimos con la reserva");
+    expect(ambiguous).toContain("Kira y Kiko");
+    expect(error).toContain("revisar el equipo");
   });
 });

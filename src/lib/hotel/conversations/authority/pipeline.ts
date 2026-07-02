@@ -77,7 +77,13 @@ function currentStateFromConversation(record?: ConversationRecord): NormalizedUs
 }
 
 function pendingFieldsFromConversation(record?: ConversationRecord): string[] {
-  return record?.reservationFlow ? computeMissingReservationFields(record.reservationFlow) : [];
+  if (record?.reservationFlow) {
+    return computeMissingReservationFields(record.reservationFlow);
+  }
+  if (record?.availabilityInquiry || record?.activeFlow === "availabilityInquiry") {
+    return record.availabilityInquiry?.missingFields ?? [];
+  }
+  return [];
 }
 
 export function normalizeWhatsAppUserEvent(input: NormalizeWhatsAppEventInput): NormalizedUserEvent {

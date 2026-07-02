@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createStaticClientDirectory } from "@/lib/hotel/clients";
+import type { SheetAdapter, SheetsAvailabilityResult } from "@/lib/hotel/sheets/types";
 import {
   ensureDemoConversationSeed,
   archiveConversation,
@@ -27,6 +28,7 @@ import type {
   ConversationSnapshot,
   Message,
 } from "./types";
+import type { WhatsAppReservationBridgeDeps } from "./reservation-bridge";
 
 class MemoryConversationStore implements ConversationStore {
   private snapshot = createEmptyConversationSnapshot();
@@ -132,6 +134,58 @@ class MemoryConversationStore implements ConversationStore {
     };
     return this.load();
   }
+}
+
+function makeAvailabilityResult(available = true): SheetsAvailabilityResult {
+  return {
+    available,
+    conflicts: available ? [] : ["2026-07-04"],
+    remainingByDate: {
+      "2026-07-04": { morning: available ? 8 : 0, afternoon: available ? 8 : 0 },
+      "2026-07-05": { morning: available ? 8 : 0, afternoon: available ? 8 : 0 },
+    },
+    monthKey: "2026-07",
+  };
+}
+
+function makeAvailabilityReadOnlyDeps(options: { available?: boolean } = {}): {
+  counters: { checks: number; writes: number };
+  deps: WhatsAppReservationBridgeDeps;
+} {
+  const counters = { checks: 0, writes: 0 };
+  const adapter: SheetAdapter = {
+    async readMonth() {
+      throw new Error("readMonth not expected");
+    },
+    async validateMonthStructure() {
+      throw new Error("validateMonthStructure not expected");
+    },
+    async checkAvailability() {
+      counters.checks += 1;
+      return makeAvailabilityResult(options.available ?? true);
+    },
+    async buildWritePlan() {
+      counters.writes += 1;
+      throw new Error("buildWritePlan not expected");
+    },
+    async writeReservation() {
+      counters.writes += 1;
+      throw new Error("writeReservation not expected");
+    },
+    async cancelReservation() {
+      counters.writes += 1;
+      throw new Error("cancelReservation not expected");
+    },
+  };
+  return {
+    counters,
+    deps: {
+      now: () => new Date("2026-07-02T10:00:00.000Z"),
+      async buildSheetAdapter() {
+        return adapter;
+      },
+    },
+  };
 }
 
 class ResetFailingConversationStore extends MemoryConversationStore {
@@ -1056,7 +1110,7 @@ describe("conversation service", () => {
     expect(result.conversation.events.some((event) => event.eventType === "availability_first_triggered")).toBe(true);
   });
 
-  it("keeps availability-first contextual when pet and weekend range are present", async () => {
+  it("asks only for times when pet and weekend range are present", async () => {
     const store = new MemoryConversationStore();
 
     const result = await handleInboundWhatsApp(
@@ -1069,13 +1123,209 @@ describe("conversation service", () => {
     expect(result.conversation.availabilityInquiry).toMatchObject({
       relativeDateRange: "este_fin_de_semana",
       petName: "PIPO",
-      missingFields: [],
-      readyForHumanReview: true,
+      missingFields: ["times"],
+      readyForHumanReview: false,
       readyForTool: false,
     });
-    expect(result.botReply?.body).toContain("disponibilidad real");
+    expect(result.botReply?.body).toContain("hora aproximada de entrada y salida");
     expect(result.botReply?.body).not.toContain("Tenemos disponibilidad");
     expect(result.botReply?.body).not.toContain("¿Ya eres cliente");
+  });
+
+  it("continues availability-first by applying a standalone pet slot instead of generic fallback", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeAvailabilityReadOnlyDeps();
+
+    await handleInboundWhatsApp({ from: "+34612345678", body: "reiniciar" }, store, undefined, deps);
+    await handleInboundWhatsApp({ from: "+34612345678", body: "hola" }, store, undefined, deps);
+    await handleInboundWhatsApp(
+      { from: "+34612345678", body: "quería reservar para este fin de semana ¿es posible?" },
+      store,
+      undefined,
+      deps,
+    );
+    const pet = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "PAPO" },
+      store,
+      undefined,
+      deps,
+    );
+
+    const rendered = pet.conversation.events.findLast((event) => event.eventType === "copy_rendered");
+    const policy = pet.conversation.events.findLast((event) => event.eventType === "policy_decision");
+
+    expect(pet.conversation.activeFlow).toBe("availabilityInquiry");
+    expect(pet.conversation.availabilityInquiry).toMatchObject({
+      petName: "PAPO",
+      missingFields: ["times"],
+      readyForTool: false,
+    });
+    expect(pet.botReply?.body).toContain("PAPO");
+    expect(pet.botReply?.body).toContain("hora aproximada de entrada y salida");
+    expect(pet.botReply?.body).not.toContain("Perdona, no te he entendido bien");
+    expect(pet.botReply?.body).not.toContain("¿Quieres hacer una reserva");
+    expect(rendered?.payload).toMatchObject({
+      renderTemplateId: "availability_first_clarify_times",
+    });
+    expect(policy?.payload).toMatchObject({
+      route: "availability_inquiry",
+      action: "ask_missing_slot",
+    });
+    expect(pet.conversation.events.some((event) => event.eventType === "availability_pet_slot_applied")).toBe(true);
+    expect(counters.checks).toBe(0);
+    expect(counters.writes).toBe(0);
+  });
+
+  it("matches a known pet during availability continuation without asking a full reservation form", async () => {
+    const store = new MemoryConversationStore();
+    const directory = createStaticClientDirectory([
+      {
+        nombre: "Laura Cliente",
+        telefonoMovil: "+34 612 345 678",
+        telefonoNormalizado: "34612345678",
+        email: "laura@example.test",
+        mascotas: ["Kira"],
+        mascotasCount: 1,
+        mascotasMatchStatus: "exact",
+        rowNumber: 2,
+        sheetName: "CLIENTES",
+      },
+    ]);
+
+    await handleInboundWhatsApp(
+      { from: "whatsapp:+34612345678", body: "quería reservar para este fin de semana ¿es posible?" },
+      store,
+      directory,
+    );
+    const result = await handleInboundWhatsApp(
+      { from: "whatsapp:+34612345678", body: "Kira" },
+      store,
+      directory,
+    );
+
+    expect(result.conversation.clientStatus).toBe("known");
+    expect(result.conversation.reservationFlow).toBeUndefined();
+    expect(result.conversation.availabilityInquiry?.petName).toBe("Kira");
+    expect(result.botReply?.body).toContain("hora aproximada de entrada y salida");
+    expect(result.botReply?.body).not.toContain("Dime el nombre de tu mascota o mascotas y las fechas");
+    expect(result.conversation.events.some((event) => event.eventType === "availability_pet_slot_applied")).toBe(true);
+  });
+
+  it("clarifies an ambiguous known pet during availability continuation", async () => {
+    const store = new MemoryConversationStore();
+    const directory = createStaticClientDirectory([
+      {
+        nombre: "Laura Cliente",
+        telefonoMovil: "+34 612 345 678",
+        telefonoNormalizado: "34612345678",
+        email: "laura@example.test",
+        mascotas: ["Kira", "Kiko"],
+        mascotasCount: 2,
+        mascotasMatchStatus: "duplicate_clear_canonical",
+        rowNumber: 2,
+        sheetName: "CLIENTES",
+      },
+    ]);
+
+    await handleInboundWhatsApp(
+      { from: "whatsapp:+34612345678", body: "quería reservar para este fin de semana ¿es posible?" },
+      store,
+      directory,
+    );
+    const result = await handleInboundWhatsApp(
+      { from: "whatsapp:+34612345678", body: "Ki" },
+      store,
+      directory,
+    );
+
+    expect(result.conversation.availabilityInquiry?.missingFields).toEqual(["petName"]);
+    expect(result.botReply?.body).toContain("Kira y Kiko");
+    expect(result.botReply?.body).not.toContain("Perdona, no te he entendido bien");
+    expect(result.conversation.events.some((event) => event.eventType === "availability_pet_slot_ambiguous")).toBe(true);
+  });
+
+  it("runs the availability checker read-only after pet and times are present", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeAvailabilityReadOnlyDeps({ available: true });
+
+    await handleInboundWhatsApp(
+      { from: "+34612345678", body: "quería reservar para este fin de semana ¿es posible?" },
+      store,
+      undefined,
+      deps,
+    );
+    await handleInboundWhatsApp({ from: "+34612345678", body: "PAPO" }, store, undefined, deps);
+    const result = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "entrada a las 10:00 y salida a las 18:00" },
+      store,
+      undefined,
+      deps,
+    );
+
+    expect(result.conversation.availabilityInquiry).toMatchObject({
+      petName: "PAPO",
+      availabilityStatus: "available",
+      missingFields: [],
+      readyForTool: true,
+    });
+    expect(result.conversation.pendingReservationProposal).toBeUndefined();
+    expect(result.conversation.reservationFlow).toBeUndefined();
+    expect(result.botReply?.body).toContain("Hay disponibilidad");
+    expect(result.botReply?.body).toContain("seguimos con la reserva");
+    expect(result.conversation.events.some((event) => event.eventType === "availability_precheck_started")).toBe(true);
+    expect(result.conversation.events.some((event) => event.eventType === "availability_precheck_result")).toBe(true);
+    expect(result.conversation.events.some((event) => event.eventType === "availability_first_offered_reservation")).toBe(true);
+    expect(counters.checks).toBe(1);
+    expect(counters.writes).toBe(0);
+  });
+
+  it("reports unavailable checker result without inventing availability", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeAvailabilityReadOnlyDeps({ available: false });
+
+    await handleInboundWhatsApp(
+      { from: "+34612345678", body: "quería reservar para este fin de semana ¿es posible?" },
+      store,
+      undefined,
+      deps,
+    );
+    await handleInboundWhatsApp({ from: "+34612345678", body: "PAPO" }, store, undefined, deps);
+    const result = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "entrada a las 10:00 y salida a las 18:00" },
+      store,
+      undefined,
+      deps,
+    );
+
+    expect(result.conversation.availabilityInquiry?.availabilityStatus).toBe("unavailable");
+    expect(result.botReply?.body).toContain("No aparece disponibilidad");
+    expect(result.botReply?.body).not.toContain("Hay disponibilidad");
+    expect(result.conversation.pendingReservationProposal).toBeUndefined();
+    expect(result.conversation.events.some((event) => event.eventType === "availability_precheck_unavailable")).toBe(true);
+    expect(counters.checks).toBe(1);
+    expect(counters.writes).toBe(0);
+  });
+
+  it("asks only for times when the read-only checker still lacks slots", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeAvailabilityReadOnlyDeps();
+
+    const result = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "hay hueco este finde para PIPO?" },
+      store,
+      undefined,
+      deps,
+    );
+
+    expect(result.conversation.availabilityInquiry).toMatchObject({
+      petName: "PIPO",
+      missingFields: ["times"],
+      readyForTool: false,
+    });
+    expect(result.botReply?.body).toContain("hora aproximada de entrada y salida");
+    expect(result.botReply?.body).not.toContain("Dime el nombre de tu mascota o mascotas y las fechas");
+    expect(counters.checks).toBe(0);
+    expect(counters.writes).toBe(0);
   });
 
   it("holds reservation intent for prior questions and resumes after answering a topic", async () => {

@@ -119,9 +119,12 @@ type SmokeRow = {
   renderSource: string;
   clientIdentityStatus: string;
   activeFlow: string;
+  pendingFields: string;
+  petName: string;
   proposalState: string;
   termsState: string;
   availabilityFirstTriggered: string;
+  availabilityPrecheckStatus: string;
   contractGate: string;
   failureReason: string;
 };
@@ -176,6 +179,7 @@ function rowFromResult(input: {
   const policy = lastEvent(input.result.conversation, "policy_decision");
   const rendered = lastEvent(input.result.conversation, "copy_rendered");
   const proposal = input.result.conversation.pendingReservationProposal;
+  const availability = input.result.conversation.availabilityInquiry;
   return {
     label: input.label,
     status: input.ok ? "OK" : "FAIL",
@@ -187,6 +191,8 @@ function rowFromResult(input: {
     renderSource: payloadValue(rendered, "renderSource") ?? "(n/a)",
     clientIdentityStatus: input.result.conversation.clientStatus ?? "unknown",
     activeFlow: input.result.conversation.activeFlow ?? "none",
+    pendingFields: availability?.missingFields.join(",") ?? "",
+    petName: availability?.petName ?? "",
     proposalState: proposal?.status ?? "none",
     termsState: proposal?.termsAccepted
       ? "accepted"
@@ -194,6 +200,7 @@ function rowFromResult(input: {
         ? "contract_requested"
         : "none",
     availabilityFirstTriggered: hasEvent(input.result.conversation, "availability_first_triggered") ? "yes" : "no",
+    availabilityPrecheckStatus: availability?.availabilityStatus ?? "none",
     contractGate:
       payloadValue(lastEvent(input.result.conversation, "contract_gate_applied"), "reason") ??
       payloadValue(lastEvent(input.result.conversation, "contract_gate_skipped"), "reason") ??
@@ -267,6 +274,28 @@ async function main() {
       !(availability.botReply?.body.includes("Tenemos disponibilidad") ?? false),
   }));
 
+  const availabilityContinuation = await handleInboundWhatsApp(
+    {
+      from: "whatsapp:+34612345010",
+      to: SANDBOX_TO,
+      body: "PAPO",
+      messageSid: "SM_FB_AVAILABILITY_PET_SLOT",
+    },
+    availabilityStore,
+    createStaticClientDirectory([]),
+  );
+  rows.push(rowFromResult({
+    label: "availability-continuation-pet-slot",
+    expected: "standalone pet name continues availability-first and asks only missing times",
+    result: availabilityContinuation,
+    ok:
+      availabilityContinuation.conversation.reservationFlow === undefined &&
+      availabilityContinuation.conversation.availabilityInquiry?.petName === "PAPO" &&
+      availabilityContinuation.conversation.availabilityInquiry?.missingFields.join(",") === "times" &&
+      (availabilityContinuation.botReply?.body.includes("hora aproximada de entrada y salida") ?? false) &&
+      !(availabilityContinuation.botReply?.body.includes("Perdona, no te he entendido") ?? false),
+  }));
+
   const petAvailability = await handleInboundWhatsApp(
     {
       from: "whatsapp:+34612345011",
@@ -279,13 +308,13 @@ async function main() {
   );
   rows.push(rowFromResult({
     label: "availability-first-with-pet",
-    expected: "range + pet records contextual review without fake availability",
+    expected: "range + pet asks only missing times without fake availability",
     result: petAvailability,
     ok:
       petAvailability.conversation.reservationFlow === undefined &&
       petAvailability.conversation.availabilityInquiry?.petName === "PIPO" &&
-      petAvailability.conversation.availabilityInquiry?.missingFields.length === 0 &&
-      (petAvailability.botReply?.body.includes("disponibilidad real") ?? false) &&
+      petAvailability.conversation.availabilityInquiry?.missingFields.join(",") === "times" &&
+      (petAvailability.botReply?.body.includes("hora aproximada de entrada y salida") ?? false) &&
       !(petAvailability.botReply?.body.includes("Tenemos disponibilidad") ?? false),
   }));
 
@@ -309,7 +338,10 @@ async function main() {
     activeFlow: "none",
     proposalState: "none",
     termsState: "none",
+    pendingFields: "",
+    petName: "",
     availabilityFirstTriggered: "no",
+    availabilityPrecheckStatus: "none",
     contractGate: "none",
     failureReason: "",
   });

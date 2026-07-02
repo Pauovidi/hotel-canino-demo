@@ -156,7 +156,14 @@ export interface ConversationAvailabilityInquiry {
   dateEnd?: string;
   relativeDateRange?: string;
   petName?: string;
-  missingFields: Array<"petName" | "dateRange">;
+  petCount?: number;
+  checkInTime?: string;
+  checkOutTime?: string;
+  checkInSlot?: "morning" | "afternoon";
+  checkOutSlot?: "morning" | "afternoon";
+  availabilityStatus?: "pending" | "available" | "unavailable" | "error";
+  availabilitySnapshot?: unknown;
+  missingFields: Array<"petName" | "dateRange" | "times">;
   readyForHumanReview?: boolean;
   readyForTool?: boolean;
 }

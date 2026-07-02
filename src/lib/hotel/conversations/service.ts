@@ -8,6 +8,8 @@ import {
   type ClientIdentityResult,
   type ClientUpsertFromConfirmedReservationResult,
 } from "@/lib/hotel/clients";
+import { getHotelFeatureFlags } from "@/lib/hotel/config";
+import { buildGoogleSheetAdapter, buildMockSheetAdapter } from "@/lib/hotel/sheets";
 import {
   buildConversationReplyPlan,
   classifyConversationIntent,
@@ -81,6 +83,7 @@ import type {
   ConversationListFilters,
   ConversationMode,
   ConversationRecord,
+  ConversationAvailabilityInquiry,
   ConversationReservationFlow,
   Message,
   PendingReservationProposal,
@@ -1340,9 +1343,13 @@ function activeFlowName(record?: ConversationRecord): string | undefined {
 }
 
 function pendingFieldsForTrace(record?: ConversationRecord): string[] {
-  return record?.reservationFlow && isReservationFlowActive(record)
-    ? computeMissingReservationFields(record.reservationFlow)
-    : [];
+  if (record?.reservationFlow && isReservationFlowActive(record)) {
+    return computeMissingReservationFields(record.reservationFlow);
+  }
+  if (record?.availabilityInquiry || record?.activeFlow === "availabilityInquiry") {
+    return record.availabilityInquiry?.missingFields ?? [];
+  }
+  return [];
 }
 
 function inferLastBotQuestionKindForTrace(reply?: string): string | undefined {
@@ -3153,10 +3160,10 @@ function renderGreetingWithWelcomeLock(input: {
 }
 
 function availabilityFirstRenderKey(
-  missingFields: Array<"petName" | "dateRange">,
+  missingFields: ConversationAvailabilityInquiry["missingFields"],
 ): ConversationRenderKey {
   if (missingFields.length === 0) {
-    return "availability_first_handoff_contextual";
+    return "availability_first_pet_recorded_checking";
   }
   if (missingFields.length === 1 && missingFields[0] === "petName") {
     return "availability_first_collect_pet";
@@ -3164,7 +3171,564 @@ function availabilityFirstRenderKey(
   if (missingFields.length === 1 && missingFields[0] === "dateRange") {
     return "availability_first_clarify_range";
   }
+  if (missingFields.length === 1 && missingFields[0] === "times") {
+    return "availability_first_clarify_times";
+  }
   return "availability_first_needs_details";
+}
+
+type AvailabilitySlot = NonNullable<ConversationAvailabilityInquiry["checkInSlot"]>;
+
+const SAFE_CLIENT_PET_STATUSES = new Set([
+  "exact",
+  "exact_or_token",
+  "token_subset_unique",
+  "probable_high_unique_token",
+  "exact_canonical",
+  "token_subset_unique_canonical",
+  "probable_high_unique_token_canonical",
+  "duplicate_clear_canonical",
+]);
+
+function getDefaultAvailabilityBuildSheetAdapter() {
+  return getHotelFeatureFlags().useGoogleSheetsReal
+    ? buildGoogleSheetAdapter
+    : () => buildMockSheetAdapter("hotel-whatsapp-availability-first.json");
+}
+
+function safeAvailabilityKnownPets(record: ConversationRecord): string[] {
+  const pets = Array.isArray(record.clientPets)
+    ? record.clientPets.map((pet) => pet.trim()).filter(Boolean)
+    : [];
+  if (!record.clientPetsMatchStatus || !SAFE_CLIENT_PET_STATUSES.has(record.clientPetsMatchStatus)) {
+    return [];
+  }
+  if (record.clientPetsCount !== undefined && record.clientPetsCount !== pets.length) {
+    return [];
+  }
+  return pets;
+}
+
+function normalizePetSlotText(value: string): string {
+  return normalizeOperationalText(value).replace(/\b(?:mi|se|llama|mascota|perro|perra|para)\b/g, "").replace(/\s+/g, " ").trim();
+}
+
+function standalonePetNameCandidate(message: string): string | undefined {
+  const candidate = message
+    .trim()
+    .replace(/^[¿?¡!.,;:\s]+|[¿?¡!.,;:\s]+$/g, "")
+    .replace(/\s+/g, " ");
+  const normalized = normalizeOperationalText(candidate);
+  if (!candidate || candidate.length > 40) {
+    return undefined;
+  }
+  if (!/^[\p{L}\d][\p{L}\d' -]{1,39}$/u.test(candidate)) {
+    return undefined;
+  }
+  if (candidate.split(/\s+/).length > 3) {
+    return undefined;
+  }
+  if (
+    /^(?:si|sí|no|hola|gracias|vale|ok|okay|pago|precio|precios|reserva|reservar|disponibilidad|humano|persona)$/iu.test(
+      normalized,
+    )
+  ) {
+    return undefined;
+  }
+  return candidate;
+}
+
+function resolveAvailabilityPetSlot(record: ConversationRecord, message: string):
+  | { kind: "applied"; petName: string; petCount: number; matchedFrom: "known_pet" | "provisional" }
+  | { kind: "ambiguous"; candidates: string[] }
+  | { kind: "ignored"; reason: string } {
+  const candidate = standalonePetNameCandidate(message);
+  if (!candidate) {
+    return { kind: "ignored", reason: "not_standalone_pet_name" };
+  }
+
+  const normalizedCandidate = normalizePetSlotText(candidate);
+  const knownPets = safeAvailabilityKnownPets(record);
+  if (knownPets.length > 0) {
+    const exactMatches = knownPets.filter((pet) => normalizePetSlotText(pet) === normalizedCandidate);
+    if (exactMatches.length === 1) {
+      return { kind: "applied", petName: exactMatches[0], petCount: 1, matchedFrom: "known_pet" };
+    }
+    if (exactMatches.length > 1) {
+      return { kind: "ambiguous", candidates: exactMatches };
+    }
+
+    if (normalizedCandidate.length >= 2) {
+      const fuzzyMatches = knownPets.filter((pet) => {
+        const normalizedPet = normalizePetSlotText(pet);
+        return normalizedPet.startsWith(normalizedCandidate) || normalizedPet.includes(normalizedCandidate);
+      });
+      if (fuzzyMatches.length === 1) {
+        return { kind: "applied", petName: fuzzyMatches[0], petCount: 1, matchedFrom: "known_pet" };
+      }
+      if (fuzzyMatches.length > 1) {
+        return { kind: "ambiguous", candidates: fuzzyMatches };
+      }
+    }
+  }
+
+  return { kind: "applied", petName: candidate, petCount: 1, matchedFrom: "provisional" };
+}
+
+function formatDateKey(date: Date): string {
+  return [
+    String(date.getUTCFullYear()).padStart(4, "0"),
+    String(date.getUTCMonth() + 1).padStart(2, "0"),
+    String(date.getUTCDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function addUtcDays(date: Date, days: number): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + days));
+}
+
+function nextUtcWeekday(now: Date, weekday: number): Date {
+  const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const daysUntil = (weekday - today.getUTCDay() + 7) % 7;
+  return addUtcDays(today, daysUntil);
+}
+
+function resolveAvailabilityDateWindow(
+  relativeDateRange: string | undefined,
+  now: Date,
+): Pick<ConversationAvailabilityInquiry, "dateStart" | "dateEnd"> {
+  if (relativeDateRange === "viernes_a_domingo") {
+    const friday = nextUtcWeekday(now, 5);
+    return { dateStart: formatDateKey(friday), dateEnd: formatDateKey(addUtcDays(friday, 2)) };
+  }
+  if (relativeDateRange === "este_fin_de_semana" || relativeDateRange === "sabado_domingo") {
+    const saturday = nextUtcWeekday(now, 6);
+    return { dateStart: formatDateKey(saturday), dateEnd: formatDateKey(addUtcDays(saturday, 1)) };
+  }
+  return {};
+}
+
+function availabilitySlotFromTime(time: string | undefined): AvailabilitySlot | undefined {
+  if (!time) {
+    return undefined;
+  }
+  const normalized = normalizeOperationalText(time);
+  if (normalized.includes("manana")) {
+    return "morning";
+  }
+  if (normalized.includes("tarde")) {
+    return "afternoon";
+  }
+  const hour = Number.parseInt(time.slice(0, 2), 10);
+  return Number.isFinite(hour) && hour < 14 ? "morning" : "afternoon";
+}
+
+function computeAvailabilityMissingFields(
+  inquiry: ConversationAvailabilityInquiry,
+): ConversationAvailabilityInquiry["missingFields"] {
+  const missingFields: ConversationAvailabilityInquiry["missingFields"] = [];
+  if (!inquiry.petName) {
+    missingFields.push("petName");
+  }
+  if (!inquiry.dateStart || !inquiry.dateEnd) {
+    missingFields.push("dateRange");
+  }
+  if (
+    inquiry.petName &&
+    inquiry.dateStart &&
+    inquiry.dateEnd &&
+    (!inquiry.checkInSlot || !inquiry.checkOutSlot)
+  ) {
+    missingFields.push("times");
+  }
+  return missingFields;
+}
+
+function normalizeAvailabilityInquiry(
+  inquiry: ConversationAvailabilityInquiry,
+  now: Date,
+): ConversationAvailabilityInquiry {
+  const dateWindow =
+    inquiry.dateStart && inquiry.dateEnd
+      ? {}
+      : resolveAvailabilityDateWindow(inquiry.relativeDateRange, now);
+  const normalized: ConversationAvailabilityInquiry = {
+    ...inquiry,
+    ...dateWindow,
+    petCount: inquiry.petCount ?? (inquiry.petName ? 1 : undefined),
+  };
+  const missingFields = computeAvailabilityMissingFields(normalized);
+  return {
+    ...normalized,
+    missingFields,
+    readyForTool: missingFields.length === 0,
+    readyForHumanReview: missingFields.length === 0,
+  };
+}
+
+async function replaceConversationPreservingTimeline(
+  store: ConversationStore,
+  record: ConversationRecord,
+): Promise<ConversationRecord> {
+  const latest = await store.getById(record.id);
+  return store.replaceConversation({
+    ...record,
+    messages: latest?.messages ?? record.messages,
+    events: latest?.events ?? record.events,
+  });
+}
+
+async function renderAvailabilityInquiryOutcome(input: {
+  store: ConversationStore;
+  conversation: ConversationRecord;
+  inbound: Message;
+  safeBody: string;
+  renderKey: ConversationRenderKey;
+  eventType: string;
+  eventPayload?: Record<string, unknown>;
+}): Promise<InboundResult> {
+  const replyBody = personalizeGreetingReply(
+    renderCopy({
+      key: input.renderKey,
+      message: input.safeBody,
+      petName: input.conversation.availabilityInquiry?.petName,
+      pets: safeAvailabilityKnownPets(input.conversation),
+      relativeDateRange: input.conversation.availabilityInquiry?.dateRange,
+    }),
+    input.conversation,
+  );
+  const savedConversation = await replaceConversationPreservingTimeline(
+    input.store,
+    input.conversation,
+  );
+  await input.store.addEvent(
+    createEvent(savedConversation.id, input.eventType, {
+      ...(input.eventPayload ?? {}),
+      renderTemplateId: input.renderKey,
+    }),
+  );
+  await input.store.addEvent(
+    createEvent(savedConversation.id, "policy_decision", {
+      route: "availability_inquiry",
+      action: input.conversation.availabilityInquiry?.missingFields.length
+        ? "ask_missing_slot"
+        : "availability_precheck",
+      renderKey: input.renderKey,
+    }),
+  );
+  const botReply = await addRenderedBotMessage(
+    input.store,
+    savedConversation.id,
+    replyBody,
+    input.renderKey,
+  );
+  return {
+    conversation: (await input.store.getById(savedConversation.id)) ?? savedConversation,
+    inbound: input.inbound,
+    botReply,
+    twiml: buildTwilioMessageResponse(replyBody),
+  };
+}
+
+async function runAvailabilityPrecheckReadOnly(input: {
+  store: ConversationStore;
+  conversation: ConversationRecord;
+  inbound: Message;
+  safeBody: string;
+  deps?: WhatsAppReservationBridgeDeps;
+  timing: AuthorityTurnTimingAccumulator;
+}): Promise<InboundResult> {
+  const inquiry = input.conversation.availabilityInquiry;
+  if (!inquiry?.dateStart || !inquiry.dateEnd || !inquiry.checkInSlot || !inquiry.checkOutSlot) {
+    const missingConversation: ConversationRecord = {
+      ...input.conversation,
+      availabilityInquiry: normalizeAvailabilityInquiry(inquiry ?? { missingFields: [] }, input.deps?.now?.() ?? new Date()),
+      updatedAt: nowIso(),
+    };
+    return renderAvailabilityInquiryOutcome({
+      store: input.store,
+      conversation: missingConversation,
+      inbound: input.inbound,
+      safeBody: input.safeBody,
+      renderKey: availabilityFirstRenderKey(
+        missingConversation.availabilityInquiry?.missingFields ?? ["times"],
+      ),
+      eventType: "availability_precheck_missing_fields",
+      eventPayload: {
+        missingFields: missingConversation.availabilityInquiry?.missingFields ?? [],
+        noAvailabilityPromised: true,
+      },
+    });
+  }
+
+  await replaceConversationPreservingTimeline(input.store, {
+    ...input.conversation,
+    availabilityInquiry: {
+      ...inquiry,
+      availabilityStatus: "pending",
+    },
+    updatedAt: nowIso(),
+  });
+  await input.store.addEvent(
+    createEvent(input.conversation.id, "availability_precheck_started", {
+      mode: "read_only",
+      petName: inquiry.petName,
+      dateStart: inquiry.dateStart,
+      dateEnd: inquiry.dateEnd,
+      checkInSlot: inquiry.checkInSlot,
+      checkOutSlot: inquiry.checkOutSlot,
+      dogs: inquiry.petCount ?? 1,
+    }),
+  );
+
+  try {
+    const availability = await measureAuthorityStage(
+      input.timing,
+      "toolsMs",
+      "availability_precheck_read_only",
+      async () => {
+        const adapter = await (input.deps?.buildSheetAdapter ?? getDefaultAvailabilityBuildSheetAdapter())();
+        return adapter.checkAvailability({
+          entryDate: inquiry.dateStart!,
+          entrySlot: inquiry.checkInSlot!,
+          exitDate: inquiry.dateEnd!,
+          exitSlot: inquiry.checkOutSlot!,
+          dogs: inquiry.petCount ?? 1,
+        });
+      },
+    );
+    const availableConversation: ConversationRecord = {
+      ...input.conversation,
+      activeFlow: "availabilityInquiry",
+      availabilityInquiry: {
+        ...inquiry,
+        availabilityStatus: availability.available ? "available" : "unavailable",
+        availabilitySnapshot: {
+          monthKey: availability.monthKey,
+          available: availability.available,
+          conflictCount: availability.conflicts.length,
+        },
+        missingFields: [],
+        readyForTool: true,
+        readyForHumanReview: false,
+      },
+      updatedAt: nowIso(),
+    };
+    const renderKey: ConversationRenderKey = availability.available
+      ? "availability_first_available_offer_reservation"
+      : "availability_first_unavailable";
+    await replaceConversationPreservingTimeline(input.store, availableConversation);
+    await input.store.addEvent(
+      createEvent(input.conversation.id, "availability_precheck_result", {
+        mode: "read_only",
+        available: availability.available,
+        conflictCount: availability.conflicts.length,
+        renderTemplateId: renderKey,
+      }),
+    );
+    if (!availability.available) {
+      await input.store.addEvent(
+        createEvent(input.conversation.id, "availability_precheck_unavailable", {
+          conflictCount: availability.conflicts.length,
+        }),
+      );
+    } else {
+      await input.store.addEvent(
+        createEvent(input.conversation.id, "availability_first_offered_reservation", {
+          petName: inquiry.petName,
+        }),
+      );
+    }
+    return renderAvailabilityInquiryOutcome({
+      store: input.store,
+      conversation: availableConversation,
+      inbound: input.inbound,
+      safeBody: input.safeBody,
+      renderKey,
+      eventType: "availability_first_reply_sent",
+      eventPayload: {
+        mode: "read_only",
+        noReservationCreated: true,
+      },
+    });
+  } catch (error) {
+    const errorConversation: ConversationRecord = {
+      ...input.conversation,
+      mode: "bot",
+      availabilityInquiry: {
+        ...inquiry,
+        availabilityStatus: "error",
+        readyForTool: false,
+        readyForHumanReview: true,
+      },
+      updatedAt: nowIso(),
+    };
+    await replaceConversationPreservingTimeline(input.store, errorConversation);
+    await input.store.addEvent(
+      createEvent(input.conversation.id, "availability_precheck_error", {
+        mode: "read_only",
+        ...safeConversationStoreError(error),
+      }),
+    );
+    return renderAvailabilityInquiryOutcome({
+      store: input.store,
+      conversation: errorConversation,
+      inbound: input.inbound,
+      safeBody: input.safeBody,
+      renderKey: "availability_first_precheck_error_handoff_contextual",
+      eventType: "availability_first_reply_sent",
+      eventPayload: {
+        mode: "read_only",
+      },
+    });
+  }
+}
+
+async function handleAvailabilityInquiryContinuation(input: {
+  store: ConversationStore;
+  conversation: ConversationRecord;
+  inbound: Message;
+  safeBody: string;
+  deps?: WhatsAppReservationBridgeDeps;
+  timing: AuthorityTurnTimingAccumulator;
+}): Promise<InboundResult | undefined> {
+  if (!input.conversation.availabilityInquiry && input.conversation.activeFlow !== "availabilityInquiry") {
+    return undefined;
+  }
+
+  const now = input.deps?.now?.() ?? new Date();
+  const before = normalizeAvailabilityInquiry(
+    input.conversation.availabilityInquiry ?? { missingFields: [] },
+    now,
+  );
+  let nextInquiry: ConversationAvailabilityInquiry = before;
+  let petSlotResult: ReturnType<typeof resolveAvailabilityPetSlot> | undefined;
+  const extractedSlots = extractReservationSlotsFromMessage(input.safeBody, { now });
+  const relativeRange = extractRelativeDateRange(input.safeBody);
+
+  await input.store.addEvent(
+    createEvent(input.conversation.id, "availability_slot_merge_attempted", {
+      missingFieldsBefore: before.missingFields,
+      ...safeBodyKind(input.safeBody),
+    }),
+  );
+  await input.store.addEvent(
+    createEvent(input.conversation.id, "nlu_classified", {
+      intent: "availability_slot_reply",
+      confidence: 1,
+      source: "state_aware_availability_reducer",
+      activeFlow: "availabilityInquiry",
+    }),
+  );
+
+  if (!nextInquiry.petName && before.missingFields.includes("petName")) {
+    petSlotResult = resolveAvailabilityPetSlot(input.conversation, input.safeBody);
+    if (petSlotResult.kind === "applied") {
+      nextInquiry = {
+        ...nextInquiry,
+        petName: petSlotResult.petName,
+        petCount: petSlotResult.petCount,
+      };
+      await input.store.addEvent(
+        createEvent(input.conversation.id, "availability_pet_slot_applied", {
+          petName: petSlotResult.petName,
+          matchedFrom: petSlotResult.matchedFrom,
+        }),
+      );
+    } else if (petSlotResult.kind === "ambiguous") {
+      const ambiguousConversation: ConversationRecord = {
+        ...input.conversation,
+        activeFlow: "availabilityInquiry",
+        availabilityInquiry: before,
+        updatedAt: now.toISOString(),
+      };
+      await input.store.addEvent(
+        createEvent(input.conversation.id, "availability_pet_slot_ambiguous", {
+          candidates: petSlotResult.candidates,
+        }),
+      );
+      return renderAvailabilityInquiryOutcome({
+        store: input.store,
+        conversation: ambiguousConversation,
+        inbound: input.inbound,
+        safeBody: input.safeBody,
+        renderKey: "availability_first_clarify_pet_ambiguous",
+        eventType: "availability_pending_fields_after_merge",
+        eventPayload: {
+          missingFields: before.missingFields,
+          petAmbiguous: true,
+        },
+      });
+    } else {
+      await input.store.addEvent(
+        createEvent(input.conversation.id, "availability_pet_slot_ignored", {
+          reason: petSlotResult.reason,
+        }),
+      );
+    }
+  }
+
+  if (relativeRange && (!nextInquiry.dateStart || !nextInquiry.dateEnd)) {
+    nextInquiry = {
+      ...nextInquiry,
+      relativeDateRange: relativeRange.id,
+      dateRange: relativeRange.label,
+    };
+  }
+  nextInquiry = {
+    ...nextInquiry,
+    dateStart: extractedSlots.checkInDate ?? nextInquiry.dateStart,
+    dateEnd: extractedSlots.checkOutDate ?? nextInquiry.dateEnd,
+    checkInTime: extractedSlots.checkInTime ?? nextInquiry.checkInTime,
+    checkOutTime: extractedSlots.checkOutTime ?? nextInquiry.checkOutTime,
+  };
+  nextInquiry = {
+    ...nextInquiry,
+    checkInSlot: availabilitySlotFromTime(nextInquiry.checkInTime) ?? nextInquiry.checkInSlot,
+    checkOutSlot: availabilitySlotFromTime(nextInquiry.checkOutTime) ?? nextInquiry.checkOutSlot,
+  };
+  nextInquiry = normalizeAvailabilityInquiry(nextInquiry, now);
+
+  const nextConversation: ConversationRecord = {
+    ...input.conversation,
+    activeFlow: "availabilityInquiry",
+    availabilityInquiry: nextInquiry,
+    updatedAt: now.toISOString(),
+  };
+  await input.store.addEvent(
+    createEvent(input.conversation.id, "availability_pending_fields_after_merge", {
+      missingFields: nextInquiry.missingFields,
+      petName: nextInquiry.petName,
+      dateStart: nextInquiry.dateStart,
+      dateEnd: nextInquiry.dateEnd,
+      checkInSlot: nextInquiry.checkInSlot,
+      checkOutSlot: nextInquiry.checkOutSlot,
+    }),
+  );
+
+  if (nextInquiry.missingFields.length > 0) {
+    return renderAvailabilityInquiryOutcome({
+      store: input.store,
+      conversation: nextConversation,
+      inbound: input.inbound,
+      safeBody: input.safeBody,
+      renderKey: availabilityFirstRenderKey(nextInquiry.missingFields),
+      eventType: "availability_precheck_missing_fields",
+      eventPayload: {
+        missingFields: nextInquiry.missingFields,
+        noAvailabilityPromised: true,
+      },
+    });
+  }
+
+  return runAvailabilityPrecheckReadOnly({
+    store: input.store,
+    conversation: nextConversation,
+    inbound: input.inbound,
+    safeBody: input.safeBody,
+    deps: input.deps,
+    timing: input.timing,
+  });
 }
 
 export async function resetConversations(
@@ -3805,6 +4369,18 @@ async function handleInboundWhatsAppWithTiming(
   }
 
   const latestBeforeFlow = (await store.getById(freshWithClient.id)) ?? freshWithClient;
+  const availabilityContinuation = await handleAvailabilityInquiryContinuation({
+    store,
+    conversation: latestBeforeFlow,
+    inbound,
+    safeBody,
+    deps: reservationBridgeDeps,
+    timing,
+  });
+  if (availabilityContinuation) {
+    return availabilityContinuation;
+  }
+
   if (isReservationChangeFlowActive(latestBeforeFlow)) {
     const changePlan = measureSyncAuthorityStage(
       timing,
@@ -4881,18 +5457,33 @@ async function handleInboundWhatsAppWithTiming(
   if (replyPlan.intent === "informal_availability_query") {
     const latestForAvailability = (await store.getById(freshWithClient.id)) ?? latestBeforePlan;
     const relativeRange = extractRelativeDateRange(safeBody);
-    const missingFields: Array<"petName" | "dateRange"> = [];
-    if (!replyPlan.slots.petName) {
-      missingFields.push("petName");
-    }
-    if (!replyPlan.slots.checkInDate && !replyPlan.slots.checkOutDate && !relativeRange) {
-      missingFields.push("dateRange");
-    }
+    const availabilitySlots = extractReservationSlotsFromMessage(safeBody, {
+      now: reservationBridgeDeps?.now?.() ?? new Date(),
+    });
+    const availabilityInquiry = normalizeAvailabilityInquiry(
+      {
+        relativeDateRange: relativeRange?.id,
+        dateRange: relativeRange?.label,
+        dateStart: replyPlan.slots.checkInDate ?? availabilitySlots.checkInDate,
+        dateEnd: replyPlan.slots.checkOutDate ?? availabilitySlots.checkOutDate,
+        checkInTime: availabilitySlots.checkInTime,
+        checkOutTime: availabilitySlots.checkOutTime,
+        checkInSlot: availabilitySlotFromTime(availabilitySlots.checkInTime),
+        checkOutSlot: availabilitySlotFromTime(availabilitySlots.checkOutTime),
+        petName: replyPlan.slots.petName,
+        petCount: replyPlan.slots.petName ? 1 : undefined,
+        availabilityStatus: "pending",
+        missingFields: [],
+      },
+      reservationBridgeDeps?.now?.() ?? new Date(),
+    );
+    const missingFields = availabilityInquiry.missingFields;
     const renderKey = availabilityFirstRenderKey(missingFields);
     const replyBody = personalizeGreetingReply(
       renderCopy({
         key: renderKey,
         message: safeBody,
+        petName: availabilityInquiry.petName,
         relativeDateRange: relativeRange?.label,
       }),
       latestForAvailability,
@@ -4900,16 +5491,7 @@ async function handleInboundWhatsAppWithTiming(
     const nextConversation: ConversationRecord = {
       ...latestForAvailability,
       activeFlow: "availabilityInquiry",
-      availabilityInquiry: {
-        relativeDateRange: relativeRange?.id,
-        dateRange: relativeRange?.label,
-        dateStart: replyPlan.slots.checkInDate,
-        dateEnd: replyPlan.slots.checkOutDate,
-        petName: replyPlan.slots.petName,
-        missingFields,
-        readyForHumanReview: missingFields.length === 0,
-        readyForTool: false,
-      },
+      availabilityInquiry,
       updatedAt: nowIso(),
     };
 
@@ -4937,6 +5519,16 @@ async function handleInboundWhatsAppWithTiming(
         renderKey,
       }),
     );
+    if (missingFields.length === 0) {
+      return runAvailabilityPrecheckReadOnly({
+        store,
+        conversation: nextConversation,
+        inbound,
+        safeBody,
+        deps: reservationBridgeDeps,
+        timing,
+      });
+    }
     const botReply = await addRenderedBotMessage(
       store,
       nextConversation.id,

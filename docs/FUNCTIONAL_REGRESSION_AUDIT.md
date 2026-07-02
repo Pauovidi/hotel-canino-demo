@@ -52,6 +52,7 @@ Classification: `behaviour_regressed`.
 | Contract gate | `confirmo` requests contract when required; `acepto` completes; modify/cancel bypass gate. | `behaviour_locked_now` | Contract gate skip events remain. |
 | FAQ inside reservation | FAQ answer is sent and pending reservation state resumes. | `behaviour_locked_now` | Payment FAQ after reset and inside flow covered. |
 | Availability/info | Informal availability must collect minimum details and not fake availability. | `behaviour_regressed` | Weekend possibility phrases now route availability-first. |
+| Availability continuation | A standalone pet reply after availability-first must fill `availabilityInquiry.petName`, not fall back to the generic menu. | `behaviour_regressed` | Fixed in `codex/smp-availability-continuation-pet-slot-checker-v0`; checker stays read-only. |
 | Human mode | Human mode suppresses bot auto-reply except explicit reset. | `behaviour_locked_now` | Empty TwiML allowed only for no-reply cases. |
 | No empty reply | Normal inbound returns non-empty TwiML. | `behaviour_locked_now` | Store failure/parsing fallback returns safe message. |
 | Production smokes | Production-facing smokes use `node`, not `tsx`. | `behaviour_locked_now` | `smoke:production` exists. |
@@ -64,6 +65,12 @@ Classification: `behaviour_regressed`.
 ## Additional Regression Found
 
 The loose `reservationId` slot regex could capture the verb `reservar` as a reservation id. This was not the visible P0, but it polluted slots/traces and was low-risk to fix. The regex now requires a separator or numeric id after `res`/`reserva`.
+
+Classification: `behaviour_regressed`.
+
+## Follow-up Regression Found
+
+The first availability-first reply saved `activeFlow=availabilityInquiry` and `missingFields=["petName"]`, but there was no continuation reducer for that state. A short pet reply such as `PAPO` then went through general NLU and could reach generic fallback. This is now locked: the state-aware reducer runs before fallback, applies safe pet slots, asks only missing times if needed, and calls the existing `checkAvailability` read path only after pet, date range and slots are present.
 
 Classification: `behaviour_regressed`.
 
