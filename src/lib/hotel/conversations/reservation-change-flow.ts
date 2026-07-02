@@ -349,6 +349,7 @@ function applyModificationFlow(
     pendingReservationCancellationFlow: undefined,
     pendingReservationProposal: undefined,
     pendingReservationContext: undefined,
+    reservationFlow: undefined,
     updatedAt: nowIso(),
   };
 }
@@ -363,6 +364,7 @@ function applyCancellationFlow(
     pendingReservationModificationFlow: undefined,
     pendingReservationProposal: undefined,
     pendingReservationContext: undefined,
+    reservationFlow: undefined,
     updatedAt: nowIso(),
   };
 }

@@ -789,6 +789,16 @@ describe("conversation service", () => {
     );
     expect(reset.conversation.unreadCount).toBe(0);
     expect(reset.conversation.events.some((event) => event.eventType === "conversation_reset_requested")).toBe(true);
+    expect(
+      reset.conversation.events.some(
+        (event) =>
+          event.eventType === "contract_gate_skipped" &&
+          event.payload &&
+          typeof event.payload === "object" &&
+          "reason" in event.payload &&
+          event.payload.reason === "skipped_reset",
+      ),
+    ).toBe(true);
     expect(reset.conversation.events.some((event) => event.eventType === "auto_reply_skipped_human_mode")).toBe(false);
   });
 

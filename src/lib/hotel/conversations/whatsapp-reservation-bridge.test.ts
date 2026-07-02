@@ -476,6 +476,21 @@ function latestAuthorityTrace(record: ConversationRecord): TestAuthorityTrace {
   return event?.payload as TestAuthorityTrace;
 }
 
+function hasContractGateEvent(
+  record: ConversationRecord,
+  eventType: "contract_gate_applied" | "contract_gate_skipped",
+  reason: string,
+): boolean {
+  return record.events.some(
+    (event) =>
+      event.eventType === eventType &&
+      event.payload &&
+      typeof event.payload === "object" &&
+      "reason" in event.payload &&
+      event.payload.reason === reason,
+  );
+}
+
 async function collectNewClientDatesWithoutTimes(input: {
   store: ConversationStore;
   deps: ReturnType<typeof makeBridgeDeps>["deps"];
@@ -2302,6 +2317,87 @@ describe("WhatsApp reservation bridge", () => {
     expect(
       result.conversation.events.some(
         (event) => event.eventType === "contract_acceptance_requested",
+      ),
+    ).toBe(true);
+    expect(
+      hasContractGateEvent(
+        result.conversation,
+        "contract_gate_applied",
+        "confirm_proposal_requires_acceptance",
+      ),
+    ).toBe(true);
+  });
+
+  it("skips the contract gate when a pending proposal is modified", async () => {
+    process.env.HOTEL_CONTRACT_ACCEPTANCE_REQUIRED = "true";
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+
+    await createNewClientPricedProposal({
+      store,
+      deps,
+      prefix: "SM_BRIDGE_CONTRACT_MODIFY_SKIP_1",
+    });
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "quiero modificar una reserva",
+        messageSid: "SM_BRIDGE_CONTRACT_MODIFY_SKIP_2",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(counters.writes).toBe(0);
+    expect(result.botReply?.body).not.toContain("aceptes el contrato");
+    expect(result.botReply?.body).toContain("¿Qué quieres modificar");
+    expect(result.conversation.pendingReservationProposal).toMatchObject({
+      status: "cancelled",
+      failureReason: "customer_requested_change",
+    });
+    expect(result.conversation.reservationFlow).toMatchObject({
+      status: "collecting_dates",
+    });
+    expect(
+      hasContractGateEvent(
+        result.conversation,
+        "contract_gate_skipped",
+        "skipped_modify_intent",
+      ),
+    ).toBe(true);
+  });
+
+  it("skips the contract gate when a pending proposal is cancelled", async () => {
+    process.env.HOTEL_CONTRACT_ACCEPTANCE_REQUIRED = "true";
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeBridgeDeps();
+
+    await createNewClientPricedProposal({
+      store,
+      deps,
+      prefix: "SM_BRIDGE_CONTRACT_CANCEL_SKIP_1",
+    });
+    const result = await handleInboundWhatsApp(
+      {
+        from: "whatsapp:+34600009991",
+        body: "quiero cancelar una reserva",
+        messageSid: "SM_BRIDGE_CONTRACT_CANCEL_SKIP_2",
+      },
+      store,
+      createStaticClientDirectory([]),
+      deps,
+    );
+
+    expect(counters.writes).toBe(0);
+    expect(result.botReply?.body).not.toContain("aceptes el contrato");
+    expect(result.conversation.pendingReservationProposal).toBeUndefined();
+    expect(result.conversation.reservationFlow).toBeUndefined();
+    expect(
+      hasContractGateEvent(
+        result.conversation,
+        "contract_gate_skipped",
+        "skipped_cancel_intent",
       ),
     ).toBe(true);
   });

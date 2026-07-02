@@ -143,6 +143,68 @@ function summarizeReply(value?: string) {
   return value.replace(/\s+/g, " ").slice(0, 120);
 }
 
+function payloadField(event: ConversationEvent | undefined, key: string) {
+  return event?.payload && typeof event.payload === "object" && key in event.payload
+    ? String((event.payload as Record<string, unknown>)[key])
+    : undefined;
+}
+
+function contractGateSummary(record: ConversationRecord) {
+  const events = record.events.filter(
+    (event) =>
+      event.eventType === "contract_gate_applied" ||
+      event.eventType === "contract_gate_skipped",
+  );
+  if (events.length === 0) return "none";
+  return events
+    .slice(-4)
+    .map((event) => `${event.eventType}:${payloadField(event, "reason") ?? "unknown"}`)
+    .join("|");
+}
+
+function activeFlowSummary(record: ConversationRecord) {
+  if (record.pendingReservationModificationFlow) {
+    return `modification:${record.pendingReservationModificationFlow.status}`;
+  }
+  if (record.pendingReservationCancellationFlow) {
+    return `cancellation:${record.pendingReservationCancellationFlow.status}`;
+  }
+  if (record.reservationFlow) {
+    return `reservation:${record.reservationFlow.status}`;
+  }
+  return record.activeFlow ?? "none";
+}
+
+function proposalStateSummary(record: ConversationRecord) {
+  const proposal = record.pendingReservationProposal;
+  if (!proposal) return "none";
+  return [
+    proposal.status,
+    proposal.termsAccepted ? "terms_accepted" : "terms_pending",
+    proposal.contractAcceptanceRequestedAt ? "contract_requested" : "contract_not_requested",
+  ].join(":");
+}
+
+function termsStateSummary(record: ConversationRecord) {
+  const proposal = record.pendingReservationProposal;
+  if (!proposal) return "none";
+  return proposal.termsAccepted
+    ? `accepted:${proposal.termsVersion ?? "unknown"}`
+    : `pending:${proposal.termsVersion ?? "none"}`;
+}
+
+function renderTemplateSummary(record: ConversationRecord) {
+  const event = record.events.findLast(
+    (item) =>
+      item.eventType === "copy_rendered" ||
+      item.eventType === "confirmation_template_sent" ||
+      item.eventType.endsWith("_template_sent"),
+  );
+  return event
+    ? `${event.eventType}:${payloadField(event, "templateId") ?? payloadField(event, "mode") ?? "n/a"}`
+    : "none";
+}
+
 function makeAvailability(): SheetsAvailabilityResult {
   return {
     available: true,
@@ -462,7 +524,10 @@ async function runDirectSmoke() {
     reply: summarizeReply(contextualProposal.botReply?.body),
   });
 
-  const confirmed = await handleInboundWhatsApp(
+  const contractPolicyRequired = ["1", "true", "yes", "on"].includes(
+    (process.env.HOTEL_CONTRACT_ACCEPTANCE_REQUIRED ?? "").trim().toLowerCase(),
+  );
+  const confirmationAttempt = await handleInboundWhatsApp(
     {
       from: "whatsapp:+34600009993",
       to: SANDBOX_TO,
@@ -479,11 +544,42 @@ async function runDirectSmoke() {
     knownDirectory,
     deps,
   );
+  const contractRequested = Boolean(
+    confirmationAttempt.conversation.pendingReservationProposal
+      ?.contractAcceptanceRequestedAt,
+  );
+  const confirmed = contractRequested
+    ? await handleInboundWhatsApp(
+        {
+          from: "whatsapp:+34600009993",
+          to: SANDBOX_TO,
+          body: "acepto",
+          messageSid: "SM_QA_bridge_contract_accept",
+          rawPayload: {
+            From: "whatsapp:+34600009993",
+            To: SANDBOX_TO,
+            Body: "acepto",
+            MessageSid: "SM_QA_bridge_contract_accept",
+          },
+        },
+        store,
+        knownDirectory,
+        deps,
+      )
+    : confirmationAttempt;
   const reservation = counters.reservations[0];
   const entryLog = reservation ? buildEntryLogRecord(reservation) : undefined;
+  const contractStepOk =
+    !contractPolicyRequired ||
+    (contractRequested &&
+      counters.writes === 1 &&
+      confirmationAttempt.conversation.events.some(
+        (event) => event.eventType === "contract_gate_applied",
+      ));
   rows.push({
     label: "proposal-confirmation-bridge",
     status:
+      contractStepOk &&
       confirmed.conversation.pendingReservationProposal?.status === "confirmed" &&
       Boolean(confirmed.conversation.reservationId) &&
       counters.writes === 1 &&
@@ -491,10 +587,18 @@ async function runDirectSmoke() {
       entryLog?.source === "chatbot"
         ? "OK"
         : "FAIL",
+    expected: contractPolicyRequired
+      ? "confirm requests contract; acepto confirms"
+      : "confirm writes reservation directly",
     intent: "reservation_confirm",
     mode: confirmed.conversation.mode,
     twiml: isTwiml(confirmed.twiml) ? "valid" : "invalid",
     events: confirmed.conversation.events.map((event) => event.eventType).join(","),
+    contractGate: contractGateSummary(confirmed.conversation),
+    activeFlow: activeFlowSummary(confirmed.conversation),
+    proposalState: proposalStateSummary(confirmed.conversation),
+    termsState: termsStateSummary(confirmed.conversation),
+    renderTemplateId: renderTemplateSummary(confirmed.conversation),
     entryLogAffected: entryLog ? "yes" : "no",
     clientUpsertAffected: counters.clientUpserts.length > 0 ? "yes" : "no",
     reply: summarizeReply(confirmed.botReply?.body),
@@ -547,10 +651,16 @@ async function runDirectSmoke() {
       buildEntryLogRecord(modifiedReservation).action === "modificada"
         ? "OK"
         : "FAIL",
+    expected: "modify confirmed reservation without contract gate",
     intent: "reservation_modify",
     mode: modificationConfirmed.conversation.mode,
     twiml: isTwiml(modificationConfirmed.twiml) ? "valid" : "invalid",
     events: modificationConfirmed.conversation.events.map((event) => event.eventType).join(","),
+    contractGate: contractGateSummary(modificationConfirmed.conversation),
+    activeFlow: activeFlowSummary(modificationConfirmed.conversation),
+    proposalState: proposalStateSummary(modificationConfirmed.conversation),
+    termsState: termsStateSummary(modificationConfirmed.conversation),
+    renderTemplateId: renderTemplateSummary(modificationConfirmed.conversation),
     entryLogAffected: "yes",
     reply: summarizeReply(modificationConfirmed.botReply?.body),
   });
@@ -590,10 +700,16 @@ async function runDirectSmoke() {
       buildEntryLogRecord(cancelledReservation).action === "cancelada"
         ? "OK"
         : "FAIL",
+    expected: "cancel confirmed reservation without contract gate",
     intent: "reservation_cancel",
     mode: cancellationConfirmed.conversation.mode,
     twiml: isTwiml(cancellationConfirmed.twiml) ? "valid" : "invalid",
     events: cancellationConfirmed.conversation.events.map((event) => event.eventType).join(","),
+    contractGate: contractGateSummary(cancellationConfirmed.conversation),
+    activeFlow: activeFlowSummary(cancellationConfirmed.conversation),
+    proposalState: proposalStateSummary(cancellationConfirmed.conversation),
+    termsState: termsStateSummary(cancellationConfirmed.conversation),
+    renderTemplateId: renderTemplateSummary(cancellationConfirmed.conversation),
     entryLogAffected: "yes",
     reply: summarizeReply(cancellationConfirmed.botReply?.body),
   });

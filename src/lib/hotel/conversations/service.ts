@@ -1167,6 +1167,17 @@ type PendingSafeEvent = {
   payload?: Record<string, unknown>;
 };
 
+type ContractGateAppliedReason = "confirm_proposal_requires_acceptance";
+
+type ContractGateSkippedReason =
+  | "skipped_modify_intent"
+  | "skipped_cancel_intent"
+  | "skipped_reset"
+  | "skipped_handoff"
+  | "skipped_not_ready"
+  | "skipped_terms_already_accepted"
+  | "skipped_no_active_proposal";
+
 const RESERVATION_SLOT_KEYS = [
   "petName",
   "petNames",
@@ -1224,6 +1235,33 @@ function buildReservationFlowCancelledRecord(record: ConversationRecord): Conver
     pendingReservationContext: undefined,
     reservationFlow: undefined,
     updatedAt: nowIso(),
+  };
+}
+
+function buildReservationFlowRevisionRecord(record: ConversationRecord): ConversationRecord {
+  const updatedAt = nowIso();
+  return {
+    ...record,
+    pendingReservationProposal: record.pendingReservationProposal
+      ? {
+          ...record.pendingReservationProposal,
+          status: "cancelled",
+          failureReason: "customer_requested_change",
+        }
+      : undefined,
+    reservationFlow: record.reservationFlow
+      ? {
+          ...record.reservationFlow,
+          status: "collecting_dates",
+          availabilityStatus: "pending",
+          price: undefined,
+          priceSource: undefined,
+          priceNeedsReview: undefined,
+          proposalId: undefined,
+          updatedAt,
+        }
+      : undefined,
+    updatedAt,
   };
 }
 
@@ -2517,8 +2555,20 @@ async function sendReservationChangeOutcome(input: {
   store: ConversationStore;
   outcome: Awaited<ReturnType<typeof startReservationChangeFlow>>;
   inbound: Message;
+  contractGateSkip?: {
+    reason: ContractGateSkippedReason;
+    proposal?: PendingReservationProposal;
+  };
 }): Promise<InboundResult> {
   await input.store.replaceConversation(input.outcome.conversation);
+  if (input.contractGateSkip) {
+    await emitContractGateSkipped({
+      store: input.store,
+      conversation: input.outcome.conversation,
+      reason: input.contractGateSkip.reason,
+      proposal: input.contractGateSkip.proposal,
+    });
+  }
   await input.store.addEvent(
     createEvent(
       input.outcome.conversation.id,
@@ -2843,6 +2893,14 @@ export async function handleGlobalResetCommand(
         clearedHumanMode: latest.mode === "human" || latest.humanRequested,
       }),
     );
+    if (latest.pendingReservationProposal) {
+      await emitContractGateSkipped({
+        store,
+        conversation: latest,
+        reason: "skipped_reset",
+        proposal: latest.pendingReservationProposal,
+      });
+    }
     const botReply = await addRenderedBotMessage(
       store,
       conversation.id,
@@ -3091,6 +3149,53 @@ export async function getConversation(
   return store.getById(id);
 }
 
+function contractGatePayload(
+  reason: ContractGateAppliedReason | ContractGateSkippedReason,
+  proposal?: PendingReservationProposal,
+): Record<string, unknown> {
+  return {
+    reason,
+    proposalId: proposal?.proposalId,
+    proposalStatus: proposal?.status,
+    termsAccepted: proposal?.termsAccepted === true,
+    contractAcceptanceRequested: Boolean(proposal?.contractAcceptanceRequestedAt),
+  };
+}
+
+async function emitContractGateApplied(input: {
+  store: ConversationStore;
+  conversation: ConversationRecord;
+  reason: ContractGateAppliedReason;
+  proposal?: PendingReservationProposal;
+}): Promise<void> {
+  await addEventBestEffort(
+    input.store,
+    createEvent(
+      input.conversation.id,
+      "contract_gate_applied",
+      contractGatePayload(input.reason, input.proposal),
+    ),
+    "contract_gate_applied",
+  );
+}
+
+async function emitContractGateSkipped(input: {
+  store: ConversationStore;
+  conversation: ConversationRecord;
+  reason: ContractGateSkippedReason;
+  proposal?: PendingReservationProposal;
+}): Promise<void> {
+  await addEventBestEffort(
+    input.store,
+    createEvent(
+      input.conversation.id,
+      "contract_gate_skipped",
+      contractGatePayload(input.reason, input.proposal),
+    ),
+    "contract_gate_skipped",
+  );
+}
+
 async function resolveContractAcceptanceGate(input: {
   store: ConversationStore;
   conversation: ConversationRecord;
@@ -3102,11 +3207,32 @@ async function resolveContractAcceptanceGate(input: {
 > {
   const config = getClientRequestsConfig();
   const proposal = input.conversation.pendingReservationProposal;
-  if (!config.requireContractAcceptance || !proposal || proposal.status !== "proposed") {
+  if (!proposal) {
+    await emitContractGateSkipped({
+      store: input.store,
+      conversation: input.conversation,
+      reason: "skipped_no_active_proposal",
+    });
+    return { handled: false, conversation: input.conversation };
+  }
+
+  if (!config.requireContractAcceptance || proposal.status !== "proposed") {
+    await emitContractGateSkipped({
+      store: input.store,
+      conversation: input.conversation,
+      reason: "skipped_not_ready",
+      proposal,
+    });
     return { handled: false, conversation: input.conversation };
   }
 
   if (proposal.termsAccepted) {
+    await emitContractGateSkipped({
+      store: input.store,
+      conversation: input.conversation,
+      reason: "skipped_terms_already_accepted",
+      proposal,
+    });
     return { handled: false, conversation: input.conversation };
   }
 
@@ -3232,6 +3358,12 @@ async function resolveContractAcceptanceGate(input: {
     }),
     "contract_link_sent",
   );
+  await emitContractGateApplied({
+    store: input.store,
+    conversation: input.conversation,
+    reason: "confirm_proposal_requires_acceptance",
+    proposal: requestedProposal,
+  });
 
   return {
     handled: true,
@@ -3720,6 +3852,119 @@ async function handleInboundWhatsAppWithTiming(
     }
 
     if (
+      latestBeforeFlow.pendingReservationProposal?.status === "proposed" &&
+      (flowInterruptionPlan.intent === "reservation_modify" ||
+        flowInterruptionPlan.intent === "reservation_cancel")
+    ) {
+      if (flowInterruptionPlan.intent === "reservation_cancel") {
+        const cancelled = buildReservationFlowCancelledRecord(latestBeforeFlow);
+        await store.replaceConversation(cancelled);
+        await emitContractGateSkipped({
+          store,
+          conversation: cancelled,
+          reason: "skipped_cancel_intent",
+          proposal: latestBeforeFlow.pendingReservationProposal,
+        });
+        await addSafeEvents(store, latestBeforeFlow.id, [
+          ...assistiveEvents,
+          {
+            eventType: "nlu_classified",
+            payload: {
+              intent: flowInterruptionPlan.intent,
+              confidence: flowInterruptionPlan.confidence,
+              matchedSignals: flowInterruptionPlan.matchedSignals,
+              slots: flowInterruptionPlan.slots,
+              source: flowInterruptionPlan.source,
+              interruptedReservationFlow: latestBeforeFlow.reservationFlow?.status,
+            },
+          },
+          {
+            eventType: "reservation_global_intent_escape",
+            payload: {
+              intent: flowInterruptionPlan.intent,
+              action: "cancel_pending_proposal",
+              status: latestBeforeFlow.reservationFlow?.status,
+            },
+          },
+          {
+            eventType: "reservation_flow_cancelled_by_user",
+            payload: {
+              clearedPendingProposal: true,
+              clearedReservationFlow: Boolean(latestBeforeFlow.reservationFlow),
+              reason: "reservation_cancel_intent",
+            },
+          },
+        ], timing);
+        const botReply = await addRenderedBotMessage(
+          store,
+          latestBeforeFlow.id,
+          RESERVATION_FLOW_CANCELLED_REPLY,
+          "reservation_flow_cancelled_by_user",
+        );
+
+        return {
+          conversation: (await store.getById(latestBeforeFlow.id)) ?? cancelled,
+          inbound,
+          botReply,
+          twiml: buildTwilioMessageResponse(RESERVATION_FLOW_CANCELLED_REPLY),
+        };
+      }
+
+      const revised = buildReservationFlowRevisionRecord(latestBeforeFlow);
+      const replyBody =
+        "Claro, dejamos sin efecto la propuesta anterior. ¿Qué quieres modificar: fechas, horarios, mascota o notas?";
+      await store.replaceConversation(revised);
+      await emitContractGateSkipped({
+        store,
+        conversation: revised,
+        reason: "skipped_modify_intent",
+        proposal: latestBeforeFlow.pendingReservationProposal,
+      });
+      await addSafeEvents(store, latestBeforeFlow.id, [
+        ...assistiveEvents,
+        {
+          eventType: "nlu_classified",
+          payload: {
+            intent: flowInterruptionPlan.intent,
+            confidence: flowInterruptionPlan.confidence,
+            matchedSignals: flowInterruptionPlan.matchedSignals,
+            slots: flowInterruptionPlan.slots,
+            source: flowInterruptionPlan.source,
+            interruptedReservationFlow: latestBeforeFlow.reservationFlow?.status,
+          },
+        },
+        {
+          eventType: "reservation_global_intent_escape",
+          payload: {
+            intent: flowInterruptionPlan.intent,
+            action: "revise_pending_proposal",
+            status: latestBeforeFlow.reservationFlow?.status,
+          },
+        },
+        {
+          eventType: "reservation_proposal_revision_requested",
+          payload: {
+            previousProposalId: latestBeforeFlow.pendingReservationProposal.proposalId,
+            preservedReservationFlow: Boolean(revised.reservationFlow),
+          },
+        },
+      ], timing);
+      const botReply = await addRenderedBotMessage(
+        store,
+        latestBeforeFlow.id,
+        replyBody,
+        "reservation_proposal_revision_requested",
+      );
+
+      return {
+        conversation: (await store.getById(latestBeforeFlow.id)) ?? revised,
+        inbound,
+        botReply,
+        twiml: buildTwilioMessageResponse(replyBody),
+      };
+    }
+
+    if (
       flowInterruptionPlan.intent === "human_handoff" &&
       flowInterruptionPlan.handoff &&
       isExplicitHumanHandoffRequest(safeBody) &&
@@ -3735,6 +3980,14 @@ async function handleInboundWhatsAppWithTiming(
         updatedAt: nowIso(),
       };
       await store.replaceConversation(humanRecord);
+      if (latestBeforeFlow.pendingReservationProposal) {
+        await emitContractGateSkipped({
+          store,
+          conversation: humanRecord,
+          reason: "skipped_handoff",
+          proposal: latestBeforeFlow.pendingReservationProposal,
+        });
+      }
       await addSafeEvents(store, latestBeforeFlow.id, [
         ...assistiveEvents,
         {
@@ -3869,12 +4122,27 @@ async function handleInboundWhatsAppWithTiming(
 
       if (flowInterruptionPlan.handoff) {
         await store.replaceConversation(nextConversation);
+        if (latestBeforeFlow.pendingReservationProposal) {
+          await emitContractGateSkipped({
+            store,
+            conversation: nextConversation,
+            reason: "skipped_handoff",
+            proposal: latestBeforeFlow.pendingReservationProposal,
+          });
+        }
         await store.addEvent(
           createEvent(latestForFaq.id, "human_requested", {
             matchedFrom: "faq_public_chat",
             intent: flowInterruptionPlan.intent,
           }),
         );
+      } else if (latestBeforeFlow.pendingReservationProposal) {
+        await emitContractGateSkipped({
+          store,
+          conversation: latestForFaq,
+          reason: "skipped_not_ready",
+          proposal: latestBeforeFlow.pendingReservationProposal,
+        });
       }
 
       const botReply = await addRenderedBotMessage(
@@ -4700,8 +4968,13 @@ async function handleInboundWhatsAppWithTiming(
   }
 
   if (replyPlan.intent === "reservation_modify" || replyPlan.intent === "reservation_cancel") {
+    const latestForChange = (await store.getById(freshWithClient.id)) ?? latestBeforePlan;
+    const pendingProposalForGateSkip =
+      latestForChange.pendingReservationProposal?.status === "proposed"
+        ? latestForChange.pendingReservationProposal
+        : undefined;
     const outcome = await startReservationChangeFlow({
-      conversation: (await store.getById(freshWithClient.id)) ?? latestBeforePlan,
+      conversation: latestForChange,
       message: safeBody,
       replyPlan,
       kind: replyPlan.intent === "reservation_cancel" ? "cancellation" : "modification",
@@ -4711,6 +4984,15 @@ async function handleInboundWhatsAppWithTiming(
       store,
       outcome,
       inbound,
+      contractGateSkip: pendingProposalForGateSkip
+        ? {
+            reason:
+              replyPlan.intent === "reservation_cancel"
+                ? "skipped_cancel_intent"
+                : "skipped_modify_intent",
+            proposal: pendingProposalForGateSkip,
+          }
+        : undefined,
     });
   }
 
