@@ -1123,11 +1123,13 @@ describe("conversation service", () => {
     expect(result.conversation.availabilityInquiry).toMatchObject({
       relativeDateRange: "este_fin_de_semana",
       petName: "PIPO",
+      availabilityStatus: "available_preliminary",
       missingFields: ["times"],
       readyForHumanReview: false,
       readyForTool: false,
     });
-    expect(result.botReply?.body).toContain("hora aproximada de entrada y salida");
+    expect(result.botReply?.body).toContain("En principio aparece disponibilidad para PIPO este fin de semana");
+    expect(result.botReply?.body).toContain("confirmar horarios de entrada y salida");
     expect(result.botReply?.body).not.toContain("Tenemos disponibilidad");
     expect(result.botReply?.body).not.toContain("¿Ya eres cliente");
   });
@@ -1157,22 +1159,121 @@ describe("conversation service", () => {
     expect(pet.conversation.activeFlow).toBe("availabilityInquiry");
     expect(pet.conversation.availabilityInquiry).toMatchObject({
       petName: "PAPO",
+      availabilityStatus: "available_preliminary",
       missingFields: ["times"],
       readyForTool: false,
     });
     expect(pet.botReply?.body).toContain("PAPO");
-    expect(pet.botReply?.body).toContain("hora aproximada de entrada y salida");
+    expect(pet.botReply?.body).toContain("En principio aparece disponibilidad");
+    expect(pet.botReply?.body).toContain("confirmar horarios de entrada y salida");
     expect(pet.botReply?.body).not.toContain("Perdona, no te he entendido bien");
     expect(pet.botReply?.body).not.toContain("¿Quieres hacer una reserva");
     expect(rendered?.payload).toMatchObject({
-      renderTemplateId: "availability_first_clarify_times",
+      renderTemplateId: "availability_first_available_preliminary",
     });
     expect(policy?.payload).toMatchObject({
       route: "availability_inquiry",
       action: "ask_missing_slot",
     });
     expect(pet.conversation.events.some((event) => event.eventType === "availability_pet_slot_applied")).toBe(true);
-    expect(counters.checks).toBe(0);
+    expect(counters.checks).toBe(1);
+    expect(counters.writes).toBe(0);
+  });
+
+  it("handles the real availability flow with a single time without repeating generic copy", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeAvailabilityReadOnlyDeps({ available: true });
+
+    await handleInboundWhatsApp({ from: "+34612345678", body: "reiniciar" }, store, undefined, deps);
+    await handleInboundWhatsApp({ from: "+34612345678", body: "hola" }, store, undefined, deps);
+    await handleInboundWhatsApp(
+      { from: "+34612345678", body: "quería reservar para este fin de semana ¿es posible?" },
+      store,
+      undefined,
+      deps,
+    );
+    const pet = await handleInboundWhatsApp({ from: "+34612345678", body: "PUPI" }, store, undefined, deps);
+    const time = await handleInboundWhatsApp({ from: "+34612345678", body: "a las 10" }, store, undefined, deps);
+
+    expect(time.conversation.activeFlow).toBe("availabilityInquiry");
+    expect(time.conversation.availabilityInquiry).toMatchObject({
+      petName: "PUPI",
+      approximateTime: "10:00",
+      missingFields: ["timeTarget"],
+      readyForTool: false,
+    });
+    expect(time.botReply?.body).toContain("¿Las 10 serían para la entrada y también para la salida?");
+    expect(time.botReply?.body).not.toBe(pet.botReply?.body);
+    expect(time.botReply?.body).not.toContain("flujo operativo");
+    expect(time.botReply?.body).not.toContain("me falta la hora aproximada de entrada y salida");
+    expect(time.botReply?.body).not.toContain("Perdona, no te he entendido");
+    expect(time.conversation.events.some((event) => event.eventType === "availability_time_slot_needs_clarification")).toBe(true);
+    expect(time.conversation.events.some((event) => event.eventType === "availability_no_repeat_guard_triggered")).toBe(true);
+    expect(counters.writes).toBe(0);
+  });
+
+  it("applies an explicit shared time and runs the checker read-only", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeAvailabilityReadOnlyDeps({ available: true });
+
+    await handleInboundWhatsApp(
+      { from: "+34612345678", body: "quería reservar para este fin de semana ¿es posible?" },
+      store,
+      undefined,
+      deps,
+    );
+    await handleInboundWhatsApp({ from: "+34612345678", body: "PUPI" }, store, undefined, deps);
+    const result = await handleInboundWhatsApp(
+      { from: "+34612345678", body: "a las 10 entrada y salida" },
+      store,
+      undefined,
+      deps,
+    );
+
+    expect(result.conversation.availabilityInquiry).toMatchObject({
+      petName: "PUPI",
+      checkInTime: "10:00",
+      checkOutTime: "10:00",
+      checkInSlot: "morning",
+      checkOutSlot: "morning",
+      availabilityStatus: "available",
+      missingFields: [],
+    });
+    expect(result.botReply?.body).toContain("Hay disponibilidad");
+    expect(result.botReply?.body).not.toContain("flujo operativo");
+    expect(result.conversation.events.some((event) => event.eventType === "availability_time_slot_applied")).toBe(true);
+    expect(result.conversation.events.some((event) => event.eventType === "availability_precheck_started")).toBe(true);
+    expect(counters.checks).toBeGreaterThanOrEqual(1);
+    expect(counters.writes).toBe(0);
+  });
+
+  it("runs a date-only calendar precheck after the pet slot without fake final availability", async () => {
+    const store = new MemoryConversationStore();
+    const { counters, deps } = makeAvailabilityReadOnlyDeps({ available: true });
+
+    await handleInboundWhatsApp(
+      { from: "+34612345678", body: "quería reservar para este fin de semana ¿es posible?" },
+      store,
+      undefined,
+      deps,
+    );
+    const result = await handleInboundWhatsApp({ from: "+34612345678", body: "PUPI" }, store, undefined, deps);
+
+    expect(result.conversation.availabilityInquiry).toMatchObject({
+      petName: "PUPI",
+      availabilityStatus: "available_preliminary",
+      missingFields: ["times"],
+      readyForTool: false,
+    });
+    expect(result.botReply?.body).toContain("En principio aparece disponibilidad para PUPI este fin de semana");
+    expect(result.botReply?.body).toContain("necesito confirmar horarios de entrada y salida");
+    expect(result.botReply?.body).not.toContain("Tenemos disponibilidad");
+    expect(result.botReply?.body).not.toContain("reserva confirmada");
+    expect(result.botReply?.body).not.toContain("flujo operativo");
+    expect(result.conversation.events.some((event) => event.eventType === "availability_calendar_precheck_started")).toBe(true);
+    expect(result.conversation.events.some((event) => event.eventType === "availability_calendar_precheck_result")).toBe(true);
+    expect(result.conversation.events.some((event) => event.eventType === "availability_calendar_precheck_read_only")).toBe(true);
+    expect(counters.checks).toBe(1);
     expect(counters.writes).toBe(0);
   });
 
@@ -1206,7 +1307,8 @@ describe("conversation service", () => {
     expect(result.conversation.clientStatus).toBe("known");
     expect(result.conversation.reservationFlow).toBeUndefined();
     expect(result.conversation.availabilityInquiry?.petName).toBe("Kira");
-    expect(result.botReply?.body).toContain("hora aproximada de entrada y salida");
+    expect(result.botReply?.body).toContain("En principio aparece disponibilidad para Kira este fin de semana");
+    expect(result.botReply?.body).toContain("confirmar horarios de entrada y salida");
     expect(result.botReply?.body).not.toContain("Dime el nombre de tu mascota o mascotas y las fechas");
     expect(result.conversation.events.some((event) => event.eventType === "availability_pet_slot_applied")).toBe(true);
   });
@@ -1275,7 +1377,7 @@ describe("conversation service", () => {
     expect(result.conversation.events.some((event) => event.eventType === "availability_precheck_started")).toBe(true);
     expect(result.conversation.events.some((event) => event.eventType === "availability_precheck_result")).toBe(true);
     expect(result.conversation.events.some((event) => event.eventType === "availability_first_offered_reservation")).toBe(true);
-    expect(counters.checks).toBe(1);
+    expect(counters.checks).toBe(2);
     expect(counters.writes).toBe(0);
   });
 
@@ -1302,7 +1404,7 @@ describe("conversation service", () => {
     expect(result.botReply?.body).not.toContain("Hay disponibilidad");
     expect(result.conversation.pendingReservationProposal).toBeUndefined();
     expect(result.conversation.events.some((event) => event.eventType === "availability_precheck_unavailable")).toBe(true);
-    expect(counters.checks).toBe(1);
+    expect(counters.checks).toBe(2);
     expect(counters.writes).toBe(0);
   });
 
@@ -1319,12 +1421,14 @@ describe("conversation service", () => {
 
     expect(result.conversation.availabilityInquiry).toMatchObject({
       petName: "PIPO",
+      availabilityStatus: "available_preliminary",
       missingFields: ["times"],
       readyForTool: false,
     });
-    expect(result.botReply?.body).toContain("hora aproximada de entrada y salida");
+    expect(result.botReply?.body).toContain("En principio aparece disponibilidad para PIPO este fin de semana");
+    expect(result.botReply?.body).toContain("confirmar horarios de entrada y salida");
     expect(result.botReply?.body).not.toContain("Dime el nombre de tu mascota o mascotas y las fechas");
-    expect(counters.checks).toBe(0);
+    expect(counters.checks).toBe(1);
     expect(counters.writes).toBe(0);
   });
 

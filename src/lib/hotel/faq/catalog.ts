@@ -733,7 +733,7 @@ export const FAQ_KNOWLEDGE_ENTRIES: readonly FaqKnowledgeEntry[] = [
     label: "Comprobación de disponibilidad",
     question: "¿Tenéis sitio para unas fechas concretas?",
     answer:
-      "Para comprobar disponibilidad real necesitamos pasar la solicitud al flujo operativo con fechas y turnos. En producción eso entra por el formulario; en la demo también puedes verlo en la pantalla de reservas.",
+      "Para comprobar disponibilidad real necesitamos revisar la solicitud en el calendario de reservas con fechas y turnos. En producción eso entra por el formulario; en la demo también puedes verlo en la pantalla de reservas.",
     examples: [
       "¿tenéis sitio del 14 al 18 de abril?",
       "hay hueco para este fin de semana",
@@ -884,7 +884,7 @@ export const FAQ_ROUTING_RULES = [
   },
   {
     id: "disponibilidad_workflow",
-    description: "Cuando el cliente pregunta por hueco o fechas concretas, se envía al flujo operativo de disponibilidad.",
+    description: "Cuando el cliente pregunta por hueco o fechas concretas, se revisa con el calendario de disponibilidad.",
     outputType: "workflow",
     intents: ["workflow_disponibilidad", "workflow_reserva"] as const,
   },
@@ -901,7 +901,7 @@ export const HOTEL_FAQ_KNOWLEDGE_PACK: FaqKnowledgePack = {
   locale: "es-ES",
   assumptions: [
     "Base estructurada con la nueva información funcional del cliente para reservas, horarios, salud, estancia y pagos.",
-    "Cuando una pregunta requiere un dato operativo vivo de la estancia o disponibilidad, se deriva al flujo operativo o al equipo humano sin inventar estados.",
+    "Cuando una pregunta requiere un dato vivo de la estancia o disponibilidad, se deriva al calendario de reservas o al equipo humano sin inventar estados.",
   ],
   fallbackAnswer:
     "Puedo orientarte con precios, horarios, requisitos y reservas. Si quieres cerrar una estancia, lo correcto es usar el formulario web para revisar disponibilidad y precio.",

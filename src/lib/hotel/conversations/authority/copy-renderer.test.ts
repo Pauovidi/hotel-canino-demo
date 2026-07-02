@@ -93,11 +93,33 @@ describe("conversation CopyRenderer", () => {
       key: "availability_first_available_offer_reservation",
       petName: "PAPO",
     });
+    const preliminary = renderCopy({
+      key: "availability_first_available_preliminary",
+      petName: "PAPO",
+      relativeDateRange: "este fin de semana",
+    });
+    const timeTarget = renderCopy({
+      key: "availability_first_time_target_clarification",
+      time: "10:00",
+    });
     const ambiguous = renderCopy({
       key: "availability_first_clarify_pet_ambiguous",
       pets: ["Kira", "Kiko"],
     });
     const error = renderCopy({ key: "availability_first_precheck_error_handoff_contextual" });
+    const availabilityReplies = [
+      collectPet,
+      clarifyRange,
+      needsDetails,
+      contextual,
+      offer,
+      times,
+      available,
+      preliminary,
+      timeTarget,
+      ambiguous,
+      error,
+    ];
 
     expect(collectPet).toContain("Me falta solo el nombre de la mascota");
     expect(collectPet).toContain("No te confirmo plaza");
@@ -111,7 +133,13 @@ describe("conversation CopyRenderer", () => {
     expect(times).toContain("PAPO");
     expect(available).toContain("Hay disponibilidad");
     expect(available).toContain("seguimos con la reserva");
+    expect(preliminary).toContain("En principio aparece disponibilidad para PAPO este fin de semana");
+    expect(preliminary).toContain("confirmar horarios de entrada y salida");
+    expect(timeTarget).toBe("¿Las 10 serían para la entrada y también para la salida?");
     expect(ambiguous).toContain("Kira y Kiko");
     expect(error).toContain("revisar el equipo");
+    for (const reply of availabilityReplies) {
+      expect(reply).not.toContain("flujo operativo");
+    }
   });
 });

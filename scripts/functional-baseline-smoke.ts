@@ -121,6 +121,13 @@ type SmokeRow = {
   activeFlow: string;
   pendingFields: string;
   petName: string;
+  availabilityTimeApplied: string;
+  entryTime: string;
+  exitTime: string;
+  approximateTime: string;
+  precheckStatus: string;
+  noRepeatGuard: string;
+  containsInternalCopy: string;
   proposalState: string;
   termsState: string;
   availabilityFirstTriggered: string;
@@ -193,6 +200,13 @@ function rowFromResult(input: {
     activeFlow: input.result.conversation.activeFlow ?? "none",
     pendingFields: availability?.missingFields.join(",") ?? "",
     petName: availability?.petName ?? "",
+    availabilityTimeApplied: hasEvent(input.result.conversation, "availability_time_slot_applied") ? "yes" : "no",
+    entryTime: availability?.checkInTime ?? "",
+    exitTime: availability?.checkOutTime ?? "",
+    approximateTime: availability?.approximateTime ?? "",
+    precheckStatus: availability?.availabilityStatus ?? "none",
+    noRepeatGuard: hasEvent(input.result.conversation, "availability_no_repeat_guard_triggered") ? "yes" : "no",
+    containsInternalCopy: input.result.botReply?.body.includes("flujo operativo") ? "yes" : "no",
     proposalState: proposal?.status ?? "none",
     termsState: proposal?.termsAccepted
       ? "accepted"
@@ -210,7 +224,7 @@ function rowFromResult(input: {
 }
 
 function assertRows(rows: SmokeRow[]): void {
-  const failed = rows.filter((row) => row.status !== "OK");
+  const failed = rows.filter((row) => row.status !== "OK" || row.containsInternalCopy === "yes");
   console.table(rows);
   if (failed.length > 0) {
     throw new Error(`functional baseline smoke failed: ${failed.map((row) => row.label).join(", ")}`);
@@ -286,14 +300,43 @@ async function main() {
   );
   rows.push(rowFromResult({
     label: "availability-continuation-pet-slot",
-    expected: "standalone pet name continues availability-first and asks only missing times",
+    expected: "standalone pet name continues availability-first and runs preliminary calendar precheck",
     result: availabilityContinuation,
     ok:
       availabilityContinuation.conversation.reservationFlow === undefined &&
       availabilityContinuation.conversation.availabilityInquiry?.petName === "PAPO" &&
       availabilityContinuation.conversation.availabilityInquiry?.missingFields.join(",") === "times" &&
-      (availabilityContinuation.botReply?.body.includes("hora aproximada de entrada y salida") ?? false) &&
-      !(availabilityContinuation.botReply?.body.includes("Perdona, no te he entendido") ?? false),
+      availabilityContinuation.conversation.availabilityInquiry?.availabilityStatus === "available_preliminary" &&
+      (availabilityContinuation.botReply?.body.includes("En principio aparece disponibilidad") ?? false) &&
+      (availabilityContinuation.botReply?.body.includes("confirmar horarios de entrada y salida") ?? false) &&
+      !(availabilityContinuation.botReply?.body.includes("Perdona, no te he entendido") ?? false) &&
+      !(availabilityContinuation.botReply?.body.includes("flujo operativo") ?? false),
+  }));
+
+  const availabilityTime = await handleInboundWhatsApp(
+    {
+      from: "whatsapp:+34612345010",
+      to: SANDBOX_TO,
+      body: "a las 10",
+      messageSid: "SM_FB_AVAILABILITY_TIME_SINGLE",
+    },
+    availabilityStore,
+    createStaticClientDirectory([]),
+  );
+  rows.push(rowFromResult({
+    label: "availability-time-single-clarification",
+    expected: "single time is kept as approximate time and asks a specific target clarification",
+    result: availabilityTime,
+    ok:
+      availabilityTime.conversation.activeFlow === "availabilityInquiry" &&
+      availabilityTime.conversation.availabilityInquiry?.petName === "PAPO" &&
+      availabilityTime.conversation.availabilityInquiry?.approximateTime === "10:00" &&
+      availabilityTime.conversation.availabilityInquiry?.missingFields.join(",") === "timeTarget" &&
+      (availabilityTime.botReply?.body.includes("¿Las 10 serían para la entrada y también para la salida?") ?? false) &&
+      availabilityTime.botReply?.body !== availabilityContinuation.botReply?.body &&
+      !(availabilityTime.botReply?.body.includes("Perdona, no te he entendido") ?? false) &&
+      !(availabilityTime.botReply?.body.includes("flujo operativo") ?? false) &&
+      hasEvent(availabilityTime.conversation, "availability_no_repeat_guard_triggered"),
   }));
 
   const petAvailability = await handleInboundWhatsApp(
@@ -314,7 +357,9 @@ async function main() {
       petAvailability.conversation.reservationFlow === undefined &&
       petAvailability.conversation.availabilityInquiry?.petName === "PIPO" &&
       petAvailability.conversation.availabilityInquiry?.missingFields.join(",") === "times" &&
-      (petAvailability.botReply?.body.includes("hora aproximada de entrada y salida") ?? false) &&
+      petAvailability.conversation.availabilityInquiry?.availabilityStatus === "available_preliminary" &&
+      (petAvailability.botReply?.body.includes("En principio aparece disponibilidad") ?? false) &&
+      (petAvailability.botReply?.body.includes("confirmar horarios de entrada y salida") ?? false) &&
       !(petAvailability.botReply?.body.includes("Tenemos disponibilidad") ?? false),
   }));
 
@@ -340,6 +385,13 @@ async function main() {
     termsState: "none",
     pendingFields: "",
     petName: "",
+    availabilityTimeApplied: "no",
+    entryTime: "",
+    exitTime: "",
+    approximateTime: "",
+    precheckStatus: "none",
+    noRepeatGuard: "no",
+    containsInternalCopy: templatePreview?.reply.includes("flujo operativo") ? "yes" : "no",
     availabilityFirstTriggered: "no",
     availabilityPrecheckStatus: "none",
     contractGate: "none",

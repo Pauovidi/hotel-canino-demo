@@ -74,8 +74,20 @@ The first availability-first reply saved `activeFlow=availabilityInquiry` and `m
 
 Classification: `behaviour_regressed`.
 
+## Second Follow-up Regression Found
+
+After the continuation reducer existed, the flow still repeated generic availability copy when the user answered `a las 10`. The extractor could identify a single loose time, but `availabilityInquiry` had no state-aware target for a time-only slot. `checkOutTime` stayed missing, `missingFields` stayed `["times"]`, and the renderer sent `availability_first_clarify_times` again. The visible copy also leaked the internal phrase `flujo operativo`.
+
+The current hotfix adds `approximateTime` plus `missingFields=["timeTarget"]` for useful single times, asks `¿Las 10 serían para la entrada y también para la salida?`, and records `availability_no_repeat_guard_triggered` so a useful time cannot produce the same generic prompt. Explicit shared-time messages apply both times and run the existing read-only checker.
+
+When the flow has `dateStart + dateEnd + petName` but no times, it now performs a preliminary calendar precheck through the existing `checkAvailability` read path with conservative default slots. The result is marked `available_preliminary` and still asks for entry/exit hours; it is not a reservation confirmation.
+
+Classification: `behaviour_regressed`.
+
 ## Safe Decisions
 
 - No fake availability: availability-first does not say a slot exists without an operational checker/tool result.
+- No fake final availability: preliminary calendar results use `available_preliminary` copy and still require times for precision.
+- No internal availability copy: visible availability-first replies use `calendario` / `calendario de reservas`, not `flujo operativo`.
 - No preconfirmation copy in greeting: the Maria Jose template remains tied to reservation preconfirmation/preview.
 - No real side effects: tests use memory stores, static client directories, mock bridge dependencies and dry-run job paths.

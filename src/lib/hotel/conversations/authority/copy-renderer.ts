@@ -50,6 +50,9 @@ export type ConversationRenderKey =
   | "availability_first_handoff_contextual"
   | "availability_first_pet_recorded_checking"
   | "availability_first_available_offer_reservation"
+  | "availability_first_available_preliminary"
+  | "availability_first_needs_times_for_precise_check"
+  | "availability_first_time_target_clarification"
   | "availability_first_clarify_times"
   | "availability_first_clarify_pet_ambiguous"
   | "availability_first_precheck_error_handoff_contextual"
@@ -221,6 +224,19 @@ function formatPetList(pets: string[]): string {
   return `${pets.slice(0, -1).join(", ")} y ${pets.at(-1)}`;
 }
 
+function formatAvailabilityTimeForQuestion(time?: string): string {
+  if (!time) {
+    return "Esa hora";
+  }
+  const match = time.match(/^(\d{1,2})(?::(\d{2}))?$/);
+  if (!match) {
+    return time;
+  }
+  const hour = Number.parseInt(match[1]!, 10);
+  const minutes = match[2] ?? "00";
+  return minutes === "00" ? `Las ${hour}` : `Las ${hour}:${minutes}`;
+}
+
 function namesQuestion(count: number): string {
   if (count === 1) {
     return "Gracias. ¿Cómo se llama la mascota?";
@@ -360,7 +376,7 @@ export function renderCopy(input: RenderCopyInput): string {
       const range = input.relativeDateRange ? ` para ${input.relativeDateRange}` : "";
       return withGreeting(
         input.message,
-        `Puedo ayudarte a preparar la consulta de disponibilidad${range}. Para revisarlo con seguridad necesito el nombre de la mascota y las fechas aproximadas de entrada y salida. No te confirmo plaza hasta comprobarlo con el flujo operativo.`,
+        `Puedo ayudarte a preparar la consulta de disponibilidad${range}. Para revisarlo con seguridad necesito el nombre de la mascota y las fechas aproximadas de entrada y salida. No te confirmo plaza hasta comprobarlo con el calendario de reservas.`,
       );
     }
     case "conversation.availability_needs_pet_and_dates":
@@ -369,16 +385,16 @@ export function renderCopy(input: RenderCopyInput): string {
       const range = input.relativeDateRange ? ` para ${input.relativeDateRange}` : "";
       return withGreeting(
         input.message,
-        `Puedo preparar la consulta de disponibilidad${range}. Me falta solo el nombre de la mascota. No te confirmo plaza hasta comprobarlo con el flujo operativo.`,
+        `Puedo preparar la consulta de disponibilidad${range}. Me falta solo el nombre de la mascota. No te confirmo plaza hasta comprobarlo con el calendario de reservas.`,
       );
     }
     case "availability_first_clarify_range":
       return withGreeting(
         input.message,
-        "Puedo preparar la consulta de disponibilidad. Me falta la fecha o rango aproximado de entrada y salida. No te confirmo plaza hasta comprobarlo con el flujo operativo.",
+        "Puedo preparar la consulta de disponibilidad. Me falta la fecha o rango aproximado de entrada y salida. No te confirmo plaza hasta comprobarlo con el calendario.",
       );
     case "availability_first_checking":
-      return "Gracias. Con esos datos puedo revisar disponibilidad con el flujo operativo antes de seguir con la reserva.";
+      return "Gracias. Con esos datos puedo revisar disponibilidad en el calendario antes de seguir con la reserva.";
     case "availability_first_available":
       return "Hay disponibilidad según la comprobación operativa. Si quieres, seguimos con la reserva.";
     case "availability_first_unavailable":
@@ -386,18 +402,30 @@ export function renderCopy(input: RenderCopyInput): string {
     case "availability_first_needs_details":
       return withGreeting(
         input.message,
-        "Puedo preparar la consulta de disponibilidad. Me faltan el nombre de la mascota y el rango aproximado de entrada y salida. No te confirmo plaza hasta comprobarlo con el flujo operativo.",
+        "Puedo preparar la consulta de disponibilidad. Me faltan el nombre de la mascota y el rango aproximado de entrada y salida. No te confirmo plaza hasta comprobarlo con el calendario.",
       );
     case "availability_first_offer_reservation":
       return "Si quieres, con esos datos seguimos con la reserva.";
     case "availability_first_handoff_contextual":
       return "Gracias. Con esos datos lo puede revisar el equipo y contestarte con disponibilidad real por aquí.";
     case "availability_first_pet_recorded_checking":
-      return `Perfecto${input.petName ? `, sería para ${input.petName}` : ""}. Compruebo disponibilidad con el flujo operativo antes de seguir con la reserva.`;
+      return `Perfecto${input.petName ? `, sería para ${input.petName}` : ""}. Compruebo disponibilidad en el calendario antes de seguir con la reserva.`;
     case "availability_first_available_offer_reservation":
       return `Hay disponibilidad según la comprobación operativa${input.petName ? ` para ${input.petName}` : ""}. Si quieres, seguimos con la reserva.`;
+    case "availability_first_available_preliminary":
+      return `En principio aparece disponibilidad${input.petName ? ` para ${input.petName}` : ""}${input.relativeDateRange ? ` ${input.relativeDateRange}` : ""}. Para dejarlo preparado necesito confirmar horarios de entrada y salida.`;
+    case "availability_first_needs_times_for_precise_check":
+      return "Puedo revisarlo mejor en el calendario si me dices la hora aproximada de entrada y salida.";
+    case "availability_first_time_target_clarification":
+      return `¿${formatAvailabilityTimeForQuestion(input.time)} serían para la entrada y también para la salida?`;
     case "availability_first_clarify_times":
-      return `Perfecto${input.petName ? `, sería para ${input.petName}` : ""}. Para comprobar disponibilidad me falta la hora aproximada de entrada y salida. No te confirmo plaza hasta comprobarlo con el flujo operativo.`;
+      if (input.checkInTime && !input.checkOutTime) {
+        return `Perfecto${input.petName ? `, sería para ${input.petName}` : ""}. Tengo la hora de entrada a las ${input.checkInTime}; me falta la hora aproximada de salida para revisarlo en el calendario.`;
+      }
+      if (input.checkOutTime && !input.checkInTime) {
+        return `Perfecto${input.petName ? `, sería para ${input.petName}` : ""}. Tengo la hora de salida a las ${input.checkOutTime}; me falta la hora aproximada de entrada para revisarlo en el calendario.`;
+      }
+      return `Perfecto${input.petName ? `, sería para ${input.petName}` : ""}. Para comprobar disponibilidad me falta la hora aproximada de entrada y salida. No te confirmo plaza hasta comprobarlo con el calendario.`;
     case "availability_first_clarify_pet_ambiguous":
       return input.pets?.length
         ? `Tengo registradas a ${formatPetList(input.pets)}. ¿Para cuál de ellas quieres consultar disponibilidad?`

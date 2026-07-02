@@ -71,3 +71,26 @@ Minimum checker data:
 - `petCount` (defaults to 1 after a single pet name)
 
 If the checker returns available, the bot offers to continue with the reservation. If unavailable, it says no availability according to the operational check. If the checker errors, it uses contextual human review, not generic fallback.
+
+## Follow-up: Times and Calendar Precheck
+
+The next visible regression was:
+
+- user: `PUPI`
+- bot: asked for entry/exit hours
+- user: `a las 10`
+- old bot: repeated the same generic hours prompt and still used internal `flujo operativo` copy
+
+The cause was narrower than the pet-slot bug. `availabilityInquiry` could merge pet/date state, but a single loose time had no target state. The reservation extractor could surface one time, yet the availability reducer still had only `missingFields=["times"]`, so the next render key stayed `availability_first_clarify_times`.
+
+The follow-up hotfix adds:
+
+- `approximateTime` for useful single time replies;
+- `missingFields=["timeTarget"]` when the user says only `a las 10`;
+- `availability_first_time_target_clarification` copy;
+- `availability_time_slot_merge_attempted`, `availability_time_slot_applied`, `availability_time_slot_needs_clarification`, `availability_time_slot_ignored`, and `availability_no_repeat_guard_triggered`;
+- preliminary calendar precheck for `dateStart + dateEnd + petName` before exact times exist.
+
+The checker itself still requires slots for a precise check. The preliminary path is a wrapper around the same read-only `checkAvailability` method using conservative default slots and marks the result as `available_preliminary`. It does not create proposals, reservations, CLIENTES rows, WhatsApps, or sheet writes.
+
+Visible availability-first copy must not contain `flujo operativo`; use `calendario` or `calendario de reservas`.

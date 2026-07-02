@@ -87,7 +87,7 @@ function buildReply(intent: FaqIntentId) {
   }
 
   if (intent === "workflow_disponibilidad") {
-    return "Para comprobar disponibilidad real usamos el flujo operativo existente con fechas y turnos. En producción entra por el formulario del hotel canino; cuando se revisa, confirmamos disponibilidad y coste por el canal adecuado.";
+    return "Para comprobar disponibilidad real usamos el calendario de reservas con fechas y turnos. En producción entra por el formulario del hotel canino; cuando se revisa, confirmamos disponibilidad y coste por el canal adecuado.";
   }
 
   if (intent === "workflow_reserva") {

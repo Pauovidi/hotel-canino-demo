@@ -161,9 +161,10 @@ export interface ConversationAvailabilityInquiry {
   checkOutTime?: string;
   checkInSlot?: "morning" | "afternoon";
   checkOutSlot?: "morning" | "afternoon";
-  availabilityStatus?: "pending" | "available" | "unavailable" | "error";
+  approximateTime?: string;
+  availabilityStatus?: "pending" | "available_preliminary" | "needs_times_for_precise_check" | "available" | "unavailable" | "error";
   availabilitySnapshot?: unknown;
-  missingFields: Array<"petName" | "dateRange" | "times">;
+  missingFields: Array<"petName" | "dateRange" | "times" | "timeTarget">;
   readyForHumanReview?: boolean;
   readyForTool?: boolean;
 }

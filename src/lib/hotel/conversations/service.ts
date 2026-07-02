@@ -9,6 +9,7 @@ import {
   type ClientUpsertFromConfirmedReservationResult,
 } from "@/lib/hotel/clients";
 import { getHotelFeatureFlags } from "@/lib/hotel/config";
+import { HOTEL_SLOT_WINDOWS } from "@/lib/hotel/domain/slots";
 import { buildGoogleSheetAdapter, buildMockSheetAdapter } from "@/lib/hotel/sheets";
 import {
   buildConversationReplyPlan,
@@ -3174,6 +3175,9 @@ function availabilityFirstRenderKey(
   if (missingFields.length === 1 && missingFields[0] === "times") {
     return "availability_first_clarify_times";
   }
+  if (missingFields.length === 1 && missingFields[0] === "timeTarget") {
+    return "availability_first_time_target_clarification";
+  }
   return "availability_first_needs_details";
 }
 
@@ -3323,6 +3327,204 @@ function availabilitySlotFromTime(time: string | undefined): AvailabilitySlot | 
   return Number.isFinite(hour) && hour < 14 ? "morning" : "afternoon";
 }
 
+type AvailabilityTimeMergeResult =
+  | {
+      kind: "applied";
+      inquiry: ConversationAvailabilityInquiry;
+      time: string;
+      appliedFields: Array<"checkInTime" | "checkOutTime">;
+      source: string;
+    }
+  | { kind: "needs_clarification"; inquiry: ConversationAvailabilityInquiry; time: string }
+  | { kind: "ignored"; inquiry: ConversationAvailabilityInquiry; reason: string; time?: string };
+
+function parseAvailabilityClockTime(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = normalizeOperationalText(value);
+  if (/\b(?:primera hora|por la manana|manana)\b/.test(normalized)) {
+    return HOTEL_SLOT_WINDOWS.morning.start;
+  }
+  if (/\b(?:por la tarde|tarde)\b/.test(normalized)) {
+    return HOTEL_SLOT_WINDOWS.afternoon.start;
+  }
+  const match =
+    normalized.match(/^(?:a las?|a la|sobre las?|sobre|hacia las?|hacia|las?)?\s*(\d{1,2})(?:(?:[:.]|h)(\d{2}))?$/) ??
+    normalized.match(/\b(?:a las?|a la|sobre las?|sobre|hacia las?|hacia|las?)\s+(\d{1,2})(?:(?:[:.]|h)(\d{2}))?\b/);
+  if (!match) {
+    return undefined;
+  }
+  const hour = Number.parseInt(match[1]!, 10);
+  const minute = Number.parseInt(match[2] ?? "00", 10);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return undefined;
+  }
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function extractAvailabilityTimeCandidate(
+  message: string,
+  slots: ReturnType<typeof extractReservationSlotsFromMessage>,
+): string | undefined {
+  return slots.checkInTime ?? slots.checkOutTime ?? parseAvailabilityClockTime(message);
+}
+
+function hasAvailabilitySharedTimeCue(normalizedMessage: string): boolean {
+  return /\b(?:ambas?|entrada y salida|salida y entrada|misma hora|tambien|las dos|para las dos|para todo)\b/.test(
+    normalizedMessage,
+  );
+}
+
+function hasAvailabilityEntryCue(normalizedMessage: string): boolean {
+  return /\b(?:entrada|entra(?:ria|mos|n)?|entraria|llegada|dejo|dejamos|llevo|llevaria)\b/.test(
+    normalizedMessage,
+  );
+}
+
+function hasAvailabilityExitCue(normalizedMessage: string): boolean {
+  return /\b(?:salida|sale(?:n)?|sal(?:dria|imos|go)?|saldria|recogida|recojo|recogeria)\b/.test(
+    normalizedMessage,
+  );
+}
+
+function isAvailabilityTimeTargetRejection(normalizedMessage: string): boolean {
+  return /^(?:no|no seria|no serían|solo entrada|solo salida)\b/.test(normalizedMessage);
+}
+
+function withAvailabilityTime(
+  inquiry: ConversationAvailabilityInquiry,
+  time: string,
+  fields: Array<"checkInTime" | "checkOutTime">,
+): ConversationAvailabilityInquiry {
+  return {
+    ...inquiry,
+    approximateTime: undefined,
+    checkInTime: fields.includes("checkInTime") ? time : inquiry.checkInTime,
+    checkInSlot: fields.includes("checkInTime") ? availabilitySlotFromTime(time) : inquiry.checkInSlot,
+    checkOutTime: fields.includes("checkOutTime") ? time : inquiry.checkOutTime,
+    checkOutSlot: fields.includes("checkOutTime") ? availabilitySlotFromTime(time) : inquiry.checkOutSlot,
+  };
+}
+
+function resolveAvailabilityTimeSlotMerge(input: {
+  before: ConversationAvailabilityInquiry;
+  inquiry: ConversationAvailabilityInquiry;
+  message: string;
+  slots: ReturnType<typeof extractReservationSlotsFromMessage>;
+}): AvailabilityTimeMergeResult {
+  const normalizedMessage = normalizeOperationalText(input.message);
+  const pendingTime = input.before.missingFields.includes("timeTarget")
+    ? input.before.approximateTime
+    : undefined;
+  const sharedCue = hasAvailabilitySharedTimeCue(normalizedMessage);
+  const entryCue = hasAvailabilityEntryCue(normalizedMessage);
+  const exitCue = hasAvailabilityExitCue(normalizedMessage);
+
+  if (pendingTime && (sharedCue || isAffirmativeConfirmationUtterance(input.message))) {
+    return {
+      kind: "applied",
+      inquiry: withAvailabilityTime(input.inquiry, pendingTime, ["checkInTime", "checkOutTime"]),
+      time: pendingTime,
+      appliedFields: ["checkInTime", "checkOutTime"],
+      source: "time_target_confirmation",
+    };
+  }
+
+  if (pendingTime && isAvailabilityTimeTargetRejection(normalizedMessage)) {
+    return {
+      kind: "ignored",
+      inquiry: { ...input.inquiry, approximateTime: undefined },
+      reason: "time_target_rejected",
+      time: pendingTime,
+    };
+  }
+
+  if (input.slots.checkInTime && input.slots.checkOutTime) {
+    return {
+      kind: "applied",
+      inquiry: {
+        ...input.inquiry,
+        approximateTime: undefined,
+        checkInTime: input.slots.checkInTime,
+        checkInSlot: availabilitySlotFromTime(input.slots.checkInTime),
+        checkOutTime: input.slots.checkOutTime,
+        checkOutSlot: availabilitySlotFromTime(input.slots.checkOutTime),
+      },
+      time: input.slots.checkInTime,
+      appliedFields: ["checkInTime", "checkOutTime"],
+      source: "explicit_pair",
+    };
+  }
+
+  const candidateTime = extractAvailabilityTimeCandidate(input.message, input.slots);
+  if (!candidateTime) {
+    return { kind: "ignored", inquiry: input.inquiry, reason: "no_time_slot" };
+  }
+
+  const missingEntry = !input.inquiry.checkInTime && !input.inquiry.checkInSlot;
+  const missingExit = !input.inquiry.checkOutTime && !input.inquiry.checkOutSlot;
+  if (!missingEntry && !missingExit) {
+    return { kind: "ignored", inquiry: input.inquiry, reason: "times_already_complete", time: candidateTime };
+  }
+
+  if (missingEntry && !missingExit) {
+    return {
+      kind: "applied",
+      inquiry: withAvailabilityTime(input.inquiry, candidateTime, ["checkInTime"]),
+      time: candidateTime,
+      appliedFields: ["checkInTime"],
+      source: "only_entry_missing",
+    };
+  }
+
+  if (!missingEntry && missingExit) {
+    return {
+      kind: "applied",
+      inquiry: withAvailabilityTime(input.inquiry, candidateTime, ["checkOutTime"]),
+      time: candidateTime,
+      appliedFields: ["checkOutTime"],
+      source: "only_exit_missing",
+    };
+  }
+
+  if (sharedCue) {
+    return {
+      kind: "applied",
+      inquiry: withAvailabilityTime(input.inquiry, candidateTime, ["checkInTime", "checkOutTime"]),
+      time: candidateTime,
+      appliedFields: ["checkInTime", "checkOutTime"],
+      source: "shared_time_cue",
+    };
+  }
+
+  if (entryCue && !exitCue) {
+    return {
+      kind: "applied",
+      inquiry: withAvailabilityTime(input.inquiry, candidateTime, ["checkInTime"]),
+      time: candidateTime,
+      appliedFields: ["checkInTime"],
+      source: "entry_time_cue",
+    };
+  }
+
+  if (exitCue && !entryCue) {
+    return {
+      kind: "applied",
+      inquiry: withAvailabilityTime(input.inquiry, candidateTime, ["checkOutTime"]),
+      time: candidateTime,
+      appliedFields: ["checkOutTime"],
+      source: "exit_time_cue",
+    };
+  }
+
+  return {
+    kind: "needs_clarification",
+    inquiry: { ...input.inquiry, approximateTime: candidateTime },
+    time: candidateTime,
+  };
+}
+
 function computeAvailabilityMissingFields(
   inquiry: ConversationAvailabilityInquiry,
 ): ConversationAvailabilityInquiry["missingFields"] {
@@ -3339,7 +3541,7 @@ function computeAvailabilityMissingFields(
     inquiry.dateEnd &&
     (!inquiry.checkInSlot || !inquiry.checkOutSlot)
   ) {
-    missingFields.push("times");
+    missingFields.push(inquiry.approximateTime ? "timeTarget" : "times");
   }
   return missingFields;
 }
@@ -3355,6 +3557,7 @@ function normalizeAvailabilityInquiry(
   const normalized: ConversationAvailabilityInquiry = {
     ...inquiry,
     ...dateWindow,
+    approximateTime: inquiry.checkInSlot && inquiry.checkOutSlot ? undefined : inquiry.approximateTime,
     petCount: inquiry.petCount ?? (inquiry.petName ? 1 : undefined),
   };
   const missingFields = computeAvailabilityMissingFields(normalized);
@@ -3394,6 +3597,9 @@ async function renderAvailabilityInquiryOutcome(input: {
       petName: input.conversation.availabilityInquiry?.petName,
       pets: safeAvailabilityKnownPets(input.conversation),
       relativeDateRange: input.conversation.availabilityInquiry?.dateRange,
+      checkInTime: input.conversation.availabilityInquiry?.checkInTime,
+      checkOutTime: input.conversation.availabilityInquiry?.checkOutTime,
+      time: input.conversation.availabilityInquiry?.approximateTime,
     }),
     input.conversation,
   );
@@ -3428,6 +3634,195 @@ async function renderAvailabilityInquiryOutcome(input: {
     botReply,
     twiml: buildTwilioMessageResponse(replyBody),
   };
+}
+
+function shouldRunAvailabilityCalendarPrecheck(inquiry: ConversationAvailabilityInquiry | undefined): boolean {
+  return Boolean(
+    inquiry?.petName &&
+      inquiry.dateStart &&
+      inquiry.dateEnd &&
+      !inquiry.checkInSlot &&
+      !inquiry.checkOutSlot &&
+      !inquiry.approximateTime &&
+      inquiry.missingFields.length === 1 &&
+      inquiry.missingFields[0] === "times" &&
+      inquiry.availabilityStatus !== "available_preliminary" &&
+      inquiry.availabilityStatus !== "unavailable",
+  );
+}
+
+async function runAvailabilityCalendarPrecheckReadOnly(input: {
+  store: ConversationStore;
+  conversation: ConversationRecord;
+  inbound: Message;
+  safeBody: string;
+  deps?: WhatsAppReservationBridgeDeps;
+  timing: AuthorityTurnTimingAccumulator;
+}): Promise<InboundResult> {
+  const now = input.deps?.now?.() ?? new Date();
+  const inquiry = normalizeAvailabilityInquiry(
+    input.conversation.availabilityInquiry ?? { missingFields: [] },
+    now,
+  );
+  if (!inquiry.petName || !inquiry.dateStart || !inquiry.dateEnd) {
+    const missingConversation: ConversationRecord = {
+      ...input.conversation,
+      availabilityInquiry: inquiry,
+      updatedAt: nowIso(),
+    };
+    await input.store.addEvent(
+      createEvent(input.conversation.id, "availability_calendar_precheck_needs_times", {
+        reason: "missing_pet_or_range",
+        missingFields: inquiry.missingFields,
+      }),
+    );
+    return renderAvailabilityInquiryOutcome({
+      store: input.store,
+      conversation: missingConversation,
+      inbound: input.inbound,
+      safeBody: input.safeBody,
+      renderKey: availabilityFirstRenderKey(inquiry.missingFields),
+      eventType: "availability_precheck_missing_fields",
+      eventPayload: {
+        missingFields: inquiry.missingFields,
+        noAvailabilityPromised: true,
+      },
+    });
+  }
+
+  const entrySlot = inquiry.checkInSlot ?? "morning";
+  const exitSlot = inquiry.checkOutSlot ?? "morning";
+  await replaceConversationPreservingTimeline(input.store, {
+    ...input.conversation,
+    activeFlow: "availabilityInquiry",
+    availabilityInquiry: {
+      ...inquiry,
+      availabilityStatus: "pending",
+    },
+    updatedAt: nowIso(),
+  });
+  await input.store.addEvent(
+    createEvent(input.conversation.id, "availability_calendar_precheck_started", {
+      mode: "read_only",
+      petName: inquiry.petName,
+      dateStart: inquiry.dateStart,
+      dateEnd: inquiry.dateEnd,
+      entrySlot,
+      exitSlot,
+      dogs: inquiry.petCount ?? 1,
+    }),
+  );
+  await input.store.addEvent(
+    createEvent(input.conversation.id, "availability_calendar_precheck_read_only", {
+      noReservationCreated: true,
+      noSheetWrite: true,
+      noWhatsappSent: true,
+    }),
+  );
+
+  try {
+    const availability = await measureAuthorityStage(
+      input.timing,
+      "toolsMs",
+      "availability_calendar_precheck_read_only",
+      async () => {
+        const adapter = await (input.deps?.buildSheetAdapter ?? getDefaultAvailabilityBuildSheetAdapter())();
+        return adapter.checkAvailability({
+          entryDate: inquiry.dateStart!,
+          entrySlot,
+          exitDate: inquiry.dateEnd!,
+          exitSlot,
+          dogs: inquiry.petCount ?? 1,
+        });
+      },
+    );
+    const availabilityStatus = availability.available ? "available_preliminary" : "unavailable";
+    const updatedInquiry = normalizeAvailabilityInquiry(
+      {
+        ...inquiry,
+        availabilityStatus,
+        availabilitySnapshot: {
+          monthKey: availability.monthKey,
+          available: availability.available,
+          conflictCount: availability.conflicts.length,
+          preliminary: true,
+          entrySlot,
+          exitSlot,
+        },
+      },
+      now,
+    );
+    const precheckConversation: ConversationRecord = {
+      ...input.conversation,
+      activeFlow: "availabilityInquiry",
+      availabilityInquiry: updatedInquiry,
+      updatedAt: nowIso(),
+    };
+    const renderKey: ConversationRenderKey = availability.available
+      ? "availability_first_available_preliminary"
+      : "availability_first_unavailable";
+    await replaceConversationPreservingTimeline(input.store, precheckConversation);
+    await input.store.addEvent(
+      createEvent(input.conversation.id, "availability_calendar_precheck_result", {
+        mode: "read_only",
+        status: availabilityStatus,
+        available: availability.available,
+        conflictCount: availability.conflicts.length,
+        renderTemplateId: renderKey,
+      }),
+    );
+    if (availability.available && updatedInquiry.missingFields.includes("times")) {
+      await input.store.addEvent(
+        createEvent(input.conversation.id, "availability_calendar_precheck_needs_times", {
+          status: "needs_times_for_precise_check",
+          missingFields: updatedInquiry.missingFields,
+        }),
+      );
+    }
+    return renderAvailabilityInquiryOutcome({
+      store: input.store,
+      conversation: precheckConversation,
+      inbound: input.inbound,
+      safeBody: input.safeBody,
+      renderKey,
+      eventType: "availability_first_reply_sent",
+      eventPayload: {
+        mode: "calendar_read_only_precheck",
+        noReservationCreated: true,
+      },
+    });
+  } catch (error) {
+    const errorConversation: ConversationRecord = {
+      ...input.conversation,
+      mode: "bot",
+      activeFlow: "availabilityInquiry",
+      availabilityInquiry: {
+        ...inquiry,
+        availabilityStatus: "error",
+        readyForTool: false,
+        readyForHumanReview: true,
+      },
+      updatedAt: nowIso(),
+    };
+    await replaceConversationPreservingTimeline(input.store, errorConversation);
+    await input.store.addEvent(
+      createEvent(input.conversation.id, "availability_calendar_precheck_error", {
+        mode: "read_only",
+        ...safeConversationStoreError(error),
+      }),
+    );
+    return renderAvailabilityInquiryOutcome({
+      store: input.store,
+      conversation: errorConversation,
+      inbound: input.inbound,
+      safeBody: input.safeBody,
+      renderKey: "availability_first_precheck_error_handoff_contextual",
+      eventType: "availability_first_reply_sent",
+      eventPayload: {
+        mode: "calendar_read_only_precheck",
+      },
+    });
+  }
 }
 
 async function runAvailabilityPrecheckReadOnly(input: {
@@ -3613,6 +4008,14 @@ async function handleAvailabilityInquiryContinuation(input: {
     }),
   );
   await input.store.addEvent(
+    createEvent(input.conversation.id, "availability_time_slot_merge_attempted", {
+      missingFieldsBefore: before.missingFields,
+      hasTimeCandidate: Boolean(extractAvailabilityTimeCandidate(input.safeBody, extractedSlots)),
+      hasPendingApproximateTime: Boolean(before.approximateTime),
+      ...safeBodyKind(input.safeBody),
+    }),
+  );
+  await input.store.addEvent(
     createEvent(input.conversation.id, "nlu_classified", {
       intent: "availability_slot_reply",
       confidence: 1,
@@ -3679,14 +4082,52 @@ async function handleAvailabilityInquiryContinuation(input: {
     ...nextInquiry,
     dateStart: extractedSlots.checkInDate ?? nextInquiry.dateStart,
     dateEnd: extractedSlots.checkOutDate ?? nextInquiry.dateEnd,
-    checkInTime: extractedSlots.checkInTime ?? nextInquiry.checkInTime,
-    checkOutTime: extractedSlots.checkOutTime ?? nextInquiry.checkOutTime,
   };
-  nextInquiry = {
-    ...nextInquiry,
-    checkInSlot: availabilitySlotFromTime(nextInquiry.checkInTime) ?? nextInquiry.checkInSlot,
-    checkOutSlot: availabilitySlotFromTime(nextInquiry.checkOutTime) ?? nextInquiry.checkOutSlot,
-  };
+  const timeSlotMerge = resolveAvailabilityTimeSlotMerge({
+    before,
+    inquiry: nextInquiry,
+    message: input.safeBody,
+    slots: extractedSlots,
+  });
+  nextInquiry = timeSlotMerge.inquiry;
+  if (timeSlotMerge.kind === "applied") {
+    await input.store.addEvent(
+      createEvent(input.conversation.id, "availability_time_slot_applied", {
+        time: timeSlotMerge.time,
+        appliedFields: timeSlotMerge.appliedFields,
+        source: timeSlotMerge.source,
+      }),
+    );
+  } else if (timeSlotMerge.kind === "needs_clarification") {
+    const previousCopyRenderedPayload = input.conversation.events.findLast((event) => event.eventType === "copy_rendered")
+      ?.payload;
+    const previousRenderKey =
+      previousCopyRenderedPayload &&
+      typeof previousCopyRenderedPayload === "object" &&
+      "renderTemplateId" in previousCopyRenderedPayload
+        ? String((previousCopyRenderedPayload as Record<string, unknown>).renderTemplateId)
+        : undefined;
+    await input.store.addEvent(
+      createEvent(input.conversation.id, "availability_time_slot_needs_clarification", {
+        time: timeSlotMerge.time,
+        missingFieldsBefore: before.missingFields,
+      }),
+    );
+    await input.store.addEvent(
+      createEvent(input.conversation.id, "availability_no_repeat_guard_triggered", {
+        previousRenderKey,
+        nextRenderKey: "availability_first_time_target_clarification",
+        reason: "useful_time_slot_requires_target",
+      }),
+    );
+  } else if (timeSlotMerge.time || timeSlotMerge.reason !== "no_time_slot") {
+    await input.store.addEvent(
+      createEvent(input.conversation.id, "availability_time_slot_ignored", {
+        reason: timeSlotMerge.reason,
+        time: timeSlotMerge.time,
+      }),
+    );
+  }
   nextInquiry = normalizeAvailabilityInquiry(nextInquiry, now);
 
   const nextConversation: ConversationRecord = {
@@ -3701,12 +4142,25 @@ async function handleAvailabilityInquiryContinuation(input: {
       petName: nextInquiry.petName,
       dateStart: nextInquiry.dateStart,
       dateEnd: nextInquiry.dateEnd,
+      approximateTime: nextInquiry.approximateTime,
+      checkInTime: nextInquiry.checkInTime,
+      checkOutTime: nextInquiry.checkOutTime,
       checkInSlot: nextInquiry.checkInSlot,
       checkOutSlot: nextInquiry.checkOutSlot,
     }),
   );
 
   if (nextInquiry.missingFields.length > 0) {
+    if (shouldRunAvailabilityCalendarPrecheck(nextInquiry)) {
+      return runAvailabilityCalendarPrecheckReadOnly({
+        store: input.store,
+        conversation: nextConversation,
+        inbound: input.inbound,
+        safeBody: input.safeBody,
+        deps: input.deps,
+        timing: input.timing,
+      });
+    }
     return renderAvailabilityInquiryOutcome({
       store: input.store,
       conversation: nextConversation,
@@ -5485,6 +5939,9 @@ async function handleInboundWhatsAppWithTiming(
         message: safeBody,
         petName: availabilityInquiry.petName,
         relativeDateRange: relativeRange?.label,
+        checkInTime: availabilityInquiry.checkInTime,
+        checkOutTime: availabilityInquiry.checkOutTime,
+        time: availabilityInquiry.approximateTime,
       }),
       latestForAvailability,
     );
@@ -5521,6 +5978,16 @@ async function handleInboundWhatsAppWithTiming(
     );
     if (missingFields.length === 0) {
       return runAvailabilityPrecheckReadOnly({
+        store,
+        conversation: nextConversation,
+        inbound,
+        safeBody,
+        deps: reservationBridgeDeps,
+        timing,
+      });
+    }
+    if (shouldRunAvailabilityCalendarPrecheck(availabilityInquiry)) {
+      return runAvailabilityCalendarPrecheckReadOnly({
         store,
         conversation: nextConversation,
         inbound,

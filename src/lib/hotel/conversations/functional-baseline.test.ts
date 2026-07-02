@@ -188,12 +188,16 @@ describe("functional baseline lock", () => {
     expect(result.conversation.activeFlow).toBe("availabilityInquiry");
     expect(result.conversation.availabilityInquiry).toMatchObject({
       petName: "PAPO",
+      availabilityStatus: "available_preliminary",
       missingFields: ["times"],
       readyForTool: false,
     });
-    expect(result.botReply?.body).toContain("hora aproximada de entrada y salida");
+    expect(result.botReply?.body).toContain("En principio aparece disponibilidad para PAPO este fin de semana");
+    expect(result.botReply?.body).toContain("confirmar horarios de entrada y salida");
+    expect(result.botReply?.body).not.toContain("flujo operativo");
     expect(result.botReply?.body).not.toContain("Perdona, no te he entendido bien");
     expect(result.conversation.events.some((event) => event.eventType === "availability_pet_slot_applied")).toBe(true);
+    expect(result.conversation.events.some((event) => event.eventType === "availability_calendar_precheck_started")).toBe(true);
   });
 
   it("locks template preview as preview-only and keeps real snippets", () => {
