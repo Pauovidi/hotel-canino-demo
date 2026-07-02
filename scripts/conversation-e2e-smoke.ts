@@ -685,9 +685,13 @@ async function runHttpSmoke(baseUrl: string) {
 async function main() {
   const baseUrl = process.env.CONVERSATION_SMOKE_BASE_URL;
 
-  if (baseUrl) {
+  if (baseUrl && process.env.CONVERSATION_SMOKE_ALLOW_HTTP === "true") {
     await runHttpSmoke(baseUrl);
     return;
+  }
+
+  if (baseUrl) {
+    console.log("[skip] CONVERSATION_SMOKE_BASE_URL ignored without CONVERSATION_SMOKE_ALLOW_HTTP=true");
   }
 
   await runDirectSmoke();

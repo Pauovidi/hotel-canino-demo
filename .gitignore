@@ -12,6 +12,7 @@
 
 # testing
 /coverage
+scripts/production-smokes/
 
 # next.js
 /.next/
